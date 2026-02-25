@@ -4,11 +4,10 @@
 </p>
 
 <p align="center">
-  <a href="https://www.npmjs.com/package/aemeath-js"><img src="https://img.shields.io/npm/v/aemeath-js.svg?style=flat-square" alt="npm version"></a>
-  <a href="https://www.npmjs.com/package/aemeath-js"><img src="https://img.shields.io/npm/dm/aemeath-js.svg?style=flat-square" alt="npm downloads"></a>
-  <a href="https://img.shields.io/bundlephobia/minzip/aemeath-js"><img src="https://img.shields.io/bundlephobia/minzip/aemeath-js?style=flat-square&label=minzip" alt="bundle size"></a>
+  <a href="https://github.com/TieriaSail/aemeath-js"><img src="https://img.shields.io/badge/version-1.1.0-brightgreen.svg?style=flat-square" alt="version"></a>
   <a href="https://www.typescriptlang.org/"><img src="https://img.shields.io/badge/TypeScript-5.0+-blue.svg?style=flat-square" alt="TypeScript"></a>
-  <a href="./LICENSE"><img src="https://img.shields.io/npm/l/aemeath-js.svg?style=flat-square" alt="license"></a>
+  <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green.svg?style=flat-square" alt="license"></a>
+  <a href="https://github.com/TieriaSail/aemeath-js"><img src="https://img.shields.io/badge/core_size-~2KB-orange.svg?style=flat-square" alt="core size"></a>
 </p>
 
 <p align="center">
