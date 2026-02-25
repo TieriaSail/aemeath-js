@@ -336,7 +336,6 @@ logger.use(new MyPlugin());
 | **[全局上下文](./docs/zh/5-global-context.md)** | 自动附加上下文到每条日志 |
 | **[性能监控](./docs/zh/6-performance-monitoring.md)** | Web Vitals 和自定义指标 |
 | **[浏览器直接使用](./docs/zh/0-browser-usage.md)** | Script 标签引入（无需构建工具） |
-| **[更新日志](./CHANGELOG.md)** | 版本历史 |
 
 > 📖 English docs: [README](./README.md) | [Quick Start](./QUICK_START.md) | [Module Docs](./docs/en/)
 

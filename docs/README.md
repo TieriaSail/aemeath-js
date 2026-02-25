@@ -22,7 +22,6 @@
 
 - [README](../README.md)
 - [Quick Start](../QUICK_START.md)
-- [Changelog](../CHANGELOG.md)
 - [Examples](../examples/)
 
 ---
@@ -45,5 +44,4 @@
 
 - [中文 README](../README.zh_CN.md)
 - [快速开始](../QUICK_START.zh_CN.md)
-- [更新日志](../CHANGELOG.md)
 - [示例代码](../examples/)

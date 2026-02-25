@@ -336,7 +336,6 @@ logger.use(new MyPlugin());
 | **[Global Context](./docs/en/5-global-context.md)** | Attach context to every log |
 | **[Performance Monitoring](./docs/en/6-performance-monitoring.md)** | Web Vitals & custom metrics |
 | **[Browser Usage](./docs/en/0-browser-usage.md)** | Script tag usage (no build tools) |
-| **[Changelog](./CHANGELOG.md)** | Version history |
 
 > 📖 中文文档：[查看中文 README](./README.zh_CN.md) | [快速开始](./QUICK_START.zh_CN.md) | [模块文档](./docs/zh/)
 
