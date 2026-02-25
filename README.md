@@ -1,6 +1,6 @@
 <p align="center">
   <h1 align="center">aemeath-js</h1>
-  <p align="center">A pure frontend logging & monitoring SDK. Your backend just stores the data — we handle the rest.</p>
+  <p align="center">A pure frontend logging & monitoring SDK. The frontend does the heavy lifting — your backend just stores and cleans up.</p>
 </p>
 
 <p align="center">
@@ -19,10 +19,10 @@
 
 ## Why aemeath-js?
 
-Most frontend monitoring solutions are SaaS platforms — your data lives on their servers. **aemeath-js** takes a different approach: it's a **pure frontend library** that handles error tracking, performance monitoring, and log management entirely on the client side. Your backend only needs a simple API to store the data.
+Most frontend monitoring solutions require coordination between frontend, backend, and ops — whether it's a third-party SaaS or a self-hosted service. **aemeath-js** takes a different approach: the frontend does as much as possible on its own — error tracking, performance monitoring, log management, queuing, retry, and caching are all handled in the browser. Your backend only needs to receive and store the data.
 
 - **🌲 Tree-shakable** — Import what you need. Unused code is never bundled.
-- **🔓 Data ownership** — All data flows through your own `onUpload` callback. No third-party servers.
+- **🔓 Frontend-driven** — The browser handles the heavy lifting. Your backend just records and processes data.
 - **🌐 Framework agnostic** — Works with React, Vue, vanilla JS, jQuery, or any framework.
 - **🔧 Build tool support** — Vite, Webpack 4+, Rsbuild — first-class support for each.
 - **📦 Zero dependencies** — No runtime dependencies.
