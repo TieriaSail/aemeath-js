@@ -1,0 +1,69 @@
+{
+  "compilerOptions": {
+    // 输出配置
+    "target": "ES2020",
+    "module": "ESNext",
+    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    "moduleResolution": "bundler",
+
+    // JSX 支持（用于 React 集成）
+    "jsx": "react-jsx",
+
+    // 声明文件
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+
+    // 输出目录
+    "outDir": "./dist",
+    "rootDir": ".",
+
+    // 严格模式
+    "strict": true,
+    "noImplicitAny": true,
+    "strictNullChecks": true,
+    "strictFunctionTypes": true,
+    "strictBindCallApply": true,
+    "strictPropertyInitialization": true,
+    "noImplicitThis": true,
+    "alwaysStrict": true,
+
+    // 额外检查
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitOverride": true,
+
+    // 模块解析
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+
+    // 其他
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true
+  },
+  "include": [
+    "*.ts",
+    "core/**/*.ts",
+    "plugins/**/*.ts",
+    "parser/**/*.ts",
+    "singleton/**/*.ts",
+    "build-plugins/**/*.ts",
+    "cli/**/*.ts",
+    "utils/**/*.ts",
+    "integrations/**/*.ts",
+    "integrations/**/*.tsx",
+    "browser/**/*.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "**/*.test.ts",
+    "**/*.spec.ts",
+    "**/*.example.ts",
+    "examples"
+  ]
+}

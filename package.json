@@ -1,0 +1,199 @@
+{
+  "name": "aemeath-js",
+  "version": "1.1.0",
+  "description": "A modular, type-safe logging system with plugin architecture",
+  "keywords": [
+    "logger",
+    "logging",
+    "log",
+    "error-tracking",
+    "error-monitoring",
+    "error-capture",
+    "performance-monitoring",
+    "web-vitals",
+    "sourcemap",
+    "frontend-monitoring",
+    "browser-logging",
+    "plugin-architecture",
+    "react",
+    "vue",
+    "typescript",
+    "tree-shakable",
+    "lightweight",
+    "modular",
+    "sentry-alternative",
+    "error-boundary"
+  ],
+  "author": "AemeathJs Team",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "unpkg": "./dist/browser.global.js",
+  "jsdelivr": "./dist/browser.global.js",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    },
+    "./core/Logger": {
+      "types": "./dist/core/Logger.d.ts",
+      "import": "./dist/core/Logger.js",
+      "require": "./dist/core/Logger.cjs"
+    },
+    "./plugins/*": {
+      "types": "./dist/plugins/*.d.ts",
+      "import": "./dist/plugins/*.js",
+      "require": "./dist/plugins/*.cjs"
+    },
+    "./parser": {
+      "types": "./dist/parser.d.ts",
+      "import": "./dist/parser.js",
+      "require": "./dist/parser.cjs"
+    },
+    "./singleton": {
+      "types": "./dist/singleton.d.ts",
+      "import": "./dist/singleton.js",
+      "require": "./dist/singleton.cjs"
+    },
+    "./build-plugins": {
+      "types": "./dist/build-plugins.d.ts",
+      "import": "./dist/build-plugins.js",
+      "require": "./dist/build-plugins.cjs"
+    },
+    "./build-plugins/vite": {
+      "types": "./dist/build-plugins/vite.d.ts",
+      "import": "./dist/build-plugins/vite.js",
+      "require": "./dist/build-plugins/vite.cjs"
+    },
+    "./build-plugins/vite-sourcemap": {
+      "types": "./dist/build-plugins/vite-sourcemap.d.ts",
+      "import": "./dist/build-plugins/vite-sourcemap.js",
+      "require": "./dist/build-plugins/vite-sourcemap.cjs"
+    },
+    "./build-plugins/webpack": {
+      "types": "./dist/build-plugins/webpack.d.ts",
+      "import": "./dist/build-plugins/webpack.js",
+      "require": "./dist/build-plugins/webpack.cjs"
+    },
+    "./build-plugins/webpack-sourcemap": {
+      "types": "./dist/build-plugins/webpack-sourcemap.d.ts",
+      "import": "./dist/build-plugins/webpack-sourcemap.js",
+      "require": "./dist/build-plugins/webpack-sourcemap.cjs"
+    },
+    "./build-plugins/rsbuild": {
+      "types": "./dist/build-plugins/rsbuild.d.ts",
+      "import": "./dist/build-plugins/rsbuild.js",
+      "require": "./dist/build-plugins/rsbuild.cjs"
+    },
+    "./build-plugins/rsbuild-sourcemap": {
+      "types": "./dist/build-plugins/rsbuild-sourcemap.d.ts",
+      "import": "./dist/build-plugins/rsbuild-sourcemap.js",
+      "require": "./dist/build-plugins/rsbuild-sourcemap.cjs"
+    },
+    "./react": {
+      "types": "./dist/react.d.ts",
+      "import": "./dist/react.js",
+      "require": "./dist/react.cjs"
+    },
+    "./vue": {
+      "types": "./dist/vue.d.ts",
+      "import": "./dist/vue.js",
+      "require": "./dist/vue.cjs"
+    },
+    "./browser": {
+      "import": "./dist/browser.global.js",
+      "require": "./dist/browser.global.js",
+      "default": "./dist/browser.global.js"
+    }
+  },
+  "files": [
+    "dist",
+    "scripts",
+    "README.md",
+    "README.zh_CN.md",
+    "QUICK_START.md",
+    "QUICK_START.zh_CN.md",
+    "CHANGELOG.md",
+    "docs",
+    "LICENSE"
+  ],
+  "homepage": "https://github.com/TieriaSail/aemeath-js#readme",
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint . --ext .ts,.tsx --ignore-pattern dist --ignore-pattern node_modules",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "prepublishOnly": "npm test && npm run build"
+  },
+  "dependencies": {
+    "source-map-js": "^1.2.0"
+  },
+  "peerDependencies": {
+    "@rsbuild/core": ">=1.0.0",
+    "html-webpack-plugin": ">=4.0.0",
+    "react": ">=16.8.0",
+    "react-dom": ">=16.8.0",
+    "vite": ">=2.0.0",
+    "vue": ">=3.0.0",
+    "webpack": ">=4.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@rsbuild/core": {
+      "optional": true
+    },
+    "vite": {
+      "optional": true
+    },
+    "webpack": {
+      "optional": true
+    },
+    "html-webpack-plugin": {
+      "optional": true
+    },
+    "react": {
+      "optional": true
+    },
+    "react-dom": {
+      "optional": true
+    },
+    "vue": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@rsbuild/core": "1.7.3",
+    "@testing-library/jest-dom": "6.9.1",
+    "@testing-library/react": "16.3.2",
+    "@types/node": "20.19.31",
+    "@types/react": "18.3.28",
+    "@types/react-dom": "18.3.7",
+    "@vitest/coverage-v8": "4.0.18",
+    "@vue/test-utils": "2.4.6",
+    "jsdom": "28.0.0",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "tsup": "8.5.1",
+    "typescript": "5.9.3",
+    "vite": "5.4.21",
+    "vitest": "4.0.18",
+    "vue": "3.5.27",
+    "webpack": "5.105.0"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/TieriaSail/aemeath-js"
+  },
+  "bugs": {
+    "url": "https://github.com/TieriaSail/aemeath-js/issues"
+  },
+  "sideEffects": false
+}

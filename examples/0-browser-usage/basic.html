@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Logger 基础示例</title>
+  
+  <!-- 1. 早期错误捕获（放在 head 最前面） -->
+  <script src="https://unpkg.com/aemeath-js/scripts/early-error.js"></script>
+  
+  <!-- 2. Logger 核心 -->
+  <script src="https://unpkg.com/aemeath-js/dist/browser.global.js"></script>
+  
+  <style>
+    body { font-family: system-ui, sans-serif; padding: 20px; max-width: 800px; margin: 0 auto; }
+    button { padding: 10px 20px; margin: 5px; cursor: pointer; }
+    .log-panel { background: #f5f5f5; padding: 15px; margin-top: 20px; border-radius: 8px; }
+    pre { background: #1e1e1e; color: #d4d4d4; padding: 15px; border-radius: 4px; overflow-x: auto; }
+  </style>
+</head>
+<body>
+  <h1>aemeath-js 浏览器示例</h1>
+  
+  <div class="log-panel">
+    <h3>测试按钮</h3>
+    <button onclick="logInfo()">记录 Info</button>
+    <button onclick="logWarn()">记录 Warn</button>
+    <button onclick="logError()">记录 Error</button>
+    <button onclick="triggerError()">触发错误</button>
+    <button onclick="triggerPromiseError()">触发 Promise 错误</button>
+  </div>
+
+  <div class="log-panel">
+    <h3>日志输出</h3>
+    <pre id="output">等待日志...</pre>
+  </div>
+
+  <script>
+    // 日志存储（用于演示）
+    var logs = [];
+    
+    // 初始化 Logger
+    AemeathJs.init({
+      level: 'debug',
+      enableConsole: true,
+      upload: function(log) {
+        // 存储到本地数组（实际项目中发送到服务器）
+        logs.push(log);
+        updateOutput();
+        
+        // 实际项目中：
+        // fetch('/api/logs', {
+        //   method: 'POST',
+        //   headers: { 'Content-Type': 'application/json' },
+        //   body: JSON.stringify(log)
+        // });
+      }
+    });
+    
+    var logger = AemeathJs.getAemeath();
+    
+    // 页面加载日志
+    logger.info('页面加载完成', { 
+      url: location.href,
+      userAgent: navigator.userAgent 
+    });
+    
+    // 测试函数
+    function logInfo() {
+      logger.info('用户点击了 Info 按钮', { timestamp: Date.now() });
+    }
+    
+    function logWarn() {
+      logger.warn('这是一个警告信息', { level: 'medium' });
+    }
+    
+    function logError() {
+      logger.error('这是一个错误信息', { code: 500 });
+    }
+    
+    function triggerError() {
+      // 触发一个真实的 JS 错误
+      throw new Error('这是一个测试错误');
+    }
+    
+    function triggerPromiseError() {
+      // 触发一个 Promise 错误
+      Promise.reject(new Error('Promise 错误测试'));
+    }
+    
+    // 更新输出面板
+    function updateOutput() {
+      var output = document.getElementById('output');
+      output.textContent = JSON.stringify(logs.slice(-5), null, 2);
+    }
+  </script>
+</body>
+</html>
+
