@@ -1,13 +1,14 @@
 <p align="center">
   <h1 align="center">aemeath-js</h1>
-  <p align="center">A lightweight, modular, and type-safe frontend logging & monitoring SDK with plugin architecture.</p>
+  <p align="center">A pure frontend logging & monitoring SDK. Your backend just stores the data — we handle the rest.</p>
 </p>
 
 <p align="center">
-  <a href="https://github.com/TieriaSail/aemeath-js"><img src="https://img.shields.io/badge/version-1.1.0-brightgreen.svg?style=flat-square" alt="version"></a>
+  <a href="https://www.npmjs.com/package/aemeath-js"><img src="https://img.shields.io/npm/v/aemeath-js.svg?style=flat-square" alt="npm version"></a>
+  <a href="https://www.npmjs.com/package/aemeath-js"><img src="https://img.shields.io/npm/dm/aemeath-js.svg?style=flat-square" alt="npm downloads"></a>
+  <a href="https://img.shields.io/bundlephobia/minzip/aemeath-js"><img src="https://img.shields.io/bundlephobia/minzip/aemeath-js?style=flat-square&label=minzip" alt="bundle size"></a>
   <a href="https://www.typescriptlang.org/"><img src="https://img.shields.io/badge/TypeScript-5.0+-blue.svg?style=flat-square" alt="TypeScript"></a>
-  <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green.svg?style=flat-square" alt="license"></a>
-  <a href="https://github.com/TieriaSail/aemeath-js"><img src="https://img.shields.io/badge/core_size-~2KB-orange.svg?style=flat-square" alt="core size"></a>
+  <a href="./LICENSE"><img src="https://img.shields.io/npm/l/aemeath-js.svg?style=flat-square" alt="license"></a>
 </p>
 
 <p align="center">
@@ -18,15 +19,13 @@
 
 ## Why aemeath-js?
 
-Most frontend logging libraries are either too heavy (bundling everything) or too simple (just `console.log` wrappers). **aemeath-js** is different:
+Most frontend monitoring solutions are SaaS platforms — your data lives on their servers. **aemeath-js** takes a different approach: it's a **pure frontend library** that handles error tracking, performance monitoring, and log management entirely on the client side. Your backend only needs a simple API to store the data.
 
-- **🪶 Tiny core** — Only **2KB** for the core. Add plugins as you need.
-- **🌲 Tree-shakable** — Only the code you use gets bundled.
-- **🔌 Plugin architecture** — Error capture, upload, performance, network monitoring — all optional plugins.
-- **🛡️ Production-ready** — Built-in safeguards, retry queues, and crash recovery.
+- **🌲 Tree-shakable** — Import what you need. Unused code is never bundled.
+- **🔓 Data ownership** — All data flows through your own `onUpload` callback. No third-party servers.
 - **🌐 Framework agnostic** — Works with React, Vue, vanilla JS, jQuery, or any framework.
-- **🔧 Build tool support** — Vite, Webpack 4+, Rsbuild — first-class plugins for each.
-- **📦 Zero dependencies** — Core has no runtime dependencies.
+- **🔧 Build tool support** — Vite, Webpack 4+, Rsbuild — first-class support for each.
+- **📦 Zero dependencies** — No runtime dependencies.
 
 ## Installation
 
@@ -46,14 +45,11 @@ pnpm add aemeath-js
 
 ## Quick Start
 
-### Singleton (Recommended)
-
 ```typescript
 // Initialize once (e.g. in main.ts)
 import { initAemeath } from 'aemeath-js';
 
 initAemeath({
-  errorCapture: true,
   upload: async (log) => {
     const res = await fetch('/api/logs', {
       method: 'POST',
@@ -81,20 +77,25 @@ logger.error('Something went wrong', error);
 logger.updateContext({ userId: '67890' });
 ```
 
-### Manual Setup (Advanced)
+**What's included by default?** `initAemeath()` automatically enables the following plugins. No extra `.use()` needed:
 
-```typescript
-import { AemeathLogger, ErrorCapturePlugin, UploadPlugin } from 'aemeath-js';
+| Plugin | Default | How to disable |
+|--------|---------|----------------|
+| `ErrorCapturePlugin` | ✅ Enabled | `errorCapture: false` |
+| `SafeGuardPlugin` | ✅ Enabled | `safeGuard: { enabled: false }` |
+| `NetworkPlugin` | ✅ Enabled | `network: { enabled: false }` |
+| `UploadPlugin` | When `upload` is provided | Don't pass `upload` |
+| `EarlyErrorCapturePlugin` | When build plugin is configured | — |
 
-const logger = new AemeathLogger();
-logger.use(new ErrorCapturePlugin());
-logger.use(new UploadPlugin({
-  onUpload: async (log) => {
-    await fetch('/api/logs', { method: 'POST', body: JSON.stringify(log) });
-    return { success: true };
-  },
-}));
-```
+> 💡 **Need more capabilities?** You can still `.use()` additional plugins on the singleton at any time. Duplicate `.use()` calls are safely ignored — if a plugin is already installed, it won't be added again.
+>
+> ```typescript
+> import { getAemeath } from 'aemeath-js';
+> import { PerformancePlugin } from 'aemeath-js';
+>
+> const logger = getAemeath();
+> logger.use(new PerformancePlugin({ monitorWebVitals: true }));
+> ```
 
 ### Browser (No Build Tools)
 
@@ -138,7 +139,7 @@ logger.use(new PerformancePlugin({
 
 ## Framework Integrations
 
-The core is **framework-agnostic**. Optional integrations are provided for popular frameworks:
+> ⚠️ **Important:** Always call `initAemeath()` first in your app entry (e.g. `main.ts`). The framework integrations below do **not** replace initialization — they simply provide convenient ways to access the same singleton instance within your components.
 
 | Framework | Import Path | Key Exports |
 |-----------|-------------|-------------|
@@ -150,6 +151,16 @@ The core is **framework-agnostic**. Optional integrations are provided for popul
 <summary><b>React Example</b></summary>
 
 ```tsx
+// main.tsx — Step 1: Initialize (same as Quick Start)
+import { initAemeath } from 'aemeath-js';
+
+initAemeath({
+  upload: async (log) => { /* ... */ },
+});
+```
+
+```tsx
+// App.tsx — Step 2: Use framework integration
 import { AemeathErrorBoundary, useAemeath } from 'aemeath-js/react';
 
 function App() {
@@ -167,6 +178,7 @@ function App() {
   );
 }
 
+// useAemeath() returns the same instance created by initAemeath()
 function MyComponent() {
   const logger = useAemeath();
   logger.info('Component mounted');
@@ -179,8 +191,14 @@ function MyComponent() {
 <summary><b>Vue 3 Example</b></summary>
 
 ```ts
+// main.ts — Step 1: Initialize (same as Quick Start)
 import { createApp } from 'vue';
-import { createAemeathPlugin, useAemeath } from 'aemeath-js/vue';
+import { initAemeath } from 'aemeath-js';
+import { createAemeathPlugin } from 'aemeath-js/vue';
+
+initAemeath({
+  upload: async (log) => { /* ... */ },
+});
 
 const app = createApp(App);
 app.use(createAemeathPlugin({ captureWarnings: true }));
@@ -188,6 +206,7 @@ app.mount('#app');
 ```
 
 ```vue
+<!-- MyComponent.vue — Step 2: useAemeath() returns the same singleton -->
 <script setup>
 import { inject } from 'vue';
 import { useAemeath } from 'aemeath-js/vue';

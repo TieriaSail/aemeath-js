@@ -92,8 +92,6 @@ logger.error('错误信息');
 npm install aemeath-js
 ```
 
-#### 方式一：单例模式（推荐）⭐
-
 **初始化一次，全局使用**
 
 ```typescript
@@ -101,7 +99,6 @@ npm install aemeath-js
 import { initAemeath } from 'aemeath-js';
 
 initAemeath({
-  errorCapture: true,
   upload: async (log) => {
     await fetch('/api/logs', {
       method: 'POST',
@@ -128,37 +125,22 @@ logger.info('Hello World'); // context 自动附加
 logger.updateContext({ userId: '67890' });
 ```
 
-✅ 优点：
-- 初始化一次，全局使用
-- 按需配置，不强制捆绑
-- 最简单
+**默认已启用哪些插件？** `initAemeath()` 会自动启用以下插件：
 
----
+| 插件 | 默认状态 | 如何关闭 |
+|------|---------|---------|
+| `ErrorCapturePlugin` | ✅ 默认启用 | `errorCapture: false` |
+| `SafeGuardPlugin` | ✅ 默认启用 | `safeGuard: { enabled: false }` |
+| `NetworkPlugin` | ✅ 默认启用 | `network: { enabled: false }` |
+| `UploadPlugin` | 传入 `upload` 时启用 | 不传 `upload` 即可 |
+| `EarlyErrorCapturePlugin` | 配置了构建插件时自动启用 | — |
 
-#### 方式二：手动组装（完全自定义）
-
-**自己组装，完全控制**
-
-```typescript
-import { AemeathLogger, ErrorCapturePlugin, UploadPlugin } from 'aemeath-js';
-
-const logger = new AemeathLogger();
-
-// 只需要错误捕获？只加这个
-logger.use(new ErrorCapturePlugin());
-
-// 需要上报？再加这个
-logger.use(new UploadPlugin({
-  onUpload: async (log) => {
-    await fetch('/api/logs', { method: 'POST', body: JSON.stringify(log) });
-    return { success: true };
-  },
-}));
-```
-
-✅ 优点：
-- 完全自定义
-- 按需加载，体积最小
+> 💡 **需要更多能力？** 你可以随时通过 `.use()` 追加插件。重复调用是安全的，已安装的插件不会被重复添加。
+>
+> ```typescript
+> const logger = getAemeath();
+> logger.use(new PerformancePlugin({ monitorWebVitals: true }));
+> ```
 
 ---
 
@@ -374,15 +356,19 @@ initAemeath({
 
 ## 🌐 框架集成（可选）
 
-核心库与框架无关，可在任何 JavaScript 环境中使用。针对特定框架提供了可选的集成包。
+> ⚠️ **重要：** 无论使用哪个框架，都需要先调用 `initAemeath()` 进行初始化。下面的框架集成**不是**替代初始化——`useAemeath()` 返回的就是你已经创建的那个单例实例。
 
 ### React
 
 ```tsx
-import { initAemeath } from 'aemeath-js/singleton';
-import { AemeathErrorBoundary, useAemeath } from 'aemeath-js/react';
-
+// main.tsx — 第一步：初始化（和上面一样）
+import { initAemeath } from 'aemeath-js';
 initAemeath({ upload: async (log) => { /* ... */ } });
+```
+
+```tsx
+// App.tsx — 第二步：使用框架集成
+import { AemeathErrorBoundary, useAemeath } from 'aemeath-js/react';
 
 function App() {
   return (
@@ -392,6 +378,7 @@ function App() {
   );
 }
 
+// useAemeath() 返回的就是 initAemeath() 创建的同一个实例
 function MyComponent() {
   const logger = useAemeath();
   logger.info('组件已挂载');
@@ -402,9 +389,10 @@ function MyComponent() {
 ### Vue 3
 
 ```typescript
+// main.ts — 第一步：初始化（和上面一样）
 import { createApp } from 'vue';
-import { initAemeath } from 'aemeath-js/singleton';
-import { createAemeathPlugin, useAemeath } from 'aemeath-js/vue';
+import { initAemeath } from 'aemeath-js';
+import { createAemeathPlugin } from 'aemeath-js/vue';
 
 initAemeath({ upload: async (log) => { /* ... */ } });
 
@@ -414,6 +402,7 @@ app.mount('#app');
 ```
 
 ```vue
+<!-- MyComponent.vue — useAemeath() 返回的是同一个单例 -->
 <script setup>
 import { inject } from 'vue';
 import { useAemeath } from 'aemeath-js/vue';
@@ -428,7 +417,7 @@ logger.info('组件初始化');
 ```javascript
 import { initAemeath, getAemeath } from 'aemeath-js';
 
-initAemeath({ errorCapture: true });
+initAemeath();
 
 const logger = getAemeath();
 logger.info('页面加载完成');
@@ -446,23 +435,22 @@ $('#btn').click(() => logger.info('按钮被点击'));
 ### 开发环境：只捕获错误
 
 ```typescript
-initAemeath({
-  errorCapture: true,
-});
-// 体积：3KB
+initAemeath({});
+// 错误捕获、安全保护、网络监控默认启用
+// 体积：~8KB
 ```
 
 ### 生产环境：完整配置
 
 ```typescript
 initAemeath({
-  errorCapture: true,
   upload: async (log) => {
     await fetch('/api/logs', { method: 'POST', body: JSON.stringify(log) });
     return { success: true };
   },
 });
-// 体积：8KB
+// 全部默认插件 + 上报插件
+// 体积：~13KB
 ```
 
 ---

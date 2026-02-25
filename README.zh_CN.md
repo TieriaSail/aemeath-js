@@ -1,13 +1,14 @@
 <p align="center">
   <h1 align="center">aemeath-js</h1>
-  <p align="center">轻量级、模块化、类型安全的前端日志 & 监控 SDK，基于插件架构。</p>
+  <p align="center">纯前端日志 & 监控 SDK。你的后端只需存储数据，其余的交给我们。</p>
 </p>
 
 <p align="center">
-  <a href="https://github.com/TieriaSail/aemeath-js"><img src="https://img.shields.io/badge/version-1.1.0-brightgreen.svg?style=flat-square" alt="version"></a>
+  <a href="https://www.npmjs.com/package/aemeath-js"><img src="https://img.shields.io/npm/v/aemeath-js.svg?style=flat-square" alt="npm version"></a>
+  <a href="https://www.npmjs.com/package/aemeath-js"><img src="https://img.shields.io/npm/dm/aemeath-js.svg?style=flat-square" alt="npm downloads"></a>
+  <a href="https://img.shields.io/bundlephobia/minzip/aemeath-js"><img src="https://img.shields.io/bundlephobia/minzip/aemeath-js?style=flat-square&label=minzip" alt="bundle size"></a>
   <a href="https://www.typescriptlang.org/"><img src="https://img.shields.io/badge/TypeScript-5.0+-blue.svg?style=flat-square" alt="TypeScript"></a>
-  <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green.svg?style=flat-square" alt="license"></a>
-  <a href="https://github.com/TieriaSail/aemeath-js"><img src="https://img.shields.io/badge/core_size-~2KB-orange.svg?style=flat-square" alt="core size"></a>
+  <a href="./LICENSE"><img src="https://img.shields.io/npm/l/aemeath-js.svg?style=flat-square" alt="license"></a>
 </p>
 
 <p align="center">
@@ -18,15 +19,13 @@
 
 ## 为什么选择 aemeath-js？
 
-大多数前端日志库要么太重（捆绑所有功能），要么太简单（只是 `console.log` 的封装）。**aemeath-js** 不一样：
+大多数前端监控方案都是 SaaS 平台——你的数据存在别人的服务器上。**aemeath-js** 不一样：它是一个**纯前端库**，在客户端完成错误追踪、性能监控和日志管理。你的后端只需要一个简单的接口来存储数据。
 
-- **🪶 极小核心** — 核心仅 **2KB**，按需加载插件
-- **🌲 Tree-shakable** — 只有你使用的代码才会被打包
-- **🔌 插件架构** — 错误捕获、上报、性能监控、网络监控，全部是可选插件
-- **🛡️ 生产可用** — 内置安全保护、重试队列、崩溃恢复
+- **🌲 Tree-shakable** — 按需引入，未使用的代码不会被打包
+- **🔓 数据自控** — 所有数据通过你自己的 `onUpload` 回调流转，不经过任何第三方服务器
 - **🌐 框架无关** — 支持 React、Vue、原生 JS、jQuery 或任何框架
 - **🔧 构建工具支持** — Vite、Webpack 4+、Rsbuild 一等公民支持
-- **📦 零依赖** — 核心无运行时依赖
+- **📦 零依赖** — 无运行时依赖
 
 ## 安装
 
@@ -46,14 +45,11 @@ pnpm add aemeath-js
 
 ## 快速开始
 
-### 方式一：单例模式（推荐）
-
 ```typescript
 // 初始化一次（如在 main.ts 中）
 import { initAemeath } from 'aemeath-js';
 
 initAemeath({
-  errorCapture: true,
   upload: async (log) => {
     const res = await fetch('/api/logs', {
       method: 'POST',
@@ -81,22 +77,27 @@ logger.error('出错了', error);
 logger.updateContext({ userId: '67890' });
 ```
 
-### 方式二：手动组装（高级）
+**默认已启用哪些插件？** `initAemeath()` 会自动启用以下插件，无需额外 `.use()`：
 
-```typescript
-import { AemeathLogger, ErrorCapturePlugin, UploadPlugin } from 'aemeath-js';
+| 插件 | 默认状态 | 如何关闭 |
+|------|---------|---------|
+| `ErrorCapturePlugin` | ✅ 默认启用 | `errorCapture: false` |
+| `SafeGuardPlugin` | ✅ 默认启用 | `safeGuard: { enabled: false }` |
+| `NetworkPlugin` | ✅ 默认启用 | `network: { enabled: false }` |
+| `UploadPlugin` | 传入 `upload` 时启用 | 不传 `upload` 即可 |
+| `EarlyErrorCapturePlugin` | 配置了构建插件时自动启用 | — |
 
-const logger = new AemeathLogger();
-logger.use(new ErrorCapturePlugin());
-logger.use(new UploadPlugin({
-  onUpload: async (log) => {
-    await fetch('/api/logs', { method: 'POST', body: JSON.stringify(log) });
-    return { success: true };
-  },
-}));
-```
+> 💡 **需要更多能力？** 你可以随时通过 `.use()` 追加插件。重复调用 `.use()` 是安全的——已安装的插件不会被重复添加。
+>
+> ```typescript
+> import { getAemeath } from 'aemeath-js';
+> import { PerformancePlugin } from 'aemeath-js';
+>
+> const logger = getAemeath();
+> logger.use(new PerformancePlugin({ monitorWebVitals: true }));
+> ```
 
-### 方式三：浏览器直接使用（无需构建工具）
+### 浏览器直接使用（无需构建工具）
 
 适用于 jQuery、原生 JS、静态 HTML 页面 — 无需 npm：
 
@@ -138,7 +139,7 @@ logger.use(new PerformancePlugin({
 
 ## 框架集成
 
-核心库**与框架无关**。针对主流框架提供了可选的集成包：
+> ⚠️ **重要：** 无论使用哪个框架，都需要先在应用入口（如 `main.ts`）调用 `initAemeath()` 进行初始化。下面的框架集成**不是**替代初始化，而是在组件中便捷地获取同一个单例实例。
 
 | 框架 | 导入路径 | 主要导出 |
 |------|----------|----------|
@@ -150,6 +151,16 @@ logger.use(new PerformancePlugin({
 <summary><b>React 示例</b></summary>
 
 ```tsx
+// main.tsx — 第一步：初始化（和快速开始一样）
+import { initAemeath } from 'aemeath-js';
+
+initAemeath({
+  upload: async (log) => { /* ... */ },
+});
+```
+
+```tsx
+// App.tsx — 第二步：使用框架集成
 import { AemeathErrorBoundary, useAemeath } from 'aemeath-js/react';
 
 function App() {
@@ -167,6 +178,7 @@ function App() {
   );
 }
 
+// useAemeath() 返回的就是 initAemeath() 创建的同一个实例
 function MyComponent() {
   const logger = useAemeath();
   logger.info('组件已挂载');
@@ -179,8 +191,14 @@ function MyComponent() {
 <summary><b>Vue 3 示例</b></summary>
 
 ```ts
+// main.ts — 第一步：初始化（和快速开始一样）
 import { createApp } from 'vue';
-import { createAemeathPlugin, useAemeath } from 'aemeath-js/vue';
+import { initAemeath } from 'aemeath-js';
+import { createAemeathPlugin } from 'aemeath-js/vue';
+
+initAemeath({
+  upload: async (log) => { /* ... */ },
+});
 
 const app = createApp(App);
 app.use(createAemeathPlugin({ captureWarnings: true }));
@@ -188,6 +206,7 @@ app.mount('#app');
 ```
 
 ```vue
+<!-- MyComponent.vue — 第二步：useAemeath() 返回的是同一个单例 -->
 <script setup>
 import { inject } from 'vue';
 import { useAemeath } from 'aemeath-js/vue';

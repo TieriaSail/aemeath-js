@@ -91,8 +91,6 @@ logger.error('Error message');
 npm install aemeath-js
 ```
 
-#### Option 1: Singleton (Recommended) ⭐
-
 **Initialize once, use everywhere.**
 
 ```typescript
@@ -100,7 +98,6 @@ npm install aemeath-js
 import { initAemeath } from 'aemeath-js';
 
 initAemeath({
-  errorCapture: true,
   upload: async (log) => {
     await fetch('/api/logs', {
       method: 'POST',
@@ -127,37 +124,22 @@ logger.info('Hello World'); // context is automatically attached
 logger.updateContext({ userId: '67890' });
 ```
 
-✅ Pros:
-- Initialize once, use everywhere
-- On-demand configuration, no forced bundling
-- Simplest approach
+**What's included by default?** `initAemeath()` automatically enables these plugins:
 
----
+| Plugin | Default | How to disable |
+|--------|---------|----------------|
+| `ErrorCapturePlugin` | ✅ Enabled | `errorCapture: false` |
+| `SafeGuardPlugin` | ✅ Enabled | `safeGuard: { enabled: false }` |
+| `NetworkPlugin` | ✅ Enabled | `network: { enabled: false }` |
+| `UploadPlugin` | When `upload` is provided | Don't pass `upload` |
+| `EarlyErrorCapturePlugin` | When build plugin is configured | — |
 
-#### Option 2: Manual Setup (Full Control)
-
-**Assemble yourself, full control.**
-
-```typescript
-import { AemeathLogger, ErrorCapturePlugin, UploadPlugin } from 'aemeath-js';
-
-const logger = new AemeathLogger();
-
-// Only need error capture? Just add this
-logger.use(new ErrorCapturePlugin());
-
-// Need upload? Add this too
-logger.use(new UploadPlugin({
-  onUpload: async (log) => {
-    await fetch('/api/logs', { method: 'POST', body: JSON.stringify(log) });
-    return { success: true };
-  },
-}));
-```
-
-✅ Pros:
-- Fully customizable
-- On-demand loading, smallest bundle size
+> 💡 **Need more capabilities?** You can `.use()` additional plugins at any time. Duplicate `.use()` calls are safely ignored.
+>
+> ```typescript
+> const logger = getAemeath();
+> logger.use(new PerformancePlugin({ monitorWebVitals: true }));
+> ```
 
 ---
 
@@ -373,15 +355,19 @@ initAemeath({
 
 ## 🌐 Framework Integrations (Optional)
 
-The core library is framework-agnostic. Optional integrations are provided for popular frameworks.
+> ⚠️ **Important:** Always call `initAemeath()` first in your app entry. The framework integrations below do **not** replace initialization — `useAemeath()` simply returns the same singleton instance you already created.
 
 ### React
 
 ```tsx
-import { initAemeath } from 'aemeath-js/singleton';
-import { AemeathErrorBoundary, useAemeath } from 'aemeath-js/react';
-
+// main.tsx — Step 1: Initialize (same as above)
+import { initAemeath } from 'aemeath-js';
 initAemeath({ upload: async (log) => { /* ... */ } });
+```
+
+```tsx
+// App.tsx — Step 2: Use framework integration
+import { AemeathErrorBoundary, useAemeath } from 'aemeath-js/react';
 
 function App() {
   return (
@@ -391,6 +377,7 @@ function App() {
   );
 }
 
+// useAemeath() returns the same instance created by initAemeath()
 function MyComponent() {
   const logger = useAemeath();
   logger.info('Component mounted');
@@ -401,9 +388,10 @@ function MyComponent() {
 ### Vue 3
 
 ```typescript
+// main.ts — Step 1: Initialize (same as above)
 import { createApp } from 'vue';
-import { initAemeath } from 'aemeath-js/singleton';
-import { createAemeathPlugin, useAemeath } from 'aemeath-js/vue';
+import { initAemeath } from 'aemeath-js';
+import { createAemeathPlugin } from 'aemeath-js/vue';
 
 initAemeath({ upload: async (log) => { /* ... */ } });
 
@@ -413,6 +401,7 @@ app.mount('#app');
 ```
 
 ```vue
+<!-- MyComponent.vue — useAemeath() returns the same singleton -->
 <script setup>
 import { inject } from 'vue';
 import { useAemeath } from 'aemeath-js/vue';
@@ -427,7 +416,7 @@ logger.info('Component setup');
 ```javascript
 import { initAemeath, getAemeath } from 'aemeath-js';
 
-initAemeath({ errorCapture: true });
+initAemeath();
 
 const logger = getAemeath();
 logger.info('Page loaded');
@@ -445,23 +434,22 @@ $('#btn').click(() => logger.info('Clicked'));
 ### Development: Error Capture Only
 
 ```typescript
-initAemeath({
-  errorCapture: true,
-});
-// Size: 3KB
+initAemeath({});
+// Error capture, safe guard, and network monitoring are enabled by default
+// Size: ~8KB
 ```
 
 ### Production: Full Setup
 
 ```typescript
 initAemeath({
-  errorCapture: true,
   upload: async (log) => {
     await fetch('/api/logs', { method: 'POST', body: JSON.stringify(log) });
     return { success: true };
   },
 });
-// Size: 8KB
+// All defaults + upload plugin
+// Size: ~13KB
 ```
 
 ---
