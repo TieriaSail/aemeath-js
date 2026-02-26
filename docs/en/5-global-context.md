@@ -59,10 +59,10 @@ logger.info('User clicked button');
 const logger = getAemeath();
 
 // Update userId after login
-logger.updateContext({ userId: '12345' });
+logger.updateContext('userId', '12345');
 
 // Update other info
-logger.updateContext({ username: 'John' });
+logger.updateContext('username', 'John');
 
 // Current context: { userId: '12345', username: 'John', ...existing }
 ```
@@ -111,12 +111,10 @@ const logger = getAemeath();
 
 // User login
 function onUserLogin(user) {
-  logger.updateContext({
-    userId: user.id,
-    username: user.name,
-    email: user.email,
-    role: user.role,
-  });
+  logger.updateContext('userId', user.id);
+  logger.updateContext('username', user.name);
+  logger.updateContext('email', user.email);
+  logger.updateContext('role', user.role);
 
   logger.info('User logged in');
 }
@@ -161,10 +159,11 @@ function initApp() {
 
   initAemeath({
     upload: async (log) => {
-      await fetch('/api/logs', {
+      const res = await fetch('/api/logs', {
         method: 'POST',
         body: JSON.stringify(log),
       });
+      return { success: res.ok };
     },
     context: {
       // App info
@@ -189,17 +188,15 @@ const logger = getAemeath();
 
 // Update context when switching tenant
 function switchTenant(tenantId: string) {
-  logger.updateContext({
-    tenantId,
-    tenantName: getTenantName(tenantId),
-  });
+  logger.updateContext('tenantId', tenantId);
+  logger.updateContext('tenantName', getTenantName(tenantId));
 
   logger.info('Switched tenant');
 }
 
 // All subsequent logs will include tenantId
 logger.info('User action'); // tenantId automatically attached
-logger.error('Error occurred', error); // tenantId automatically attached
+logger.error('Error occurred', { error }); // tenantId automatically attached
 ```
 
 ### Scenario 4: A/B Testing
@@ -213,24 +210,21 @@ const logger = getAemeath();
 function assignABTest(userId: string) {
   const group = Math.random() > 0.5 ? 'A' : 'B';
 
-  logger.updateContext({
-    abTestGroup: group,
-    abTestId: 'exp-001',
-  });
+  logger.updateContext('abTestGroup', group);
+  logger.updateContext('abTestId', 'exp-001');
 
-  logger.info('AB test assigned', { group });
+  logger.info('AB test assigned', { context: { group } });
 }
 
 // All subsequent logs carry A/B test info
 logger.info('Button clicked'); // abTestGroup, abTestId automatically attached
 ```
 
-## context vs extra
+## Global Context vs Per-Log Data
 
-### context (Global Context)
+### Global Context (Persistent)
 
-- **Global, persistent**
-- Configure once, automatically attached to all logs
+- **Global, persistent** — configured once, automatically attached to all logs
 - Suitable for user, device, app identification info
 
 ```typescript
@@ -238,20 +232,18 @@ logger.setContext({ userId: '12345', platform: 'iOS' });
 
 logger.info('Action 1'); // context automatically attached
 logger.info('Action 2'); // context automatically attached
-logger.error('Error', error); // context automatically attached
+logger.error('Error', { error }); // context automatically attached
 ```
 
-### extra (Temporary Data)
+### Per-Log Data (Temporary)
 
-- **Single-use, temporary**
-- Manually passed each time
-- Suitable for specific event details
+- **Single-use** — passed via `LogOptions` each time
+- Use `tags` for classification/filtering, `context` for detailed data
 
 ```typescript
 logger.info('Button clicked', {
-  buttonId: 'submit',
-  clickCount: 1,
-  timestamp: Date.now(),
+  tags: { buttonId: 'submit' },
+  context: { clickCount: 1, timestamp: Date.now() },
 });
 ```
 
@@ -265,24 +257,22 @@ logger.setContext({
   appVersion: '1.0.0',
 });
 
-// Pass temporary data when logging
+// Pass per-log data when logging
 logger.info('Button clicked', {
-  buttonId: 'submit',
-  clickCount: 1,
+  tags: { buttonId: 'submit' },
+  context: { clickCount: 1 },
 });
 
 // Output:
 // {
 //   level: 'info',
 //   message: 'Button clicked',
-//   context: {           // Global
-//     userId: '12345',
-//     platform: 'iOS',
-//     appVersion: '1.0.0'
-//   },
-//   extra: {             // Specific to this log
-//     buttonId: 'submit',
-//     clickCount: 1
+//   tags: { buttonId: 'submit' },
+//   context: {
+//     userId: '12345',       // from global context
+//     platform: 'iOS',       // from global context
+//     appVersion: '1.0.0',   // from global context
+//     clickCount: 1           // from per-log context
 //   }
 // }
 ```
@@ -313,11 +303,9 @@ import { getAemeath } from 'aemeath-js';
 
 function onLogin(user) {
   const logger = getAemeath();
-  logger.updateContext({
-    userId: user.id,
-    username: user.name,
-    role: user.role,
-  });
+  logger.updateContext('userId', user.id);
+  logger.updateContext('username', user.name);
+  logger.updateContext('role', user.role);
 }
 ```
 
@@ -408,8 +396,9 @@ initAemeath({
   upload: async (log) => {
     await fetch('/api/logs', {
       method: 'POST',
-      body: JSON.stringify(log)
+      body: JSON.stringify(log),
     });
+    return { success: true };
   },
   context: {
     appName: 'My App',
@@ -425,11 +414,9 @@ export const logger = getAemeath();
 import { logger } from './logger-config';
 
 export function onLogin(user) {
-  logger.updateContext({
-    userId: user.id,
-    username: user.name,
-    role: user.role
-  });
+  logger.updateContext('userId', user.id);
+  logger.updateContext('username', user.name);
+  logger.updateContext('role', user.role);
 
   logger.info('User logged in successfully');
 }
@@ -458,7 +445,7 @@ export function HomePage() {
   const handleClick = () => {
     // context automatically attached
     logger.info('Home page button clicked', {
-      buttonId: 'hero-cta'
+      tags: { buttonId: 'hero-cta' },
     });
   };
 
@@ -476,13 +463,13 @@ Completely replace global context.
 logger.setContext({ userId: '12345' });
 ```
 
-### updateContext(context)
+### updateContext(key, value)
 
-Merge update global context.
+Update a single key in global context. Existing keys are preserved.
 
 ```typescript
-logger.updateContext({ userId: '12345' });
-logger.updateContext({ username: 'John' }); // userId retained
+logger.updateContext('userId', '12345');
+logger.updateContext('username', 'John'); // userId retained
 ```
 
 ### getContext()

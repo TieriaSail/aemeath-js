@@ -4,7 +4,7 @@
  * 高级用法：返回值控制、错误处理、监控
  */
 
-import { Logger, UploadPlugin } from 'aemeath-js';
+import { AemeathLogger, UploadPlugin } from 'aemeath-js';
 import type { LogEntry, UploadResult } from 'aemeath-js';
 
 // 创建一个完整的上传函数（返回 UploadResult）
@@ -70,7 +70,7 @@ async function uploadLog(log: LogEntry): Promise<UploadResult> {
   }
 }
 
-const logger = new Logger();
+const logger = new AemeathLogger();
 
 const uploadPlugin = new UploadPlugin({
   onUpload: uploadLog,

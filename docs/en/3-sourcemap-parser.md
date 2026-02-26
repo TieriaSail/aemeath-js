@@ -72,6 +72,12 @@ interface SourceMapParserConfig {
   enableCache?: boolean;
 
   /**
+   * Max cache size (LRU eviction)
+   * @default 50
+   */
+  maxCacheSize?: number;
+
+  /**
    * Enable debug mode (output detailed logs)
    * @default false
    */
@@ -101,6 +107,7 @@ interface ParsedStackFrame {
     fileName: string;
     line: number;
     column: number;
+    functionName?: string;
   };
   original?: {
     // Original position (after parsing)

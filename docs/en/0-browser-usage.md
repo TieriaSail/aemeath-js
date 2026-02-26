@@ -76,7 +76,7 @@ logger.warn('Warning message');
 logger.error('Error message');
 
 // With additional data
-logger.info('User action', { userId: '123', action: 'click' });
+logger.info('User action', { context: { userId: '123', action: 'click' } });
 ```
 
 ---
@@ -104,15 +104,14 @@ logger.info('User action', { userId: '123', action: 'click' });
   
   // jQuery event binding
   $('#myBtn').click(function() {
-    logger.info('Button clicked', { buttonId: this.id });
+    logger.info('Button clicked', { context: { buttonId: this.id } });
   });
   
   // Global AJAX error capture
   $(document).ajaxError(function(event, jqxhr, settings, error) {
     logger.error('AJAX request failed', {
-      url: settings.url,
-      status: jqxhr.status,
-      error: error
+      error: error instanceof Error ? error : new Error(String(error)),
+      context: { url: settings.url, status: jqxhr.status }
     });
   });
 </script>

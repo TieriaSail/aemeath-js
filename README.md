@@ -23,9 +23,8 @@ Most frontend monitoring solutions require coordination between frontend, backen
 
 - **🌲 Tree-shakable** — Import what you need. Unused code is never bundled.
 - **🔓 Frontend-driven** — The browser handles the heavy lifting. Your backend just records and processes data.
-- **🌐 Framework agnostic** — Works with React, Vue, vanilla JS, jQuery, or any framework.
-- **🔧 Build tool support** — Vite, Webpack 4+, Rsbuild — first-class support for each.
-- **📦 Zero dependencies** — No runtime dependencies.
+- **🌐 Framework support** — Works with React, Vue, vanilla JS, jQuery, etc.
+- **🔧 Build tool support** — Supports Vite, Webpack 4+, Rsbuild.
 
 ## Installation
 
@@ -73,8 +72,8 @@ import { getAemeath } from 'aemeath-js';
 
 const logger = getAemeath();
 logger.info('User logged in');
-logger.error('Something went wrong', error);
-logger.updateContext({ userId: '67890' });
+logger.error('Something went wrong', { error });
+logger.updateContext('userId', '67890');
 ```
 
 **What's included by default?** `initAemeath()` automatically enables the following plugins. No extra `.use()` needed:
@@ -155,7 +154,7 @@ logger.use(new PerformancePlugin({
 import { initAemeath } from 'aemeath-js';
 
 initAemeath({
-  upload: async (log) => { /* ... */ },
+  upload: async (log) => { /* ... */ return { success: true }; },
 });
 ```
 
@@ -197,7 +196,7 @@ import { initAemeath } from 'aemeath-js';
 import { createAemeathPlugin } from 'aemeath-js/vue';
 
 initAemeath({
-  upload: async (log) => { /* ... */ },
+  upload: async (log) => { /* ... */ return { success: true }; },
 });
 
 const app = createApp(App);
@@ -404,4 +403,4 @@ Issues and feature requests are welcome! Feel free to [open an issue](https://gi
 
 ## License
 
-[MIT](./LICENSE) © AemeathJs Team
+[MIT](./LICENSE) © TieriaSail

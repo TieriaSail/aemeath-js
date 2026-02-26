@@ -65,10 +65,10 @@ export default defineConfig({
 // ==================== 运行时配置 ====================
 
 // src/utils/logger.ts
-import { Logger } from 'aemeath-js';
+import { AemeathLogger } from 'aemeath-js';
 import { EarlyErrorCapturePlugin } from 'aemeath-js';
 
-const logger = new Logger();
+const logger = new AemeathLogger();
 
 // 添加运行时插件（提取早期错误）
 logger.use(

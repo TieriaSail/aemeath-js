@@ -68,7 +68,7 @@ export interface UploadPluginOptions {
    * @example
    * ```typescript
    * onUpload: async (log) => {
-   *   await fetch('https://api.example.com/logs', {
+   *   const res = await fetch('https://api.example.com/logs', {
    *     method: 'POST',
    *     headers: {
    *       'Authorization': `Bearer ${token}`,
@@ -76,6 +76,7 @@ export interface UploadPluginOptions {
    *     },
    *     body: JSON.stringify(log)
    *   });
+   *   return { success: res.ok };
    * }
    * ```
    */
@@ -97,7 +98,7 @@ export interface UploadPluginOptions {
    * getPriority: (log) => {
    *   if (log.level === 'error') return 100;
    *   if (log.level === 'warn') return 50;
-   *   if (log.extra?.urgent) return 80;
+   *   if (log.tags?.urgent) return 80;
    *   return 10;
    * }
    * ```

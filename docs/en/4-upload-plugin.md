@@ -36,30 +36,49 @@ You define log priority (number 1-100, higher = more priority)
 
 ## 🚀 Quick Start
 
-### Basic Usage
+### Singleton Pattern (Recommended)
+
+`initAemeath()` accepts an `upload` callback directly — no need to manually register `UploadPlugin`:
 
 ```typescript
-import { Logger, UploadPlugin } from 'aemeath-js';
+import { initAemeath, getAemeath } from 'aemeath-js';
 
-const logger = new Logger();
+initAemeath({
+  upload: async (log) => {
+    await fetch('/api/logs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(log),
+    });
+    return { success: true };
+  },
+});
+
+const logger = getAemeath();
+logger.error('Something went wrong', { error });
+```
+
+### Manual Assembly
+
+```typescript
+import { AemeathLogger, UploadPlugin } from 'aemeath-js';
+
+const logger = new AemeathLogger();
 
 logger.use(
   new UploadPlugin({
-    // Upload callback (required)
     onUpload: async (log) => {
       await fetch('/api/logs', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(log),
       });
+      return { success: true };
     },
   }),
 );
 
-// Use it
-logger.error('Something went wrong', error);
+logger.error('Something went wrong', { error });
 ```
 
 ### With Authentication
@@ -78,6 +97,7 @@ logger.use(
         },
         body: JSON.stringify(log),
       });
+      return { success: true };
     },
   }),
 );
@@ -89,10 +109,11 @@ logger.use(
 logger.use(
   new UploadPlugin({
     onUpload: async (log) => {
-      await fetch('/api/logs', {
+      const res = await fetch('/api/logs', {
         method: 'POST',
         body: JSON.stringify(log),
       });
+      return { success: res.ok };
     },
 
     // Priority callback
@@ -101,7 +122,7 @@ logger.use(
       if (log.level === 'error') return 100;
 
       // Urgent business logs
-      if (log.extra?.urgent) return 80;
+      if (log.tags?.urgent) return 80;
 
       // Warn logs: normal priority
       if (log.level === 'warn') return 50;
@@ -177,6 +198,7 @@ logger.use(
         method: 'POST',
         body: JSON.stringify(log),
       });
+      return { success: true };
     },
 
     // Priority callback (optional)
@@ -201,7 +223,7 @@ logger.use(
     },
 
     // Upload on page unload
-    uploadOnUnload: true,
+    saveOnUnload: true,
   }),
 );
 ```
@@ -210,7 +232,7 @@ logger.use(
 
 | Option                 | Type                               | Default                   | Description          |
 | ---------------------- | ---------------------------------- | ------------------------- | -------------------- |
-| `onUpload`             | `(log: LogEntry) => Promise<void>` | **Required**              | Upload callback      |
+| `onUpload`             | `(log: LogEntry) => Promise<UploadResult>` | **Required**              | Upload callback      |
 | `getPriority`          | `(log: LogEntry) => number`        | By level                  | Priority callback    |
 | `queue.maxSize`        | `number`                           | `100`                     | Max queue size       |
 | `queue.concurrency`    | `number`                           | `1`                       | Concurrent uploads   |
@@ -218,7 +240,7 @@ logger.use(
 | `queue.uploadInterval` | `number`                           | `30000`                   | Upload interval (ms) |
 | `cache.enabled`        | `boolean`                          | `true`                    | Enable cache         |
 | `cache.key`            | `string`                           | `__logger_upload_queue__` | Cache key            |
-| `uploadOnUnload`       | `boolean`                          | `true`                    | Upload on unload     |
+| `saveOnUnload`         | `boolean`                          | `true`                    | Save queue on unload |
 
 ---
 
@@ -231,8 +253,10 @@ logger.use(
 onUpload: async (log) => {
   try {
     await fetch('/api/logs', { body: JSON.stringify(log) });
+    return { success: true };
   } catch (error) {
-    logger.error('Upload failed', error); // This triggers upload again!
+    logger.error('Upload failed', { error }); // This triggers upload again!
+    return { success: false, shouldRetry: true };
   }
 };
 
@@ -240,8 +264,10 @@ onUpload: async (log) => {
 onUpload: async (log) => {
   try {
     await fetch('/api/logs', { body: JSON.stringify(log) });
+    return { success: true };
   } catch (error) {
     console.error('Upload failed:', error); // Safe
+    return { success: false, shouldRetry: true };
   }
 };
 ```
@@ -269,7 +295,7 @@ getPriority: (log) => {
 onUpload: async (log) => {
   let token = getAuthToken();
 
-  const response = await fetch('/api/logs', {
+  let response = await fetch('/api/logs', {
     headers: { Authorization: `Bearer ${token}` },
     body: JSON.stringify(log),
   });
@@ -277,11 +303,13 @@ onUpload: async (log) => {
   // If 401, refresh token and retry
   if (response.status === 401) {
     token = await refreshAuthToken();
-    await fetch('/api/logs', {
+    response = await fetch('/api/logs', {
       headers: { Authorization: `Bearer ${token}` },
       body: JSON.stringify(log),
     });
   }
+
+  return { success: response.ok };
 };
 ```
 

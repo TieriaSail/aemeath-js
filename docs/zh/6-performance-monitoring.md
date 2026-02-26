@@ -36,37 +36,34 @@
 
 ## 🚀 快速开始
 
-### 基础用法
+### 单例模式（推荐）
 
 ```typescript
-import { Logger, PerformancePlugin } from 'aemeath-js';
+import { initAemeath, getAemeath, PerformancePlugin } from 'aemeath-js';
 
-const logger = new Logger();
+initAemeath({
+  upload: async (log) => { /* ... */ return { success: true }; },
+});
 
-logger.use(
-  new PerformancePlugin({
-    monitorWebVitals: true, // 监控 Web Vitals
-    sampleRate: 1, // 100% 采样
-  }),
-);
-
-// 插件会自动记录性能指标
-```
-
-### 单例模式中使用
-
-```typescript
-import { initAemeath, getAemeath } from 'aemeath-js';
-import { PerformancePlugin } from 'aemeath-js';
-
-// 初始化 Logger
-initAemeath({ errorCapture: true });
-
-// 添加性能监控
 getAemeath().use(
   new PerformancePlugin({
     monitorWebVitals: true,
     sampleRate: 0.1, // 10% 采样率
+  }),
+);
+```
+
+### 手动组装
+
+```typescript
+import { AemeathLogger, PerformancePlugin } from 'aemeath-js';
+
+const logger = new AemeathLogger();
+
+logger.use(
+  new PerformancePlugin({
+    monitorWebVitals: true,
+    sampleRate: 1, // 100% 采样
   }),
 );
 ```
@@ -98,7 +95,7 @@ interface PerformancePluginOptions {
 
 ### 自定义性能测量 API
 
-安装 `PerformancePlugin` 后，Logger 会扩展以下方法：
+安装 `PerformancePlugin` 后，AemeathLogger 会扩展以下方法：
 
 #### `logger.startMark(name: string): void`
 
@@ -275,18 +272,18 @@ const duration = logger.measure(
 ### 推荐配置
 
 ```typescript
-import { Logger, PerformancePlugin, UploadPlugin } from 'aemeath-js';
+import { AemeathLogger, PerformancePlugin, UploadPlugin } from 'aemeath-js';
 
-const logger = new Logger();
+const logger = new AemeathLogger();
 
 // 1. 性能监控（10% 采样）
 logger.use(
   new PerformancePlugin({
-    monitorWebVitals: true, // 监控核心指标
-    monitorResources: false, // 生产环境不监控资源（避免过多日志）
-    monitorLongTasks: true, // 监控长任务
-    longTaskThreshold: 100, // 只记录 >100ms 的任务
-    sampleRate: 0.1, // 10% 采样率
+    monitorWebVitals: true,
+    monitorResources: false,
+    monitorLongTasks: true,
+    longTaskThreshold: 100,
+    sampleRate: 0.1,
   }),
 );
 
@@ -294,8 +291,7 @@ logger.use(
 logger.use(
   new UploadPlugin({
     onUpload: async (log) => {
-      // 只上传性能指标
-      if (log.extra?.metric || log.extra?.resource || log.extra?.task) {
+      if (log.tags?.category === 'performance') {
         await fetch('/api/metrics', {
           method: 'POST',
           body: JSON.stringify(log),
@@ -382,7 +378,7 @@ longTaskThreshold: 100; // 只记录 >100ms 的任务
 ```typescript
 // 只上传性能指标，不上传所有日志
 onUpload: async (log) => {
-  if (log.extra?.metric || log.extra?.resource || log.extra?.task) {
+  if (log.tags?.category === 'performance') {
     await uploadToServer(log);
     return { success: true };
   }
@@ -401,9 +397,9 @@ onUpload: async (log) => {
 ## 📝 完整示例
 
 ```typescript
-import { Logger, PerformancePlugin, UploadPlugin } from 'aemeath-js';
+import { AemeathLogger, PerformancePlugin, UploadPlugin } from 'aemeath-js';
 
-const logger = new Logger();
+const logger = new AemeathLogger();
 
 // 配置性能监控
 logger.use(
@@ -463,4 +459,4 @@ export function App() {
 
 ---
 
-**Made with ❤️ by AemeathJs Team**
+**Made with ❤️ by TieriaSail**

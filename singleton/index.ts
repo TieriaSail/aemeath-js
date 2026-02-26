@@ -46,16 +46,17 @@ export interface RouteMatchConfig {
  * // 基础配置
  * initAemeath({
  *   upload: async (log) => {
- *     await fetch('/api/logs', {
+ *     const res = await fetch('/api/logs', {
  *       method: 'POST',
  *       body: JSON.stringify(log)
  *     });
+ *     return { success: res.ok };
  *   }
  * });
  *
  * // 带路由过滤
  * initAemeath({
- *   upload: async (log) => { ... },
+ *   upload: async (log) => { /* ... */ return { success: true }; },
  *   routeMatch: {
  *     includeRoutes: ['/home', '/product', /^\/user\/.+/],
  *     excludeRoutes: ['/debug']
@@ -300,10 +301,11 @@ export interface AemeathInitOptions {
  *
  * initAemeath({
  *   upload: async (log) => {
- *     await fetch('/api/logs', {
+ *     const res = await fetch('/api/logs', {
  *       method: 'POST',
  *       body: JSON.stringify(log)
  *     });
+ *     return { success: res.ok };
  *   }
  * });
  *
@@ -407,8 +409,8 @@ export function initAemeath(options: AemeathInitOptions = {}): AemeathLogger {
  * import { getAemeath } from 'aemeath-js';
  *
  * const logger = getAemeath();
- * logger.info('User logged in', { userId: 123 });
- * logger.error('Payment failed', error);
+ * logger.info('User logged in', { context: { userId: 123 } });
+ * logger.error('Payment failed', { error });
  * ```
  */
 export function getAemeath(): AemeathLogger {

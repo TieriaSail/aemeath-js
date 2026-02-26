@@ -7,9 +7,9 @@
 **最简单的配置，3行代码**
 
 ```typescript
-import { Logger, ErrorCapturePlugin } from 'aemeath-js';
+import { AemeathLogger, ErrorCapturePlugin } from 'aemeath-js';
 
-const logger = new Logger();
+const logger = new AemeathLogger();
 logger.use(new ErrorCapturePlugin());
 ```
 

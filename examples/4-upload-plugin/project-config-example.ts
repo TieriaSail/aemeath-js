@@ -6,7 +6,7 @@
  */
 
 import {
-  Logger,
+  AemeathLogger,
   LogLevelEnum,
   UploadPlugin,
   ErrorCapturePlugin,
@@ -16,11 +16,7 @@ import type { LogEntry } from 'aemeath-js';
 
 // ==================== Create Logger ====================
 
-export const logger = new Logger({
-  minLevel:
-    process.env['NODE_ENV'] === 'production'
-      ? LogLevelEnum.WARN
-      : LogLevelEnum.DEBUG,
+export const logger = new AemeathLogger({
   enableConsole: process.env['NODE_ENV'] !== 'production',
 });
 
@@ -62,8 +58,9 @@ logger.use(
       });
 
       if (!response.ok) {
-        throw new Error(`Upload failed: ${response.status}`);
+        return { success: false, shouldRetry: true, error: `Upload failed: ${response.status}` };
       }
+      return { success: true };
     },
 
     // Priority callback - define log priority
@@ -87,12 +84,12 @@ logger.use(
       }
 
       // Boost priority for critical modules
-      if (log.extra?.module === 'payment') {
+      if (log.tags?.module === 'payment') {
         priority = Math.min(100, priority + 20);
       }
 
       // Boost priority for urgent logs
-      if (log.extra?.urgent) {
+      if (log.tags?.urgent) {
         priority = Math.min(100, priority + 30);
       }
 
@@ -122,8 +119,8 @@ logger.use(
 if (process.env['NODE_ENV'] === 'production') {
   // 1. Add global context
   logger.on('log', (entry: LogEntry) => {
-    entry.extra = {
-      ...entry.extra,
+    entry.context = {
+      ...entry.context,
       env: process.env['NODE_ENV'],
       url: window.location.href,
       referrer: document.referrer,
@@ -137,7 +134,7 @@ if (process.env['NODE_ENV'] === 'production') {
 
   logger.on('log', (entry: LogEntry) => {
     if (entry.level === LogLevelEnum.ERROR && entry.error) {
-      const errorKey = `${entry.error.name}:${entry.message}:${entry.error.stack?.split('\n')[1]}`;
+      const errorKey = `${entry.error.type}:${entry.message}:${entry.error.stack?.split('\n')[1]}`;
       const lastTime = recentErrors.get(errorKey);
 
       if (lastTime && Date.now() - lastTime < ERROR_COOLDOWN) {
@@ -204,18 +201,16 @@ export function logAPIError(
   if (error instanceof Response) {
     // Only log 5xx errors
     if (error.status >= 500) {
-      logger.error('API server error', undefined, {
-        endpoint,
-        status: error.status,
-        statusText: error.statusText,
-        ...context,
+      logger.error('API server error', {
+        tags: { endpoint },
+        context: { status: error.status, statusText: error.statusText, ...context },
       });
     }
   } else {
     // Network error
-    logger.error('API network error', error, {
-      endpoint,
-      ...context,
+    logger.error('API network error', {
+      error,
+      context: { endpoint, ...context },
     });
   }
 }
@@ -230,10 +225,8 @@ export function logPerformanceIssue(
 ): void {
   if (duration > threshold) {
     logger.warn('Performance issue', {
-      operation,
-      duration,
-      threshold,
-      severity: duration > threshold * 2 ? 'critical' : 'warning',
+      tags: { severity: duration > threshold * 2 ? 'critical' : 'warning' },
+      context: { operation, duration, threshold },
     });
   }
 }
@@ -247,10 +240,9 @@ export function logBusinessError(
   error: Error,
   context?: Record<string, unknown>,
 ): void {
-  logger.error(`Business flow failed: ${flow}`, error, {
-    flow,
-    step,
-    ...context,
+  logger.error(`Business flow failed: ${flow}`, {
+    error,
+    context: { flow, step, ...context },
   });
 }
 

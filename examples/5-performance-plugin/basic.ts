@@ -2,10 +2,10 @@
  * PerformancePlugin - 基础使用示例
  */
 
-import { Logger, PerformancePlugin } from 'aemeath-js';
+import { AemeathLogger, PerformancePlugin } from 'aemeath-js';
 
 // 创建 Logger
-const logger = new Logger();
+const logger = new AemeathLogger();
 
 // 安装性能监控插件
 logger.use(
@@ -36,7 +36,8 @@ logger.use(
 // {
 //   level: 'info',
 //   message: '性能指标',
-//   extra: {
+//   tags: { category: 'performance', metric: 'LCP', rating: 'good' },
+//   context: {
 //     metric: {
 //       name: 'LCP',
 //       value: 2450,

@@ -42,9 +42,9 @@ interface UploadResult {
 ### Basic Usage
 
 ```typescript
-import { Logger, UploadPlugin } from 'aemeath-js';
+import { AemeathLogger, UploadPlugin } from 'aemeath-js';
 
-const logger = new Logger();
+const logger = new AemeathLogger();
 
 logger.use(
   new UploadPlugin({
@@ -82,7 +82,7 @@ logger.use(
 );
 
 // Use logger
-logger.error('Something went wrong', { error });
+logger.error('Something went wrong', { error: new Error('example') });
 ```
 
 ### With Authentication
@@ -93,7 +93,7 @@ logger.use(
     onUpload: async (log) => {
       const token = getAuthToken(); // Your auth logic
 
-      await fetch('/api/logs', {
+      const res = await fetch('/api/logs', {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${token}`,
@@ -101,6 +101,7 @@ logger.use(
         },
         body: JSON.stringify(log),
       });
+      return { success: res.ok };
     },
   }),
 );
@@ -112,10 +113,11 @@ logger.use(
 logger.use(
   new UploadPlugin({
     onUpload: async (log) => {
-      await fetch('/api/logs', {
+      const res = await fetch('/api/logs', {
         method: 'POST',
         body: JSON.stringify(log),
       });
+      return { success: res.ok };
     },
 
     // Custom priority calculation
@@ -124,7 +126,7 @@ logger.use(
       if (log.level === 'error') return 100;
 
       // Urgent business logs
-      if (log.extra?.urgent) return 80;
+      if (log.tags?.urgent) return 80;
 
       // Warn logs: normal priority
       if (log.level === 'warn') return 50;
@@ -150,6 +152,7 @@ logger.use(
         },
         timeout: 5000,
       });
+      return { success: true };
     },
   }),
 );
@@ -161,7 +164,7 @@ logger.use(
 logger.use(
   new UploadPlugin({
     onUpload: async (log) => {
-      await fetch('https://logs.example.com/api/logs', {
+      const res = await fetch('https://logs.example.com/api/logs', {
         method: 'POST',
         mode: 'cors',
         credentials: 'include',
@@ -171,6 +174,7 @@ logger.use(
         },
         body: JSON.stringify(log),
       });
+      return { success: res.ok };
     },
   }),
 );
@@ -182,10 +186,11 @@ logger.use(
 logger.use(
   new UploadPlugin({
     onUpload: async (log) => {
-      await fetch('/api/logs', {
+      const res = await fetch('/api/logs', {
         method: 'POST',
         body: JSON.stringify(log),
       });
+      return { success: res.ok };
     },
 
     queue: {
@@ -353,8 +358,10 @@ await plugin.flush();
 onUpload: async (log) => {
   try {
     await fetch('/api/logs', { body: JSON.stringify(log) });
+    return { success: true };
   } catch (error) {
-    logger.error('Upload failed', error); // Infinite loop!
+    logger.error('Upload failed', { error }); // Infinite loop!
+    return { success: false, shouldRetry: true };
   }
 };
 
@@ -362,8 +369,10 @@ onUpload: async (log) => {
 onUpload: async (log) => {
   try {
     await fetch('/api/logs', { body: JSON.stringify(log) });
+    return { success: true };
   } catch (error) {
     console.error('Upload failed:', error); // OK
+    return { success: false, shouldRetry: true };
   }
 };
 ```
@@ -391,7 +400,7 @@ getPriority: (log) => {
 onUpload: async (log) => {
   let token = getAuthToken();
 
-  const response = await fetch('/api/logs', {
+  let response = await fetch('/api/logs', {
     headers: { Authorization: `Bearer ${token}` },
     body: JSON.stringify(log),
   });
@@ -399,11 +408,13 @@ onUpload: async (log) => {
   // If 401, refresh token and retry
   if (response.status === 401) {
     token = await refreshAuthToken();
-    await fetch('/api/logs', {
+    response = await fetch('/api/logs', {
       headers: { Authorization: `Bearer ${token}` },
       body: JSON.stringify(log),
     });
   }
+
+  return { success: response.ok };
 };
 ```
 

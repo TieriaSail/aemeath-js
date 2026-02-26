@@ -67,15 +67,14 @@
     
     // jQuery 事件绑定
     $('#myBtn').click(function() {
-      logger.info('按钮被点击', { buttonId: this.id });
+      logger.info('按钮被点击', { context: { buttonId: this.id } });
     });
     
     // AJAX 错误捕获
     $(document).ajaxError(function(event, jqxhr, settings, error) {
       logger.error('AJAX 请求失败', {
-        url: settings.url,
-        status: jqxhr.status,
-        error: error
+        error: error instanceof Error ? error : new Error(String(error)),
+        context: { url: settings.url, status: jqxhr.status }
       });
     });
   </script>
@@ -120,13 +119,13 @@ logger.warn('警告信息');
 logger.error('错误信息');
 
 // 带附加数据
-logger.info('用户操作', { userId: '123', action: 'click' });
+logger.info('用户操作', { context: { userId: '123', action: 'click' } });
 
 // 捕获异常
 try {
   riskyOperation();
 } catch (e) {
-  logger.error('操作失败', { error: e.message, stack: e.stack });
+  logger.error('操作失败', { error: e });
 }
 ```
 

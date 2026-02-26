@@ -2,10 +2,29 @@
 
 ## 🚀 Quick Start
 
-```typescript
-import { Logger, ErrorCapturePlugin } from 'aemeath-js';
+### Singleton Pattern (Recommended)
 
-const logger = new Logger();
+`initAemeath()` enables `ErrorCapturePlugin` by default — no extra setup needed:
+
+```typescript
+import { initAemeath, getAemeath } from 'aemeath-js';
+
+initAemeath({
+  upload: async (log) => {
+    const res = await fetch('/api/logs', { method: 'POST', body: JSON.stringify(log) });
+    return { success: res.ok };
+  },
+});
+
+const logger = getAemeath();
+```
+
+### Manual Assembly
+
+```typescript
+import { AemeathLogger, ErrorCapturePlugin } from 'aemeath-js';
+
+const logger = new AemeathLogger();
 logger.use(new ErrorCapturePlugin());
 ```
 
@@ -33,12 +52,15 @@ interface ErrorCapturePluginOptions {
 
 ```tsx
 import React, { Component } from 'react';
-import { logger } from './utils/logger';
+import { getAemeath } from 'aemeath-js';
+
+const logger = getAemeath();
 
 class ErrorBoundary extends Component {
   componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
-    logger.error('React error', error, {
-      componentStack: errorInfo.componentStack,
+    logger.error('React error', {
+      error,
+      context: { componentStack: errorInfo.componentStack },
     });
   }
 
@@ -52,14 +74,15 @@ class ErrorBoundary extends Component {
 
 ```typescript
 import { createApp } from 'vue';
-import { logger } from './utils/logger';
+import { getAemeath } from 'aemeath-js';
 
+const logger = getAemeath();
 const app = createApp(App);
 
 app.config.errorHandler = (err, instance, info) => {
-  logger.error('Vue error', err, {
-    componentName: instance?.$options.name,
-    info,
+  logger.error('Vue error', {
+    error: err,
+    context: { componentName: instance?.$options.name, info },
   });
 };
 ```
@@ -70,8 +93,9 @@ app.config.errorHandler = (err, instance, info) => {
 try {
   dangerousOperation();
 } catch (error) {
-  logger.error('Operation failed', error, {
-    operation: 'dangerousOperation',
+  logger.error('Operation failed', {
+    error,
+    context: { operation: 'dangerousOperation' },
   });
 }
 ```

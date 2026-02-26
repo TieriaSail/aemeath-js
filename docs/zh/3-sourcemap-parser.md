@@ -72,6 +72,12 @@ interface SourceMapParserConfig {
   enableCache?: boolean;
 
   /**
+   * 最大缓存数量（LRU 淘汰策略）
+   * @default 50
+   */
+  maxCacheSize?: number;
+
+  /**
    * 是否启用调试模式（输出详细日志）
    * @default false
    */
@@ -101,6 +107,7 @@ interface ParsedStackFrame {
     fileName: string;
     line: number;
     column: number;
+    functionName?: string;
   };
   original?: {
     // 原始位置（解析后）

@@ -23,9 +23,8 @@
 
 - **🌲 Tree-shakable** — 按需引入，未使用的代码不会被打包
 - **🔓 前端驱动** — 浏览器承担核心工作，后端只需记录和处理数据
-- **🌐 框架无关** — 支持 React、Vue、原生 JS、jQuery 或任何框架
-- **🔧 构建工具支持** — Vite、Webpack 4+、Rsbuild 一等公民支持
-- **📦 零依赖** — 无运行时依赖
+- **🌐 框架支持** — 支持 React、Vue、原生 JS、jQuery 等
+- **🔧 构建工具支持** — 支持 Vite、Webpack 4+、Rsbuild
 
 ## 安装
 
@@ -73,8 +72,8 @@ import { getAemeath } from 'aemeath-js';
 
 const logger = getAemeath();
 logger.info('用户已登录');
-logger.error('出错了', error);
-logger.updateContext({ userId: '67890' });
+logger.error('出错了', { error });
+logger.updateContext('userId', '67890');
 ```
 
 **默认已启用哪些插件？** `initAemeath()` 会自动启用以下插件，无需额外 `.use()`：
@@ -155,7 +154,7 @@ logger.use(new PerformancePlugin({
 import { initAemeath } from 'aemeath-js';
 
 initAemeath({
-  upload: async (log) => { /* ... */ },
+  upload: async (log) => { /* ... */ return { success: true }; },
 });
 ```
 
@@ -197,7 +196,7 @@ import { initAemeath } from 'aemeath-js';
 import { createAemeathPlugin } from 'aemeath-js/vue';
 
 initAemeath({
-  upload: async (log) => { /* ... */ },
+  upload: async (log) => { /* ... */ return { success: true }; },
 });
 
 const app = createApp(App);
@@ -404,5 +403,5 @@ logger.use(new MyPlugin());
 
 ## 许可证
 
-[MIT](./LICENSE) © AemeathJs Team
+[MIT](./LICENSE) © TieriaSail
 

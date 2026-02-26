@@ -75,10 +75,40 @@ module.exports = {
 
 ### 步骤2：运行时配置
 
-```typescript
-import { Logger, EarlyErrorCapturePlugin, UploadPlugin } from 'aemeath-js';
+#### 单例模式（推荐）
 
-const logger = new Logger();
+`initAemeath()` 在检测到构建时早期错误脚本后，会自动注册 `EarlyErrorCapturePlugin`：
+
+```typescript
+import { initAemeath, getAemeath } from 'aemeath-js';
+
+initAemeath({
+  upload: async (log) => {
+    const response = await fetch('/api/logs', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${getToken()}`,
+      },
+      body: JSON.stringify(log),
+    });
+
+    if (!response.ok) {
+      return { success: false, shouldRetry: true, error: `Upload failed: ${response.status}` };
+    }
+    return { success: true };
+  },
+});
+
+const logger = getAemeath();
+```
+
+#### 手动组装
+
+```typescript
+import { AemeathLogger, EarlyErrorCapturePlugin, UploadPlugin } from 'aemeath-js';
+
+const logger = new AemeathLogger();
 
 logger.use(new EarlyErrorCapturePlugin());
 
@@ -95,8 +125,9 @@ logger.use(
       });
 
       if (!response.ok) {
-        throw new Error(`Upload failed: ${response.status}`);
+        return { success: false, shouldRetry: true, error: `Upload failed: ${response.status}` };
       }
+      return { success: true };
     },
   }),
 );
@@ -217,7 +248,7 @@ new EarlyErrorCapturePlugin({
 
 ### 保底上报（可选）
 
-如果担心 Logger 初始化失败，可以配置保底端点：
+如果担心 AemeathLogger 初始化失败，可以配置保底端点：
 
 ```typescript
 // 构建配置

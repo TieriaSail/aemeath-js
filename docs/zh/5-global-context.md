@@ -59,10 +59,10 @@ logger.info('User clicked button');
 const logger = getAemeath();
 
 // 用户登录后更新 userId
-logger.updateContext({ userId: '12345' });
+logger.updateContext('userId', '12345');
 
 // 再次更新其他信息
-logger.updateContext({ username: 'John' });
+logger.updateContext('username', 'John');
 
 // 当前上下文: { userId: '12345', username: 'John', ...原有信息 }
 ```
@@ -111,12 +111,10 @@ const logger = getAemeath();
 
 // 用户登录
 function onUserLogin(user) {
-  logger.updateContext({
-    userId: user.id,
-    username: user.name,
-    email: user.email,
-    role: user.role,
-  });
+  logger.updateContext('userId', user.id);
+  logger.updateContext('username', user.name);
+  logger.updateContext('email', user.email);
+  logger.updateContext('role', user.role);
 
   logger.info('User logged in');
 }
@@ -161,10 +159,11 @@ function initApp() {
 
   initAemeath({
     upload: async (log) => {
-      await fetch('/api/logs', {
+      const res = await fetch('/api/logs', {
         method: 'POST',
         body: JSON.stringify(log),
       });
+      return { success: res.ok };
     },
     context: {
       // 应用信息
@@ -189,17 +188,15 @@ const logger = getAemeath();
 
 // 切换租户时更新上下文
 function switchTenant(tenantId: string) {
-  logger.updateContext({
-    tenantId,
-    tenantName: getTenantName(tenantId),
-  });
+  logger.updateContext('tenantId', tenantId);
+  logger.updateContext('tenantName', getTenantName(tenantId));
 
   logger.info('Switched tenant');
 }
 
 // 之后所有日志都会自动附加 tenantId
 logger.info('User action'); // 自动附加 tenantId
-logger.error('Error occurred', error); // 自动附加 tenantId
+logger.error('Error occurred', { error }); // 自动附加 tenantId
 ```
 
 ### 场景4：A/B 测试
@@ -213,24 +210,21 @@ const logger = getAemeath();
 function assignABTest(userId: string) {
   const group = Math.random() > 0.5 ? 'A' : 'B';
 
-  logger.updateContext({
-    abTestGroup: group,
-    abTestId: 'exp-001',
-  });
+  logger.updateContext('abTestGroup', group);
+  logger.updateContext('abTestId', 'exp-001');
 
-  logger.info('AB test assigned', { group });
+  logger.info('AB test assigned', { context: { group } });
 }
 
 // 之后所有日志都会携带 A/B 测试信息
 logger.info('Button clicked'); // 自动附加 abTestGroup, abTestId
 ```
 
-## context vs extra 的区别
+## 全局上下文 vs 单次数据
 
-### context（全局上下文）
+### 全局上下文（持久的）
 
-- **全局的、持久的**
-- 配置一次，所有日志都自动附加
+- **全局的、持久的** — 配置一次，所有日志都自动附加
 - 适用于用户、设备、应用等标识信息
 
 ```typescript
@@ -238,20 +232,18 @@ logger.setContext({ userId: '12345', platform: 'iOS' });
 
 logger.info('Action 1'); // 自动附加 context
 logger.info('Action 2'); // 自动附加 context
-logger.error('Error', error); // 自动附加 context
+logger.error('Error', { error }); // 自动附加 context
 ```
 
-### extra（临时数据）
+### 单次数据（临时的）
 
-- **单次的、临时的**
-- 每次记录时手动传递
-- 适用于特定事件的详细信息
+- **单次使用** — 通过 `LogOptions` 每次传递
+- 用 `tags` 做分类筛选，用 `context` 传详细数据
 
 ```typescript
 logger.info('Button clicked', {
-  buttonId: 'submit',
-  clickCount: 1,
-  timestamp: Date.now(),
+  tags: { buttonId: 'submit' },
+  context: { clickCount: 1, timestamp: Date.now() },
 });
 ```
 
@@ -265,24 +257,22 @@ logger.setContext({
   appVersion: '1.0.0',
 });
 
-// 记录日志时传递临时数据
+// 记录日志时传递单次数据
 logger.info('Button clicked', {
-  buttonId: 'submit',
-  clickCount: 1,
+  tags: { buttonId: 'submit' },
+  context: { clickCount: 1 },
 });
 
 // 输出：
 // {
 //   level: 'info',
 //   message: 'Button clicked',
-//   context: {           // 全局的
-//     userId: '12345',
-//     platform: 'iOS',
-//     appVersion: '1.0.0'
-//   },
-//   extra: {             // 单次特定的
-//     buttonId: 'submit',
-//     clickCount: 1
+//   tags: { buttonId: 'submit' },
+//   context: {
+//     userId: '12345',       // 来自全局上下文
+//     platform: 'iOS',       // 来自全局上下文
+//     appVersion: '1.0.0',   // 来自全局上下文
+//     clickCount: 1           // 来自单次 context
 //   }
 // }
 ```
@@ -313,11 +303,9 @@ import { getAemeath } from 'aemeath-js';
 
 function onLogin(user) {
   const logger = getAemeath();
-  logger.updateContext({
-    userId: user.id,
-    username: user.name,
-    role: user.role,
-  });
+  logger.updateContext('userId', user.id);
+  logger.updateContext('username', user.name);
+  logger.updateContext('role', user.role);
 }
 ```
 
@@ -408,8 +396,9 @@ initAemeath({
   upload: async (log) => {
     await fetch('/api/logs', {
       method: 'POST',
-      body: JSON.stringify(log)
+      body: JSON.stringify(log),
     });
+    return { success: true };
   },
   context: {
     appName: 'MyApp',
@@ -425,11 +414,9 @@ export const logger = getAemeath();
 import { logger } from './logger-config';
 
 export function onLogin(user) {
-  logger.updateContext({
-    userId: user.id,
-    username: user.name,
-    role: user.role
-  });
+  logger.updateContext('userId', user.id);
+  logger.updateContext('username', user.name);
+  logger.updateContext('role', user.role);
 
   logger.info('User logged in successfully');
 }
@@ -458,7 +445,7 @@ export function HomePage() {
   const handleClick = () => {
     // context 会自动附加
     logger.info('Home page button clicked', {
-      buttonId: 'hero-cta'
+      tags: { buttonId: 'hero-cta' },
     });
   };
 
@@ -476,13 +463,13 @@ export function HomePage() {
 logger.setContext({ userId: '12345' });
 ```
 
-### updateContext(context)
+### updateContext(key, value)
 
-合并更新全局上下文。
+逐键更新全局上下文，已有的其他键会保留。
 
 ```typescript
-logger.updateContext({ userId: '12345' });
-logger.updateContext({ username: 'John' }); // userId 保留
+logger.updateContext('userId', '12345');
+logger.updateContext('username', 'John'); // userId 保留
 ```
 
 ### getContext()

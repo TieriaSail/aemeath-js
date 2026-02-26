@@ -15,9 +15,9 @@
 ## 基础使用
 
 ```typescript
-import { Logger, PerformancePlugin } from 'aemeath-js';
+import { AemeathLogger, PerformancePlugin } from 'aemeath-js';
 
-const logger = new Logger();
+const logger = new AemeathLogger();
 
 logger.use(
   new PerformancePlugin({
@@ -53,7 +53,8 @@ logger.use(
 // {
 //   level: 'info',
 //   message: '性能指标',
-//   extra: {
+//   tags: { category: 'performance', metric: 'LCP', rating: 'good' },
+//   context: {
 //     metric: {
 //       name: 'LCP',
 //       value: 2450,
@@ -80,7 +81,8 @@ logger.use(
 // {
 //   level: 'warn',
 //   message: '慢资源加载',
-//   extra: {
+//   tags: { category: 'performance', type: 'slow-resource' },
+//   context: {
 //     resource: {
 //       name: 'https://example.com/large-image.jpg',
 //       type: 'img',
@@ -133,9 +135,9 @@ logger.measure('operation', 'start', 'end');
 推荐的生产环境配置：
 
 ```typescript
-import { Logger, PerformancePlugin, UploadPlugin } from 'aemeath-js';
+import { AemeathLogger, PerformancePlugin, UploadPlugin } from 'aemeath-js';
 
-const logger = new Logger();
+const logger = new AemeathLogger();
 
 // 1. 性能监控（10% 采样）
 logger.use(
@@ -152,13 +154,14 @@ logger.use(
 logger.use(
   new UploadPlugin({
     onUpload: async (log) => {
-      // 只上传性能指标，不上传所有日志
-      if (log.extra?.metric) {
+      if (log.tags?.category === 'performance') {
         await fetch('/api/metrics', {
           method: 'POST',
-          body: JSON.stringify(log.extra.metric),
+          body: JSON.stringify(log),
         });
+        return { success: true };
       }
+      return { success: false, shouldRetry: false };
     },
   }),
 );
@@ -169,9 +172,9 @@ logger.use(
 ## 完整示例
 
 ```typescript
-import { Logger, PerformancePlugin, UploadPlugin } from 'aemeath-js';
+import { AemeathLogger, PerformancePlugin, UploadPlugin } from 'aemeath-js';
 
-const logger = new Logger();
+const logger = new AemeathLogger();
 
 // 配置性能监控
 logger.use(new PerformancePlugin({
@@ -185,10 +188,11 @@ logger.use(new PerformancePlugin({
 // 配置上传
 logger.use(new UploadPlugin({
   onUpload: async (log) => {
-    await fetch('/api/logs', {
+    const res = await fetch('/api/logs', {
       method: 'POST',
       body: JSON.stringify(log)
     });
+    return { success: res.ok };
   }
 }));
 
@@ -256,7 +260,7 @@ export function App() {
 
    ```typescript
    // 只上传性能指标
-   if (log.extra?.metric || log.extra?.resource) {
+   if (log.tags?.category === 'performance') {
      await uploadToServer(log);
    }
    ```

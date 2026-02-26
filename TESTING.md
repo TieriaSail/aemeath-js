@@ -536,7 +536,7 @@ describe('我的模块', () => {
 
   beforeEach(() => {
     // 每个 it 之前执行 —— 创建全新的实例
-    logger = new Logger();
+    logger = new AemeathLogger();
   });
 
   afterEach(() => {

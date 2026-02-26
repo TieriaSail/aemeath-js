@@ -4,9 +4,9 @@
  * 最简单的使用方式
  */
 
-import { Logger, UploadPlugin } from 'aemeath-js';
+import { AemeathLogger, UploadPlugin } from 'aemeath-js';
 
-const logger = new Logger();
+const logger = new AemeathLogger();
 
 // 添加 Upload Plugin
 logger.use(

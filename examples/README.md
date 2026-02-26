@@ -42,9 +42,9 @@
 **快速开始**：
 
 ```typescript
-import { Logger, ErrorCapturePlugin } from 'aemeath-js';
+import { AemeathLogger, ErrorCapturePlugin } from 'aemeath-js';
 
-const logger = new Logger();
+const logger = new AemeathLogger();
 logger.use(new ErrorCapturePlugin());
 ```
 
@@ -93,20 +93,22 @@ logger.use(new EarlyErrorCapturePlugin());
 **快速开始**：
 
 ```typescript
-import {
-  createBrowserAnalyzer,
-  exposeGlobalAnalyzer,
-} from 'aemeath-js/parser/dev-tools';
+import { createParser } from 'aemeath-js/parser';
 
-const analyzer = createBrowserAnalyzer({
-  fetchLogs: async (filters) => {
-    const response = await fetch('/api/logs?' + new URLSearchParams(filters));
-    return response.json();
-  },
-  sourceMaps: '/sourcemaps/1.0.0',
+const parser = createParser({
+  sourceMapBaseUrl: 'https://example.com/sourcemaps/dist/1.0.0',
 });
 
-exposeGlobalAnalyzer(analyzer);
+const result = await parser.parse(
+  `Error: Cannot read property 'price' of undefined
+    at _0x3a2b (https://example.com/static/js/main.abc123.js:1:2345)`
+);
+
+result.frames.forEach((frame) => {
+  if (frame.resolved && frame.original) {
+    console.log(`${frame.original.fileName}:${frame.original.line}`);
+  }
+});
 ```
 
 ---
@@ -130,10 +132,11 @@ import { UploadPlugin } from 'aemeath-js';
 logger.use(
   new UploadPlugin({
     onUpload: async (log) => {
-      await fetch('/api/logs', {
+      const res = await fetch('/api/logs', {
         method: 'POST',
         body: JSON.stringify(log),
       });
+      return { success: res.ok };
     },
   }),
 );
@@ -223,7 +226,7 @@ const logger = getAemeath();
 logger.info('User action'); // context 自动附加
 
 // 动态更新
-logger.updateContext({ userId: '67890' });
+logger.updateContext('userId', '67890');
 ```
 
 ---
@@ -263,10 +266,11 @@ import { initAemeath } from 'aemeath-js';
 initAemeath({
   errorCapture: true,
   upload: async (log) => {
-    await fetch('/api/logs', {
+    const res = await fetch('/api/logs', {
       method: 'POST',
       body: JSON.stringify(log),
     });
+    return { success: res.ok };
   },
 });
 
@@ -283,4 +287,3 @@ logger.info('Hello World');
 
 - [快速开始](../QUICK_START.md)
 - [完整 API 文档](../README.md)
-- [快速开始](../QUICK_START.md)

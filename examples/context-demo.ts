@@ -22,6 +22,7 @@ initAemeath({
       method: 'POST',
       body: JSON.stringify(log),
     });
+    return { success: true };
   },
   context: {
     userId: '12345',
@@ -55,21 +56,21 @@ logger.info('User action'); // 自动附加 context
 // 用户登录后更新 userId
 function onUserLogin(userId: string) {
   const logger = getAemeath();
-  logger.updateContext({ userId });
+  logger.updateContext('userId', userId);
   logger.info('User logged in');
 }
 
 // 切换设备后更新 deviceId
 function onDeviceChange(deviceId: string) {
   const logger = getAemeath();
-  logger.updateContext({ deviceId });
+  logger.updateContext('deviceId', deviceId);
   logger.info('Device changed');
 }
 
 // 应用升级后更新版本
 function onAppUpgrade(newVersion: string) {
   const logger = getAemeath();
-  logger.updateContext({ appVersion: newVersion });
+  logger.updateContext('appVersion', newVersion);
   logger.info('App upgraded');
 }
 
@@ -123,6 +124,7 @@ function initApp() {
         },
         body: JSON.stringify(log),
       });
+      return { success: true };
     },
     context: {
       // 设备信息
@@ -146,12 +148,10 @@ function initApp() {
 // 用户登录后更新上下文
 function handleLogin(user: any) {
   const logger = getAemeath();
-  logger.updateContext({
-    userId: user.id,
-    username: user.name,
-    email: user.email,
-    role: user.role,
-  });
+  logger.updateContext('userId', user.id);
+  logger.updateContext('username', user.name);
+  logger.updateContext('email', user.email);
+  logger.updateContext('role', user.role);
 
   logger.info('User logged in successfully');
 }
@@ -159,18 +159,18 @@ function handleLogin(user: any) {
 // 页面访问时记录
 function trackPageView(pageName: string) {
   const logger = getAemeath();
-  logger.info('Page viewed', { pageName });
+  logger.info('Page viewed', { context: { pageName } });
   // context 会自动附加：userId, deviceId, appVersion 等
 }
 
 // 错误发生时记录
 function handleError(error: Error) {
   const logger = getAemeath();
-  logger.error('Application error', error);
+  logger.error('Application error', { error });
   // context 会自动附加，帮助定位问题
 }
 
-// ==================== 示例 6: 与 extra 的区别 ====================
+// ==================== 示例 6: 与单次数据的区别 ====================
 
 const logger6 = getAemeath();
 
@@ -181,24 +181,21 @@ logger6.setContext({
   appVersion: '1.0.0',
 });
 
-// extra: 单次日志特定的、临时的信息
+// 单次数据: 通过 LogOptions 传递，用 tags 做分类，用 context 传详细数据
 logger6.info('Button clicked', {
-  buttonId: 'submit',
-  clickCount: 1,
-  timestamp: Date.now(),
+  tags: { buttonId: 'submit' },
+  context: { clickCount: 1, timestamp: Date.now() },
 });
 
 // 输出：
 // {
 //   level: 'info',
 //   message: 'Button clicked',
-//   context: {           // 全局的
+//   tags: { buttonId: 'submit' },
+//   context: {
 //     userId: '12345',
 //     deviceId: 'abc',
-//     appVersion: '1.0.0'
-//   },
-//   extra: {             // 单次特定的
-//     buttonId: 'submit',
+//     appVersion: '1.0.0',
 //     clickCount: 1,
 //     timestamp: 1703123456789
 //   }

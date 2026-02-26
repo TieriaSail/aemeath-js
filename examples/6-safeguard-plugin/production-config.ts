@@ -3,13 +3,13 @@
  */
 
 import {
-  Logger,
+  AemeathLogger,
   SafeGuardPlugin,
   ErrorCapturePlugin,
   UploadPlugin,
 } from 'aemeath-js';
 
-const logger = new Logger();
+const logger = new AemeathLogger();
 
 // ==================== 配置1: 安全保护（第一个） ====================
 
@@ -46,8 +46,9 @@ logger.use(
       });
 
       if (!response.ok) {
-        throw new Error(`Upload failed: ${response.status}`);
+        return { success: false, shouldRetry: true, error: `Upload failed: ${response.status}` };
       }
+      return { success: true };
     },
 
     queue: {

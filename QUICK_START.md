@@ -38,14 +38,14 @@
 
     // jQuery example
     $('#myButton').click(function() {
-      logger.info('Button clicked', { buttonId: 'myButton' });
+      logger.info('Button clicked', { context: { buttonId: 'myButton' } });
     });
 
     // Catch errors
     try {
       riskyOperation();
     } catch (e) {
-      logger.error('Operation failed', { error: e.message });
+      logger.error('Operation failed', { error: e });
     }
   </script>
 </body>
@@ -99,10 +99,11 @@ import { initAemeath } from 'aemeath-js';
 
 initAemeath({
   upload: async (log) => {
-    await fetch('/api/logs', {
+    const res = await fetch('/api/logs', {
       method: 'POST',
       body: JSON.stringify(log),
     });
+    return { success: res.ok };
   },
   context: {
     userId: '12345',
@@ -121,7 +122,7 @@ const logger = getAemeath();
 logger.info('Hello World'); // context is automatically attached
 
 // Update context dynamically
-logger.updateContext({ userId: '67890' });
+logger.updateContext('userId', '67890');
 ```
 
 **What's included by default?** `initAemeath()` automatically enables these plugins:
@@ -163,7 +164,7 @@ initAemeath({ errorCapture: true });
 // Error + Upload (8KB)
 initAemeath({
   errorCapture: true,
-  upload: async (log) => { /* ... */ },
+  upload: async (log) => { /* ... */ return { success: true }; },
 });
 
 // Error + Performance (7KB)
@@ -362,7 +363,7 @@ initAemeath({
 ```tsx
 // main.tsx — Step 1: Initialize (same as above)
 import { initAemeath } from 'aemeath-js';
-initAemeath({ upload: async (log) => { /* ... */ } });
+initAemeath({ upload: async (log) => { /* ... */ return { success: true }; } });
 ```
 
 ```tsx
@@ -393,7 +394,7 @@ import { createApp } from 'vue';
 import { initAemeath } from 'aemeath-js';
 import { createAemeathPlugin } from 'aemeath-js/vue';
 
-initAemeath({ upload: async (log) => { /* ... */ } });
+initAemeath({ upload: async (log) => { /* ... */ return { success: true }; } });
 
 const app = createApp(App);
 app.use(createAemeathPlugin({ captureWarnings: true }));

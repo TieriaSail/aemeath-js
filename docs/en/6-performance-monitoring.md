@@ -36,37 +36,34 @@ Supports sampling rate configuration to reduce data volume in production
 
 ## 🚀 Quick Start
 
-### Basic Usage
+### Singleton Pattern (Recommended)
 
 ```typescript
-import { Logger, PerformancePlugin } from 'aemeath-js';
+import { initAemeath, getAemeath, PerformancePlugin } from 'aemeath-js';
 
-const logger = new Logger();
+initAemeath({
+  upload: async (log) => { /* ... */ return { success: true }; },
+});
 
-logger.use(
-  new PerformancePlugin({
-    monitorWebVitals: true, // Monitor Web Vitals
-    sampleRate: 1, // 100% sampling
-  }),
-);
-
-// Plugin automatically records performance metrics
-```
-
-### Using with Singleton Pattern
-
-```typescript
-import { initAemeath, getAemeath } from 'aemeath-js';
-import { PerformancePlugin } from 'aemeath-js';
-
-// Initialize Logger
-initAemeath({ errorCapture: true });
-
-// Add performance monitoring
 getAemeath().use(
   new PerformancePlugin({
     monitorWebVitals: true,
     sampleRate: 0.1, // 10% sampling rate
+  }),
+);
+```
+
+### Manual Assembly
+
+```typescript
+import { AemeathLogger, PerformancePlugin } from 'aemeath-js';
+
+const logger = new AemeathLogger();
+
+logger.use(
+  new PerformancePlugin({
+    monitorWebVitals: true,
+    sampleRate: 1, // 100% sampling
   }),
 );
 ```
@@ -98,7 +95,7 @@ interface PerformancePluginOptions {
 
 ### Custom Performance Measurement APIs
 
-After installing `PerformancePlugin`, Logger extends the following methods:
+After installing `PerformancePlugin`, AemeathLogger extends the following methods:
 
 #### `logger.startMark(name: string): void`
 
@@ -275,18 +272,18 @@ const duration = logger.measure(
 ### Recommended Configuration
 
 ```typescript
-import { Logger, PerformancePlugin, UploadPlugin } from 'aemeath-js';
+import { AemeathLogger, PerformancePlugin, UploadPlugin } from 'aemeath-js';
 
-const logger = new Logger();
+const logger = new AemeathLogger();
 
 // 1. Performance monitoring (10% sampling)
 logger.use(
   new PerformancePlugin({
-    monitorWebVitals: true, // Monitor core metrics
-    monitorResources: false, // Don't monitor resources in production (avoid too many logs)
-    monitorLongTasks: true, // Monitor long tasks
-    longTaskThreshold: 100, // Only record tasks >100ms
-    sampleRate: 0.1, // 10% sampling rate
+    monitorWebVitals: true,
+    monitorResources: false,
+    monitorLongTasks: true,
+    longTaskThreshold: 100,
+    sampleRate: 0.1,
   }),
 );
 
@@ -294,8 +291,7 @@ logger.use(
 logger.use(
   new UploadPlugin({
     onUpload: async (log) => {
-      // Only upload performance metrics
-      if (log.extra?.metric || log.extra?.resource || log.extra?.task) {
+      if (log.tags?.category === 'performance') {
         await fetch('/api/metrics', {
           method: 'POST',
           body: JSON.stringify(log),
@@ -382,7 +378,7 @@ longTaskThreshold: 100; // Only record tasks >100ms
 ```typescript
 // Only upload performance metrics, not all logs
 onUpload: async (log) => {
-  if (log.extra?.metric || log.extra?.resource || log.extra?.task) {
+  if (log.tags?.category === 'performance') {
     await uploadToServer(log);
     return { success: true };
   }
@@ -401,9 +397,9 @@ onUpload: async (log) => {
 ## 📝 Complete Example
 
 ```typescript
-import { Logger, PerformancePlugin, UploadPlugin } from 'aemeath-js';
+import { AemeathLogger, PerformancePlugin, UploadPlugin } from 'aemeath-js';
 
-const logger = new Logger();
+const logger = new AemeathLogger();
 
 // Configure performance monitoring
 logger.use(
@@ -463,4 +459,4 @@ export function App() {
 
 ---
 
-**Made with ❤️ by AemeathJs Team**
+**Made with ❤️ by TieriaSail**

@@ -4,10 +4,10 @@
  * 最简单的错误捕获配置
  */
 
-import { Logger, ErrorCapturePlugin } from 'aemeath-js';
+import { AemeathLogger, ErrorCapturePlugin } from 'aemeath-js';
 
 // 创建 logger
-const logger = new Logger();
+const logger = new AemeathLogger();
 
 // 添加错误捕获插件
 logger.use(new ErrorCapturePlugin());

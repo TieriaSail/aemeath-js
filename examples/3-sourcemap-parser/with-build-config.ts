@@ -122,33 +122,49 @@ sourceMaps: '/sourcemaps/1.0.0'
 
 // ==================== 步骤4：开发环境使用 ====================
 
-// src/main.ts
-import {
-  createBrowserAnalyzer,
-  exposeGlobalAnalyzer,
-} from 'aemeath-js/parser/dev-tools';
+// src/utils/sourcemap-helper.ts
+import { createParser } from 'aemeath-js/parser';
+import type { SourceMapParser } from 'aemeath-js/parser';
 
-if (process.env.NODE_ENV === 'development') {
-  const analyzer = createBrowserAnalyzer({
-    // 获取日志的回调函数
-    fetchLogs: async (filters) => {
-      const params = new URLSearchParams();
-      if (filters?.level) params.append('level', String(filters.level));
-      if (filters?.limit) params.append('limit', String(filters.limit));
+const RESOURCE_BASE_URL =
+  process.env['PUBLIC_RESOURCE_URL'] || 'https://example.com';
+const SOURCEMAP_DIR = `${RESOURCE_BASE_URL}/sourcemaps`;
 
-      const response = await fetch(`/api/logs?${params}`);
-      if (!response.ok) {
-        throw new Error(`Failed to fetch logs: ${response.status}`);
+const parserCache = new Map<string, SourceMapParser>();
+
+function getParser(env: string, version: string): SourceMapParser {
+  const cacheKey = `${env}/${version}`;
+  if (!parserCache.has(cacheKey)) {
+    parserCache.set(
+      cacheKey,
+      createParser({
+        sourceMapBaseUrl: `${SOURCEMAP_DIR}/${env}/${version}`,
+        debug: process.env.NODE_ENV === 'development',
+      }),
+    );
+  }
+  return parserCache.get(cacheKey)!;
+}
+
+export async function parseErrorStack(
+  stack: string,
+  environment: 'test' | 'production',
+  version: string,
+) {
+  const env = environment === 'production' ? 'dist' : 'dist-test';
+  const parser = getParser(env, version);
+  const result = await parser.parse(stack);
+
+  result.frames.forEach((frame) => {
+    if (frame.resolved && frame.original) {
+      console.log(`${frame.original.fileName}:${frame.original.line}`);
+      if (frame.original.source) {
+        console.log(frame.original.source);
       }
-      return response.json();
-    },
-
-    // Source Map 路径
-    sourceMaps: '/sourcemaps/1.0.0', // 或 'http://localhost:8080/1.0.0'
+    }
   });
 
-  exposeGlobalAnalyzer(analyzer);
-  console.log('🔧 Source Map analyzer ready!');
+  return result;
 }
 
 // ==================== 目录结构 ====================

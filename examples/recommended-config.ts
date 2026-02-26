@@ -5,7 +5,7 @@
  */
 
 import {
-  Logger,
+  AemeathLogger,
   EarlyErrorCapturePlugin,
   ErrorCapturePlugin,
   UploadPlugin,
@@ -24,12 +24,12 @@ function getAuthToken(): string {
  * 创建 Logger 实例
  */
 export function createLogger() {
-  const logger = new Logger({
-    level: process.env.NODE_ENV === 'production' ? 'warn' : 'debug',
-    global: {
+  const logger = new AemeathLogger({
+    enableConsole: process.env.NODE_ENV !== 'production',
+    environment: process.env.NODE_ENV,
+    context: {
       appName: 'my-app',
       appVersion: '1.0.0',
-      environment: process.env.NODE_ENV,
     },
   });
 
@@ -89,7 +89,7 @@ export function createLogger() {
       // 自定义优先级
       getPriority: (log) => {
         // 早期错误优先级更高
-        if (log.extra?.earlyError) {
+        if (log.tags?.earlyError) {
           return 10;
         }
 
@@ -117,7 +117,7 @@ export function createLogger() {
       },
 
       // 页面卸载时上传
-      uploadOnUnload: true,
+      saveOnUnload: true,
     }),
   );
 
@@ -132,7 +132,7 @@ export function createLogger() {
  * 注意：这会导致两个接口，需要后端支持
  */
 export function createLoggerWithFallback() {
-  const logger = new Logger();
+  const logger = new AemeathLogger();
 
   // 配置保底端点
   logger.use(
@@ -208,9 +208,11 @@ POST /api/logs
   "level": "error",
   "message": "...",
   "timestamp": 123456,
-  "extra": {
+  "tags": {
     "earlyError": true,  // 标记早期错误
-    "type": "error",
+    "type": "error"
+  },
+  "context": {
     "device": { ... }
   }
 }

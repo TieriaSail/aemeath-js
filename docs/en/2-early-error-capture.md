@@ -75,10 +75,40 @@ If using `file` mode, manually add to your HTML:
 
 ### Step 2: Runtime Configuration
 
-```typescript
-import { Logger, EarlyErrorCapturePlugin, UploadPlugin } from 'aemeath-js';
+#### Singleton Pattern (Recommended)
 
-const logger = new Logger();
+`initAemeath()` automatically registers `EarlyErrorCapturePlugin` when build-time early errors are detected:
+
+```typescript
+import { initAemeath, getAemeath } from 'aemeath-js';
+
+initAemeath({
+  upload: async (log) => {
+    const response = await fetch('/api/logs', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${getToken()}`,
+      },
+      body: JSON.stringify(log),
+    });
+
+    if (!response.ok) {
+      return { success: false, shouldRetry: true, error: `Upload failed: ${response.status}` };
+    }
+    return { success: true };
+  },
+});
+
+const logger = getAemeath();
+```
+
+#### Manual Assembly
+
+```typescript
+import { AemeathLogger, EarlyErrorCapturePlugin, UploadPlugin } from 'aemeath-js';
+
+const logger = new AemeathLogger();
 
 logger.use(new EarlyErrorCapturePlugin());
 
@@ -95,8 +125,9 @@ logger.use(
       });
 
       if (!response.ok) {
-        throw new Error(`Upload failed: ${response.status}`);
+        return { success: false, shouldRetry: true, error: `Upload failed: ${response.status}` };
       }
+      return { success: true };
     },
   }),
 );
@@ -217,7 +248,7 @@ new EarlyErrorCapturePlugin({
 
 ### Fallback Upload (Optional)
 
-If worried about Logger initialization failure, configure fallback endpoint:
+If worried about AemeathLogger initialization failure, configure fallback endpoint:
 
 ```typescript
 // Build config

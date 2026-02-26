@@ -4,9 +4,9 @@
 
 /* eslint-disable @typescript-eslint/no-unused-vars */
 
-import { Logger, PerformancePlugin } from 'aemeath-js';
+import { AemeathLogger, PerformancePlugin } from 'aemeath-js';
 
-const logger = new Logger();
+const logger = new AemeathLogger();
 logger.use(new PerformancePlugin());
 
 // ==================== 示例1: 测量函数执行时间 ====================
@@ -90,8 +90,7 @@ async function fetchDataWithThreshold() {
   // 只记录慢请求（>1000ms）
   if (duration > 1000) {
     logger.warn('慢请求', {
-      url: '/api/data',
-      duration,
+      context: { url: '/api/data', duration },
     });
   }
 

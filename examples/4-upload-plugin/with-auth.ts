@@ -4,14 +4,14 @@
  * 带认证的上传示例
  */
 
-import { Logger, UploadPlugin } from 'aemeath-js';
+import { AemeathLogger, UploadPlugin } from 'aemeath-js';
 
 // 模拟获取 token 的函数
 function getAuthToken(): string {
   return localStorage.getItem('auth_token') || '';
 }
 
-const logger = new Logger();
+const logger = new AemeathLogger();
 
 logger.use(
   new UploadPlugin({

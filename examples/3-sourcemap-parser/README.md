@@ -130,5 +130,5 @@ Source code:
 
 ## 📖 更多文档
 
-- [Logger 完整文档](../../README.md)
+- [AemeathLogger 完整文档](../../README.md)
 - [UploadPlugin 文档](../../docs/zh/4-upload-plugin.md)

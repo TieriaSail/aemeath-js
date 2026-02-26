@@ -5,10 +5,10 @@
  */
 
 import React, { Component, type ReactNode } from 'react';
-import { Logger, ErrorCapturePlugin } from 'aemeath-js';
+import { AemeathLogger, ErrorCapturePlugin } from 'aemeath-js';
 
 // 创建 logger
-const logger = new Logger();
+const logger = new AemeathLogger();
 logger.use(new ErrorCapturePlugin());
 
 // ==================== ErrorBoundary 组件 ====================

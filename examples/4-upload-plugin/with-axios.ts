@@ -4,7 +4,7 @@
  * 使用 Axios 作为 HTTP 客户端
  */
 
-import { Logger, UploadPlugin } from 'aemeath-js';
+import { AemeathLogger, UploadPlugin } from 'aemeath-js';
 // import axios from 'axios';
 
 // 模拟 axios（实际使用时需要安装 axios）
@@ -15,7 +15,7 @@ const axios = {
   },
 };
 
-const logger = new Logger();
+const logger = new AemeathLogger();
 
 logger.use(
   new UploadPlugin({
@@ -54,7 +54,7 @@ logger.use(
       // 业务优先级逻辑
       if (log.level === 'error') {
         // 支付相关错误最高优先级
-        if (log.extra?.module === 'payment') return 100;
+        if (log.tags?.module === 'payment') return 100;
         return 80;
       }
 

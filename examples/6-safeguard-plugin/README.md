@@ -60,9 +60,9 @@ while (true) {
 ## 基础使用
 
 ```typescript
-import { Logger, SafeGuardPlugin } from 'aemeath-js';
+import { AemeathLogger, SafeGuardPlugin } from 'aemeath-js';
 
-const logger = new Logger();
+const logger = new AemeathLogger();
 
 logger.use(
   new SafeGuardPlugin({
@@ -84,13 +84,13 @@ logger.use(
 
 ```typescript
 import {
-  Logger,
+  AemeathLogger,
   ErrorCapturePlugin,
   UploadPlugin,
   SafeGuardPlugin,
 } from 'aemeath-js';
 
-const logger = new Logger();
+const logger = new AemeathLogger();
 
 // 1. 安全保护（第一个安装）
 logger.use(
@@ -109,10 +109,11 @@ logger.use(new ErrorCapturePlugin());
 logger.use(
   new UploadPlugin({
     onUpload: async (log) => {
-      await fetch('/api/logs', {
+      const res = await fetch('/api/logs', {
         method: 'POST',
         body: JSON.stringify(log),
       });
+      return { success: res.ok };
     },
   }),
 );
@@ -127,7 +128,9 @@ export { logger };
 检查 Logger 的健康状态：
 
 ```typescript
-import { logger } from './logger';
+import { getAemeath } from 'aemeath-js';
+
+const logger = getAemeath();
 
 // 获取健康状态
 const health = logger.getHealth();
@@ -168,9 +171,9 @@ logger.on('resumed', () => {
 ### 案例1: 防止递归错误
 
 ```typescript
-import { Logger, ErrorCapturePlugin, SafeGuardPlugin } from 'aemeath-js';
+import { AemeathLogger, ErrorCapturePlugin, SafeGuardPlugin } from 'aemeath-js';
 
-const logger = new Logger();
+const logger = new AemeathLogger();
 
 // 必须先安装 SafeGuard
 logger.use(new SafeGuardPlugin());
@@ -183,7 +186,7 @@ function processData(data: any) {
     const result = JSON.parse(data); // 如果 data 不是 JSON 会抛错
     return result;
   } catch (error) {
-    logger.error('Parse error', error);
+    logger.error('Parse error', { error });
     throw error; // 再次抛出，被 ErrorCapturePlugin 捕获
   }
 }
@@ -200,9 +203,9 @@ try {
 ### 案例2: 防止日志风暴
 
 ```typescript
-import { Logger, SafeGuardPlugin } from 'aemeath-js';
+import { AemeathLogger, SafeGuardPlugin } from 'aemeath-js';
 
-const logger = new Logger();
+const logger = new AemeathLogger();
 logger.use(
   new SafeGuardPlugin({
     rateLimit: 10, // 每秒最多 10 条
@@ -211,7 +214,7 @@ logger.use(
 
 // 场景：WebSocket 消息过多
 websocket.on('message', (msg) => {
-  logger.info('Message received', { msg });
+  logger.info('Message received', { context: { msg } });
 });
 
 // 如果每秒收到 100 条消息
@@ -222,9 +225,9 @@ websocket.on('message', (msg) => {
 ### 案例3: 监控和告警
 
 ```typescript
-import { Logger, SafeGuardPlugin, UploadPlugin } from 'aemeath-js';
+import { AemeathLogger, SafeGuardPlugin, UploadPlugin } from 'aemeath-js';
 
-const logger = new Logger();
+const logger = new AemeathLogger();
 
 logger.use(
   new SafeGuardPlugin({
@@ -259,9 +262,9 @@ logger.on('paused', () => {
 ### 案例4: 优雅降级
 
 ```typescript
-import { Logger, SafeGuardPlugin } from 'aemeath-js';
+import { AemeathLogger, SafeGuardPlugin } from 'aemeath-js';
 
-const logger = new Logger();
+const logger = new AemeathLogger();
 
 logger.use(new SafeGuardPlugin());
 

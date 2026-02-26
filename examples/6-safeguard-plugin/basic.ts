@@ -2,10 +2,10 @@
  * SafeGuardPlugin - 基础使用示例
  */
 
-import { Logger, SafeGuardPlugin, ErrorCapturePlugin } from 'aemeath-js';
+import { AemeathLogger, SafeGuardPlugin, ErrorCapturePlugin } from 'aemeath-js';
 
 // 创建 Logger
-const logger = new Logger();
+const logger = new AemeathLogger();
 
 // ⚠️ 重要：SafeGuard 应该第一个安装
 logger.use(

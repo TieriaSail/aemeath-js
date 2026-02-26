@@ -51,51 +51,60 @@ interface UploadResult {
 
 ## 🚀 快速开始
 
-### 基础用法
+### 单例模式（推荐）
+
+`initAemeath()` 直接接受 `upload` 回调，无需手动注册 `UploadPlugin`：
 
 ```typescript
-import { Logger, UploadPlugin } from 'aemeath-js';
+import { initAemeath, getAemeath } from 'aemeath-js';
 
-const logger = new Logger();
+initAemeath({
+  upload: async (log) => {
+    const response = await fetch('/api/logs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(log),
+    });
+    const data = await response.json();
+    if (data.code === 200) {
+      return { success: true };
+    }
+    return { success: false, shouldRetry: true, error: data.message };
+  },
+});
+
+const logger = getAemeath();
+logger.error('Something went wrong', { error });
+```
+
+### 手动组装
+
+```typescript
+import { AemeathLogger, UploadPlugin } from 'aemeath-js';
+
+const logger = new AemeathLogger();
 
 logger.use(
   new UploadPlugin({
-    // 上传回调（必需）- 返回 UploadResult
     onUpload: async (log) => {
       try {
         const response = await fetch('/api/logs', {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(log),
         });
-
         const data = await response.json();
-
-        // 检查业务返回码
         if (data.code === 200) {
           return { success: true };
-        } else {
-          return {
-            success: false,
-            shouldRetry: true, // 业务错误，需要重试
-            error: data.message,
-          };
         }
+        return { success: false, shouldRetry: true, error: data.message };
       } catch (error) {
-        // 网络错误
-        return {
-          success: false,
-          shouldRetry: true, // 网络错误，需要重试
-          error: error.message,
-        };
+        return { success: false, shouldRetry: true, error: error.message };
       }
     },
   }),
 );
 
-// 使用
 logger.error('Something went wrong', { error });
 ```
 
@@ -146,10 +155,11 @@ logger.use(
 logger.use(
   new UploadPlugin({
     onUpload: async (log) => {
-      await fetch('/api/logs', {
+      const res = await fetch('/api/logs', {
         method: 'POST',
         body: JSON.stringify(log),
       });
+      return { success: res.ok };
     },
 
     // 优先级回调
@@ -158,7 +168,7 @@ logger.use(
       if (log.level === 'error') return 100;
 
       // 紧急业务日志
-      if (log.extra?.urgent) return 80;
+      if (log.tags?.urgent) return 80;
 
       // warn 日志普通优先级
       if (log.level === 'warn') return 50;
@@ -234,6 +244,7 @@ logger.use(
         method: 'POST',
         body: JSON.stringify(log),
       });
+      return { success: true };
     },
 
     // 优先级回调（可选）
@@ -258,7 +269,7 @@ logger.use(
     },
 
     // 页面卸载时上传
-    uploadOnUnload: true,
+    saveOnUnload: true,
   }),
 );
 ```
@@ -275,7 +286,7 @@ logger.use(
 | `queue.uploadInterval` | `number`                                   | `30000`                   | 自动上传间隔（毫秒）              |
 | `cache.enabled`        | `boolean`                                  | `true`                    | 是否启用缓存                      |
 | `cache.key`            | `string`                                   | `__logger_upload_queue__` | 缓存 key                          |
-| `uploadOnUnload`       | `boolean`                                  | `true`                    | 页面卸载时是否上传                |
+| `saveOnUnload`         | `boolean`                                  | `true`                    | 页面卸载时保存队列到缓存          |
 
 ---
 
@@ -288,8 +299,10 @@ logger.use(
 onUpload: async (log) => {
   try {
     await fetch('/api/logs', { body: JSON.stringify(log) });
+    return { success: true };
   } catch (error) {
-    logger.error('Upload failed', error); // 这会再次触发上传！
+    logger.error('Upload failed', { error }); // 这会再次触发上传！
+    return { success: false, shouldRetry: true };
   }
 };
 
@@ -297,8 +310,10 @@ onUpload: async (log) => {
 onUpload: async (log) => {
   try {
     await fetch('/api/logs', { body: JSON.stringify(log) });
+    return { success: true };
   } catch (error) {
     console.error('Upload failed:', error); // 安全
+    return { success: false, shouldRetry: true };
   }
 };
 ```
@@ -326,7 +341,7 @@ getPriority: (log) => {
 onUpload: async (log) => {
   let token = getAuthToken();
 
-  const response = await fetch('/api/logs', {
+  let response = await fetch('/api/logs', {
     headers: { Authorization: `Bearer ${token}` },
     body: JSON.stringify(log),
   });
@@ -334,11 +349,13 @@ onUpload: async (log) => {
   // 如果 401，刷新 token 后重试
   if (response.status === 401) {
     token = await refreshAuthToken();
-    await fetch('/api/logs', {
+    response = await fetch('/api/logs', {
       headers: { Authorization: `Bearer ${token}` },
       body: JSON.stringify(log),
     });
   }
+
+  return { success: response.ok };
 };
 ```
 

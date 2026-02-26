@@ -4,10 +4,10 @@
  * 在 React/Vue 挂载前就开始捕获错误
  */
 
-import { Logger, EarlyErrorCapturePlugin } from 'aemeath-js';
+import { AemeathLogger, EarlyErrorCapturePlugin } from 'aemeath-js';
 
 // 创建 logger
-const logger = new Logger();
+const logger = new AemeathLogger();
 
 // 添加早期错误捕获插件
 logger.use(

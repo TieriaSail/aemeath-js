@@ -39,14 +39,14 @@
 
     // jQuery 示例
     $('#myButton').click(function() {
-      logger.info('按钮被点击', { buttonId: 'myButton' });
+      logger.info('按钮被点击', { context: { buttonId: 'myButton' } });
     });
 
     // 捕获错误
     try {
       riskyOperation();
     } catch (e) {
-      logger.error('操作失败', { error: e.message });
+      logger.error('操作失败', { error: e });
     }
   </script>
 </body>
@@ -100,10 +100,11 @@ import { initAemeath } from 'aemeath-js';
 
 initAemeath({
   upload: async (log) => {
-    await fetch('/api/logs', {
+    const res = await fetch('/api/logs', {
       method: 'POST',
       body: JSON.stringify(log),
     });
+    return { success: res.ok };
   },
   context: {
     userId: '12345',
@@ -122,7 +123,7 @@ const logger = getAemeath();
 logger.info('Hello World'); // context 自动附加
 
 // 动态更新上下文
-logger.updateContext({ userId: '67890' });
+logger.updateContext('userId', '67890');
 ```
 
 **默认已启用哪些插件？** `initAemeath()` 会自动启用以下插件：
@@ -164,7 +165,7 @@ initAemeath({ errorCapture: true });
 // 错误 + 上报（8KB）
 initAemeath({
   errorCapture: true,
-  upload: async (log) => { /* ... */ },
+  upload: async (log) => { /* ... */ return { success: true }; },
 });
 
 // 错误 + 性能监控（7KB）
@@ -363,7 +364,7 @@ initAemeath({
 ```tsx
 // main.tsx — 第一步：初始化（和上面一样）
 import { initAemeath } from 'aemeath-js';
-initAemeath({ upload: async (log) => { /* ... */ } });
+initAemeath({ upload: async (log) => { /* ... */ return { success: true }; } });
 ```
 
 ```tsx
@@ -394,7 +395,7 @@ import { createApp } from 'vue';
 import { initAemeath } from 'aemeath-js';
 import { createAemeathPlugin } from 'aemeath-js/vue';
 
-initAemeath({ upload: async (log) => { /* ... */ } });
+initAemeath({ upload: async (log) => { /* ... */ return { success: true }; } });
 
 const app = createApp(App);
 app.use(createAemeathPlugin({ captureWarnings: true }));
