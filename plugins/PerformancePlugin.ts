@@ -1,30 +1,50 @@
 /**
- * 性能监控插件 - 监控 Web Vitals 和性能指标
+ * Performance monitoring plugin — Web Vitals & custom metrics
  *
- * 体积：~4KB
- * 依赖：无
- * 功能：
- * - Web Vitals（LCP, FID, CLS, FCP, TTFB）
- * - 资源加载时间
- * - 自定义性能标记
+ * Design principles:
+ * 1. Lightweight: zero dependencies, pure PerformanceObserver API
+ * 2. Safe: all browser API calls are wrapped in try/catch, never breaks the app
+ * 3. Accurate: LCP/CLS/INP report final values on visibilitychange, no noise
+ * 4. Modern: uses INP (replaced FID as Core Web Vital since 2024)
  */
 
 import type { AemeathPlugin, AemeathInterface } from '../types';
 
-export interface PerformancePluginOptions {
-  /** 是否监控 Web Vitals */
-  monitorWebVitals?: boolean;
+export interface WebVitalsOptions {
+  /** Monitor LCP @default true */
+  lcp?: boolean;
+  /** Monitor INP @default true */
+  inp?: boolean;
+  /** Monitor CLS @default true */
+  cls?: boolean;
+  /** Monitor FCP @default true */
+  fcp?: boolean;
+  /** Monitor TTFB @default true */
+  ttfb?: boolean;
+}
 
-  /** 是否监控资源加载 */
+export interface PerformancePluginOptions {
+  /**
+   * Web Vitals monitoring.
+   * - `true` (default): monitor all Web Vitals
+   * - `false`: disable all Web Vitals
+   * - `WebVitalsOptions`: fine-grained control per metric
+   */
+  monitorWebVitals?: boolean | WebVitalsOptions;
+
+  /** Monitor slow resource loading @default false */
   monitorResources?: boolean;
 
-  /** 是否监控长任务 */
+  /** Monitor long tasks (main thread blocking) @default false */
   monitorLongTasks?: boolean;
 
-  /** 长任务阈值（ms） */
+  /** Long task threshold (ms) @default 50 */
   longTaskThreshold?: number;
 
-  /** 采样率（0-1） */
+  /** Slow resource threshold (ms) @default 1000 */
+  slowResourceThreshold?: number;
+
+  /** Sampling rate for auto-collection (0-1), does not affect manual mark/measure @default 1 */
   sampleRate?: number;
 }
 
@@ -33,27 +53,65 @@ interface PerformanceMetric {
   value: number;
   rating: 'good' | 'needs-improvement' | 'poor';
   delta?: number;
-  id?: string;
 }
 
-type PerformancePluginConfig = Required<PerformancePluginOptions>;
+interface ResolvedConfig {
+  vitals: Required<WebVitalsOptions>;
+  monitorResources: boolean;
+  monitorLongTasks: boolean;
+  longTaskThreshold: number;
+  slowResourceThreshold: number;
+  sampleRate: number;
+}
 
 export class PerformancePlugin implements AemeathPlugin {
   readonly name = 'performance';
-  readonly version = '1.0.0';
-  readonly description = '性能监控';
+  readonly version = '2.1.0';
+  readonly description = 'Performance monitoring';
 
-  private readonly config: PerformancePluginConfig;
+  private readonly config: ResolvedConfig;
   private logger: AemeathInterface | null = null;
   private observers: PerformanceObserver[] = [];
   private readonly marks: Map<string, number> = new Map();
 
+  private lcpValue: number = -1;
+  private lcpReported = false;
+
+  private clsSessionValue = 0;
+  private clsSessionEntries: number[] = [];
+  private clsMaxSessionValue = 0;
+  private clsLastEntryTime = 0;
+  private clsReported = false;
+
+  private inpWorstLatency = 0;
+  private inpReported = false;
+
+  private sampled = true;
+  private boundOnHidden: (() => void) | null = null;
+
   constructor(options: PerformancePluginOptions = {}) {
+    const mwv = options.monitorWebVitals;
+    let vitals: Required<WebVitalsOptions>;
+    if (mwv === false) {
+      vitals = { lcp: false, inp: false, cls: false, fcp: false, ttfb: false };
+    } else if (typeof mwv === 'object') {
+      vitals = {
+        lcp: mwv.lcp ?? true,
+        inp: mwv.inp ?? true,
+        cls: mwv.cls ?? true,
+        fcp: mwv.fcp ?? true,
+        ttfb: mwv.ttfb ?? true,
+      };
+    } else {
+      vitals = { lcp: true, inp: true, cls: true, fcp: true, ttfb: true };
+    }
+
     this.config = {
-      monitorWebVitals: options.monitorWebVitals ?? true,
+      vitals,
       monitorResources: options.monitorResources ?? false,
       monitorLongTasks: options.monitorLongTasks ?? false,
       longTaskThreshold: options.longTaskThreshold ?? 50,
+      slowResourceThreshold: options.slowResourceThreshold ?? 1000,
       sampleRate: options.sampleRate ?? 1,
     };
   }
@@ -61,12 +119,19 @@ export class PerformancePlugin implements AemeathPlugin {
   install(logger: AemeathInterface): void {
     this.logger = logger;
 
-    // 采样检查
-    if (Math.random() > this.config.sampleRate) {
+    // 手动 mark/measure API 始终可用，不受采样率限制
+    (logger as any).startMark = this.startMark.bind(this);
+    (logger as any).endMark = this.endMark.bind(this);
+    (logger as any).measure = this.measure.bind(this);
+
+    // 自动采集受采样率控制
+    this.sampled = Math.random() < this.config.sampleRate;
+    if (!this.sampled) {
       return;
     }
 
-    if (this.config.monitorWebVitals) {
+    const v = this.config.vitals;
+    if (v.lcp || v.inp || v.cls || v.fcp || v.ttfb) {
       this.monitorWebVitals();
     }
 
@@ -77,64 +142,183 @@ export class PerformancePlugin implements AemeathPlugin {
     if (this.config.monitorLongTasks) {
       this.monitorLongTasks();
     }
-
-    // 添加自定义 API
-    (logger as any).startMark = this.startMark.bind(this);
-    (logger as any).endMark = this.endMark.bind(this);
-    (logger as any).measure = this.measure.bind(this);
   }
 
   uninstall(logger: AemeathInterface): void {
-    this.observers.forEach((observer) => observer.disconnect());
+    // 断开所有 PerformanceObserver
+    for (const observer of this.observers) {
+      try { observer.disconnect(); } catch { /* safe */ }
+    }
     this.observers = [];
+
+    // 清理 visibilitychange 监听
+    if (this.boundOnHidden) {
+      try {
+        document.removeEventListener('visibilitychange', this.boundOnHidden);
+      } catch { /* safe: SSR */ }
+      this.boundOnHidden = null;
+    }
+
     this.marks.clear();
     this.logger = null;
+
+    // 重置状态
+    this.lcpValue = -1;
+    this.lcpReported = false;
+    this.clsSessionValue = 0;
+    this.clsSessionEntries = [];
+    this.clsMaxSessionValue = 0;
+    this.clsLastEntryTime = 0;
+    this.clsReported = false;
+    this.inpWorstLatency = 0;
+    this.inpReported = false;
 
     delete (logger as any).startMark;
     delete (logger as any).endMark;
     delete (logger as any).measure;
   }
 
+  // ==================== Web Vitals ====================
+
   private monitorWebVitals(): void {
     if (typeof window === 'undefined' || !('PerformanceObserver' in window)) {
       return;
     }
 
-    // LCP (Largest Contentful Paint)
-    this.observeMetric('largest-contentful-paint', (entry: any) => {
+    const v = this.config.vitals;
+    if (v.lcp) this.observeLCP();
+    if (v.inp) this.observeINP();
+    if (v.cls) this.observeCLS();
+    if (v.fcp) this.observeFCP();
+    if (v.ttfb) this.observeTTFB();
+
+    // LCP/CLS/INP are cumulative — report final values when page is hidden
+    if (v.lcp || v.inp || v.cls) {
+      this.boundOnHidden = () => {
+        if (document.visibilityState === 'hidden') {
+          this.flushFinalMetrics();
+        }
+      };
+      try {
+        document.addEventListener('visibilitychange', this.boundOnHidden);
+      } catch { /* safe: SSR */ }
+    }
+  }
+
+  /**
+   * 页面隐藏时上报累积型指标的最终值
+   * LCP、CLS、INP 都属于"需要等到最后才知道最终值"的指标
+   */
+  private flushFinalMetrics(): void {
+    // LCP: 上报最后一个候选值
+    if (!this.lcpReported && this.lcpValue >= 0) {
+      this.lcpReported = true;
       this.reportMetric({
         name: 'LCP',
-        value: entry.renderTime || entry.loadTime,
-        rating: this.rateLCP(entry.renderTime || entry.loadTime),
-        id: entry.id,
+        value: this.lcpValue,
+        rating: this.rateLCP(this.lcpValue),
       });
-    });
+    }
 
-    // FID (First Input Delay)
-    this.observeMetric('first-input', (entry: any) => {
+    // CLS: 上报最大 session window 值
+    if (!this.clsReported) {
+      this.clsReported = true;
+      // 最终的 session 可能还没结算，取 max
+      const finalCLS = Math.max(this.clsMaxSessionValue, this.clsSessionValue);
       this.reportMetric({
-        name: 'FID',
-        value: entry.processingStart - entry.startTime,
-        rating: this.rateFID(entry.processingStart - entry.startTime),
-        id: entry.id,
+        name: 'CLS',
+        value: Math.round(finalCLS * 10000) / 10000,
+        rating: this.rateCLS(finalCLS),
       });
-    });
+    }
 
-    // CLS (Cumulative Layout Shift)
-    let clsValue = 0;
-    this.observeMetric('layout-shift', (entry: any) => {
-      if (!entry.hadRecentInput) {
-        clsValue += entry.value;
-        this.reportMetric({
-          name: 'CLS',
-          value: clsValue,
-          rating: this.rateCLS(clsValue),
-          delta: entry.value,
-        });
+    // INP: 上报最慢交互延迟
+    if (!this.inpReported && this.inpWorstLatency > 0) {
+      this.inpReported = true;
+      this.reportMetric({
+        name: 'INP',
+        value: this.inpWorstLatency,
+        rating: this.rateINP(this.inpWorstLatency),
+      });
+    }
+  }
+
+  /**
+   * LCP (Largest Contentful Paint)
+   * 浏览器会在找到更大元素时多次触发，只缓存不上报
+   */
+  private observeLCP(): void {
+    this.observeMetric('largest-contentful-paint', (entry: any) => {
+      const value = entry.renderTime || entry.loadTime;
+      if (typeof value === 'number' && value > 0) {
+        this.lcpValue = value;
       }
     });
+  }
 
-    // FCP (First Contentful Paint)
+  /**
+   * INP (Interaction to Next Paint) - 2024 年起替代 FID 的核心指标
+   *
+   * 通过 event timing API 监控所有用户交互（click, keydown, pointerdown 等），
+   * 取最慢交互的 duration 作为 INP 值。
+   *
+   * durationThreshold: 16 表示只关注 >16ms 的事件（一帧），
+   * 减少回调次数以降低自身性能开销。
+   */
+  private observeINP(): void {
+    try {
+      const observer = new PerformanceObserver((list) => {
+        for (const entry of list.getEntries()) {
+          const e = entry as any;
+          // interactionId > 0 表示这是一个真实的用户交互事件
+          if (e.interactionId && e.interactionId > 0 && e.duration > this.inpWorstLatency) {
+            this.inpWorstLatency = e.duration;
+          }
+        }
+      });
+      observer.observe({ type: 'event', buffered: true, durationThreshold: 16 } as any);
+      this.observers.push(observer);
+    } catch {
+      // 浏览器不支持 event timing — 静默降级
+    }
+  }
+
+  /**
+   * CLS (Cumulative Layout Shift) — Session Window 算法
+   *
+   * Google 标准算法：
+   * - 将 layout shift 按时间分组为 session window
+   * - 同一 session 内相邻 shift 间隔 ≤1s，session 总时长 ≤5s
+   * - 取所有 session 中得分最高的那个作为 CLS 值
+   */
+  private observeCLS(): void {
+    this.observeMetric('layout-shift', (entry: any) => {
+      if (entry.hadRecentInput) return;
+
+      const now = entry.startTime;
+      const gap = now - this.clsLastEntryTime;
+
+      // 新 session：间隔 >1s 或当前 session 已超 5s
+      if (gap > 1000 || (this.clsSessionEntries.length > 0 && now - this.clsSessionEntries[0]! > 5000)) {
+        // 结算上一个 session
+        if (this.clsSessionValue > this.clsMaxSessionValue) {
+          this.clsMaxSessionValue = this.clsSessionValue;
+        }
+        // 开始新 session
+        this.clsSessionValue = 0;
+        this.clsSessionEntries = [];
+      }
+
+      this.clsSessionValue += entry.value;
+      this.clsSessionEntries.push(now);
+      this.clsLastEntryTime = now;
+    });
+  }
+
+  /**
+   * FCP (First Contentful Paint) — 一次性指标，立即上报
+   */
+  private observeFCP(): void {
     this.observeMetric('paint', (entry: any) => {
       if (entry.name === 'first-contentful-paint') {
         this.reportMetric({
@@ -144,22 +328,30 @@ export class PerformancePlugin implements AemeathPlugin {
         });
       }
     });
-
-    // TTFB (Time to First Byte)
-    if (typeof window !== 'undefined' && 'performance' in window) {
-      const navEntry = performance.getEntriesByType(
-        'navigation',
-      )[0] as PerformanceNavigationTiming;
-      if (navEntry) {
-        const ttfb = navEntry.responseStart - navEntry.requestStart;
-        this.reportMetric({
-          name: 'TTFB',
-          value: ttfb,
-          rating: this.rateTTFB(ttfb),
-        });
-      }
-    }
   }
+
+  /**
+   * TTFB (Time to First Byte) — 一次性指标，立即上报
+   */
+  private observeTTFB(): void {
+    try {
+      if (typeof window === 'undefined' || !('performance' in window)) return;
+
+      const navEntry = performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming | undefined;
+      if (navEntry && navEntry.responseStart > 0) {
+        const ttfb = navEntry.responseStart - navEntry.requestStart;
+        if (ttfb >= 0) {
+          this.reportMetric({
+            name: 'TTFB',
+            value: ttfb,
+            rating: this.rateTTFB(ttfb),
+          });
+        }
+      }
+    } catch { /* safe */ }
+  }
+
+  // ==================== 资源 & 长任务 ====================
 
   private monitorResources(): void {
     if (typeof window === 'undefined' || !('PerformanceObserver' in window)) {
@@ -167,15 +359,14 @@ export class PerformancePlugin implements AemeathPlugin {
     }
 
     this.observeMetric('resource', (entry: any) => {
-      // 只记录慢资源
-      if (entry.duration > 1000) {
-        this.logger?.warn('慢资源加载', {
+      if (entry.duration > this.config.slowResourceThreshold) {
+        this.logger?.warn('[performance] slow-resource', {
           tags: { category: 'performance', type: 'slow-resource' },
           context: {
             resource: {
               name: entry.name,
               type: entry.initiatorType,
-              duration: entry.duration,
+              duration: Math.round(entry.duration),
               size: entry.transferSize,
             },
           },
@@ -191,12 +382,12 @@ export class PerformancePlugin implements AemeathPlugin {
 
     this.observeMetric('longtask', (entry: any) => {
       if (entry.duration > this.config.longTaskThreshold) {
-        this.logger?.warn('长任务检测', {
+        this.logger?.warn('[performance] long-task', {
           tags: { category: 'performance', type: 'long-task' },
           context: {
             task: {
-              duration: entry.duration,
-              startTime: entry.startTime,
+              duration: Math.round(entry.duration),
+              startTime: Math.round(entry.startTime),
               name: entry.name,
             },
           },
@@ -205,42 +396,48 @@ export class PerformancePlugin implements AemeathPlugin {
     });
   }
 
+  // ==================== 通用 ====================
+
   private observeMetric(type: string, callback: (entry: any) => void): void {
     try {
       const observer = new PerformanceObserver((list) => {
-        for (const entry of list.getEntries()) {
-          callback(entry);
-        }
+        try {
+          for (const entry of list.getEntries()) {
+            callback(entry);
+          }
+        } catch { /* 回调内异常不外泄 */ }
       });
       observer.observe({ type, buffered: true });
       this.observers.push(observer);
-    } catch (error) {
-      // 某些浏览器可能不支持特定的性能指标
-      console.warn(`无法监控 ${type}:`, error);
+    } catch {
+      // 浏览器不支持该指标类型 — 静默降级
     }
   }
 
   private reportMetric(metric: PerformanceMetric): void {
-    this.logger?.info('性能指标', {
-      tags: {
-        category: 'performance',
-        metric: metric.name,
-        rating: metric.rating,
-      },
-      context: { metric },
-    });
+    try {
+      this.logger?.info('[performance] web-vital', {
+        tags: {
+          category: 'performance',
+          metric: metric.name,
+          rating: metric.rating,
+        },
+        context: { metric },
+      });
+    } catch { /* safe */ }
   }
 
-  // Web Vitals 评级标准
+  // ==================== 评级标准 ====================
+
   private rateLCP(value: number): 'good' | 'needs-improvement' | 'poor' {
     if (value <= 2500) return 'good';
     if (value <= 4000) return 'needs-improvement';
     return 'poor';
   }
 
-  private rateFID(value: number): 'good' | 'needs-improvement' | 'poor' {
-    if (value <= 100) return 'good';
-    if (value <= 300) return 'needs-improvement';
+  private rateINP(value: number): 'good' | 'needs-improvement' | 'poor' {
+    if (value <= 200) return 'good';
+    if (value <= 500) return 'needs-improvement';
     return 'poor';
   }
 
@@ -262,83 +459,64 @@ export class PerformancePlugin implements AemeathPlugin {
     return 'poor';
   }
 
-  // 自定义性能标记 API
+  // ==================== 自定义性能标记 API ====================
 
-  /**
-   * 开始性能标记
-   */
   startMark(name: string): void {
     this.marks.set(name, Date.now());
-    if (typeof window !== 'undefined' && 'performance' in window) {
-      performance.mark(`${name}-start`);
-    }
+    try {
+      if (typeof window !== 'undefined' && 'performance' in window) {
+        performance.mark(`${name}-start`);
+      }
+    } catch { /* safe */ }
   }
 
-  /**
-   * 结束性能标记并记录
-   */
   endMark(name: string): number | null {
     const startTime = this.marks.get(name);
-    if (!startTime) {
+    if (startTime === undefined) {
       return null;
     }
 
     const duration = Date.now() - startTime;
     this.marks.delete(name);
 
-    if (typeof window !== 'undefined' && 'performance' in window) {
-      performance.mark(`${name}-end`);
-      try {
+    try {
+      if (typeof window !== 'undefined' && 'performance' in window) {
+        performance.mark(`${name}-end`);
         performance.measure(name, `${name}-start`, `${name}-end`);
-      } catch {
-        // 忽略错误
       }
-    }
+    } catch { /* safe */ }
 
-    this.logger?.info('性能测量', {
-      tags: { category: 'performance', type: 'measurement', name },
-      context: {
-        measurement: {
-          name,
-          duration,
-          timestamp: Date.now(),
+    try {
+      this.logger?.info('[performance] measurement', {
+        tags: { category: 'performance', type: 'measurement', name },
+        context: {
+          measurement: { name, duration, timestamp: Date.now() },
         },
-      },
-    });
+      });
+    } catch { /* safe */ }
 
     return duration;
   }
 
-  /**
-   * 测量两个标记之间的时间
-   */
   measure(name: string, startMark: string, endMark: string): number | null {
-    if (typeof window === 'undefined' || !('performance' in window)) {
-      return null;
-    }
-
     try {
+      if (typeof window === 'undefined' || !('performance' in window)) {
+        return null;
+      }
+
       performance.measure(name, startMark, endMark);
       const measures = performance.getEntriesByName(name, 'measure');
       if (measures.length > 0) {
         const duration = measures[measures.length - 1]!.duration;
-        this.logger?.info('性能测量', {
+        this.logger?.info('[performance] measurement', {
           tags: { category: 'performance', type: 'measurement', name },
           context: {
-            measurement: {
-              name,
-              duration,
-              startMark,
-              endMark,
-              timestamp: Date.now(),
-            },
+            measurement: { name, duration, startMark, endMark, timestamp: Date.now() },
           },
         });
         return duration;
       }
-    } catch (error) {
-      console.warn(`性能测量失败: ${name}`, error);
-    }
+    } catch { /* safe */ }
 
     return null;
   }

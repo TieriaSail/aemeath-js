@@ -16,7 +16,7 @@
 | **Module 3** | SourceMap Parser | [View Docs](./en/3-sourcemap-parser.md) |
 | **Module 4** | Upload Plugin | [View Docs](./en/4-upload-plugin.md) |
 | **Module 5** | Global Context | [View Docs](./en/5-global-context.md) |
-| **Module 6** | Performance Monitoring | [View Docs](./en/6-performance-monitoring.md) |
+| **Module 6** | 🧪 Performance Monitoring (experimental) | [View Docs](./en/6-performance-monitoring.md) |
 
 ### 🔗 Links
 
@@ -38,7 +38,7 @@
 | **模块 3** | SourceMap 解析 | [查看文档](./zh/3-sourcemap-parser.md) |
 | **模块 4** | 上报插件 | [查看文档](./zh/4-upload-plugin.md) |
 | **模块 5** | 全局上下文 | [查看文档](./zh/5-global-context.md) |
-| **模块 6** | 性能监控 | [查看文档](./zh/6-performance-monitoring.md) |
+| **模块 6** | 🧪 性能监控（实验性） | [查看文档](./zh/6-performance-monitoring.md) |
 
 ### 🔗 链接
 

@@ -136,11 +136,6 @@ logger.updateContext('userId', '67890');
 | `EarlyErrorCapturePlugin` | When build plugin is configured | — |
 
 > 💡 **Need more capabilities?** You can `.use()` additional plugins at any time. Duplicate `.use()` calls are safely ignored.
->
-> ```typescript
-> const logger = getAemeath();
-> logger.use(new PerformancePlugin({ monitorWebVitals: true }));
-> ```
 
 ---
 
@@ -152,7 +147,7 @@ logger.updateContext('userId', '67890');
 | **EarlyErrorCapturePlugin** | Errors before React/Vue mount | +3KB | Optional |
 | **UploadPlugin** | Upload to server | +5KB | Optional |
 | **SourceMap Parser** | Parse obfuscated stacks | +6KB | Optional |
-| **PerformancePlugin** | Web Vitals monitoring | +4KB | Optional |
+| **PerformancePlugin** | 🧪 Web Vitals monitoring (experimental, [learn more](./docs/en/6-performance-monitoring.md)) | +4KB | Optional |
 | **SafeGuardPlugin** | Prevent logger crashes | +3KB | Recommended for production |
 
 **On-demand loading examples:**
@@ -167,15 +162,6 @@ initAemeath({
   upload: async (log) => { /* ... */ return { success: true }; },
 });
 
-// Error + Performance (7KB)
-import { getAemeath } from 'aemeath-js';
-import { PerformancePlugin } from 'aemeath-js';
-
-initAemeath({ errorCapture: true });
-getAemeath().use(new PerformancePlugin({
-  monitorWebVitals: true,
-  sampleRate: 0.1,
-}));
 ```
 
 ---
@@ -300,29 +286,6 @@ const parser = createParser({
 });
 
 const result = await parser.parse(errorStack);
-```
-
-### Performance Monitoring (Optional)
-
-```typescript
-import { getAemeath } from 'aemeath-js';
-import { PerformancePlugin } from 'aemeath-js';
-
-initAemeath({ errorCapture: true });
-getAemeath().use(new PerformancePlugin({
-  monitorWebVitals: true,     // Monitor LCP, FID, CLS, FCP, TTFB
-  monitorResources: false,    // Monitor slow resources (optional)
-  monitorLongTasks: true,     // Monitor long tasks (optional)
-  longTaskThreshold: 50,      // Long task threshold (ms)
-  sampleRate: 0.1,            // 10% sampling rate (recommended for production)
-}));
-
-// Custom performance measurement
-const logger = getAemeath();
-logger.startMark('data-fetch');
-const data = await fetchData();
-const duration = logger.endMark('data-fetch');
-console.log(`Data fetch took: ${duration}ms`);
 ```
 
 ### Network Monitoring (Enabled by Default)
@@ -462,5 +425,5 @@ initAemeath({
 - [Early Error Capture](./docs/en/2-early-error-capture.md)
 - [SourceMap Parser](./docs/en/3-sourcemap-parser.md)
 - [Upload Plugin](./docs/en/4-upload-plugin.md)
-- [Performance Monitoring](./docs/en/6-performance-monitoring.md)
+- [Performance Monitoring](./docs/en/6-performance-monitoring.md) (🧪 experimental)
 - [Examples](./examples/)

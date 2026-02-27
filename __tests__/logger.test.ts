@@ -308,6 +308,250 @@ describe('AemeathLogger Core', () => {
     });
   });
 
+  // ==================== beforeLog / afterLog 管道 ====================
+
+  describe('beforeLog / afterLog 管道', () => {
+    it('beforeLog 返回 false 应拦截日志', () => {
+      const listener = vi.fn();
+      logger.on('log', listener);
+
+      const plugin: AemeathPlugin = {
+        name: 'blocker',
+        install: vi.fn(),
+        beforeLog: () => false,
+      };
+      logger.use(plugin);
+
+      logger.info('should be blocked');
+
+      expect(listener).not.toHaveBeenCalled();
+    });
+
+    it('beforeLog 返回 void 应放行日志', () => {
+      const listener = vi.fn();
+      logger.on('log', listener);
+
+      const plugin: AemeathPlugin = {
+        name: 'passthrough',
+        install: vi.fn(),
+        beforeLog: () => {},
+      };
+      logger.use(plugin);
+
+      logger.info('should pass');
+
+      expect(listener).toHaveBeenCalledTimes(1);
+      expect(listener.mock.calls[0][0].message).toBe('should pass');
+    });
+
+    it('beforeLog 返回对象应修改日志参数', () => {
+      const listener = vi.fn();
+      logger.on('log', listener);
+
+      const plugin: AemeathPlugin = {
+        name: 'modifier',
+        install: vi.fn(),
+        beforeLog: (level, message, options) => ({
+          level: 'warn',
+          message: `[modified] ${message}`,
+          options,
+        }),
+      };
+      logger.use(plugin);
+
+      logger.info('original');
+
+      expect(listener).toHaveBeenCalledTimes(1);
+      const entry: LogEntry = listener.mock.calls[0][0];
+      expect(entry.level).toBe('warn');
+      expect(entry.message).toBe('[modified] original');
+    });
+
+    it('多个 beforeLog 插件应按安装顺序执行', () => {
+      const order: string[] = [];
+      const listener = vi.fn();
+      logger.on('log', listener);
+
+      logger.use({
+        name: 'first',
+        install: vi.fn(),
+        beforeLog: () => { order.push('first'); },
+      });
+      logger.use({
+        name: 'second',
+        install: vi.fn(),
+        beforeLog: () => { order.push('second'); },
+      });
+
+      logger.info('test');
+
+      expect(order).toEqual(['first', 'second']);
+      expect(listener).toHaveBeenCalledTimes(1);
+    });
+
+    it('beforeLog 短路后后续插件不执行', () => {
+      const secondCalled = vi.fn();
+      const listener = vi.fn();
+      logger.on('log', listener);
+
+      logger.use({
+        name: 'blocker',
+        install: vi.fn(),
+        beforeLog: () => false,
+      });
+      logger.use({
+        name: 'second',
+        install: vi.fn(),
+        beforeLog: secondCalled,
+      });
+
+      logger.info('test');
+
+      expect(secondCalled).not.toHaveBeenCalled();
+      expect(listener).not.toHaveBeenCalled();
+    });
+
+    it('afterLog 返回 false 应阻止监听器触发', () => {
+      const listener = vi.fn();
+      logger.on('log', listener);
+
+      const plugin: AemeathPlugin = {
+        name: 'after-blocker',
+        install: vi.fn(),
+        afterLog: () => false,
+      };
+      logger.use(plugin);
+
+      logger.info('should not reach listener');
+
+      expect(listener).not.toHaveBeenCalled();
+    });
+
+    it('afterLog 返回 LogEntry 应修改传递给监听器的数据', () => {
+      const listener = vi.fn();
+      logger.on('log', listener);
+
+      const plugin: AemeathPlugin = {
+        name: 'after-modifier',
+        install: vi.fn(),
+        afterLog: (entry) => ({
+          ...entry,
+          message: `[enriched] ${entry.message}`,
+        }),
+      };
+      logger.use(plugin);
+
+      logger.info('original');
+
+      expect(listener).toHaveBeenCalledTimes(1);
+      expect(listener.mock.calls[0][0].message).toBe('[enriched] original');
+    });
+
+    it('afterLog 返回 void 应保持原样传递', () => {
+      const listener = vi.fn();
+      logger.on('log', listener);
+
+      const plugin: AemeathPlugin = {
+        name: 'after-noop',
+        install: vi.fn(),
+        afterLog: () => {},
+      };
+      logger.use(plugin);
+
+      logger.info('unchanged');
+
+      expect(listener).toHaveBeenCalledTimes(1);
+      expect(listener.mock.calls[0][0].message).toBe('unchanged');
+    });
+
+    it('beforeLog 和 afterLog 应协同工作', () => {
+      const listener = vi.fn();
+      logger.on('log', listener);
+
+      logger.use({
+        name: 'before-plugin',
+        install: vi.fn(),
+        beforeLog: (level, message, options) => ({
+          level,
+          message: `[before] ${message}`,
+          options,
+        }),
+      });
+      logger.use({
+        name: 'after-plugin',
+        install: vi.fn(),
+        afterLog: (entry) => ({
+          ...entry,
+          message: `${entry.message} [after]`,
+        }),
+      });
+
+      logger.info('core');
+
+      expect(listener).toHaveBeenCalledTimes(1);
+      expect(listener.mock.calls[0][0].message).toBe('[before] core [after]');
+    });
+
+    it('beforeLog 抛出异常不应阻断管道', () => {
+      const listener = vi.fn();
+      logger.on('log', listener);
+
+      logger.use({
+        name: 'broken',
+        install: vi.fn(),
+        beforeLog: () => { throw new Error('plugin crash'); },
+      });
+
+      expect(() => logger.info('still works')).not.toThrow();
+      expect(listener).toHaveBeenCalledTimes(1);
+    });
+
+    it('afterLog 抛出异常不应阻断管道', () => {
+      const listener = vi.fn();
+      logger.on('log', listener);
+
+      logger.use({
+        name: 'broken-after',
+        install: vi.fn(),
+        afterLog: () => { throw new Error('afterLog crash'); },
+      });
+
+      expect(() => logger.info('still works')).not.toThrow();
+      expect(listener).toHaveBeenCalledTimes(1);
+    });
+
+    it('卸载插件后 beforeLog 不再生效', () => {
+      const listener = vi.fn();
+      logger.on('log', listener);
+
+      logger.use({
+        name: 'temp-blocker',
+        install: vi.fn(),
+        beforeLog: () => false,
+      });
+
+      logger.info('blocked');
+      expect(listener).not.toHaveBeenCalled();
+
+      logger.uninstall('temp-blocker');
+      logger.info('unblocked');
+      expect(listener).toHaveBeenCalledTimes(1);
+      expect(listener.mock.calls[0][0].message).toBe('unblocked');
+    });
+
+    it('没有 beforeLog/afterLog 的插件不影响管道', () => {
+      const listener = vi.fn();
+      logger.on('log', listener);
+
+      logger.use({ name: 'plain', install: vi.fn() });
+
+      logger.info('normal');
+
+      expect(listener).toHaveBeenCalledTimes(1);
+      expect(listener.mock.calls[0][0].message).toBe('normal');
+    });
+  });
+
   // ==================== environment / release ====================
 
   describe('environment / release', () => {

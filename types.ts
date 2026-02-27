@@ -142,7 +142,33 @@ export interface LogOptions {
 }
 
 /**
+ * beforeLog hook 的返回值
+ *
+ * - false：拦截日志（不进入管道）
+ * - 对象：修改日志参数后继续
+ * - true / undefined / void：放行
+ */
+export type BeforeLogResult =
+  | false
+  | void
+  | boolean
+  | { level: LogLevel; message: string; options: LogOptions };
+
+/**
+ * afterLog hook 的返回值
+ *
+ * - false：拦截日志（不继续传递给 listener）
+ * - LogEntry：使用修改后的 entry 继续
+ * - void：原样继续
+ */
+export type AfterLogResult = false | LogEntry | void;
+
+/**
  * 插件接口
+ *
+ * 插件通过可选的 beforeLog / afterLog hook 参与日志管道：
+ * - beforeLog：日志创建前调用，可拦截或修改参数
+ * - afterLog：LogEntry 构建后、通知 listener 前调用，可拦截或修改 entry
  */
 export interface AemeathPlugin {
   /** 插件名称（必须唯一） */
@@ -162,6 +188,28 @@ export interface AemeathPlugin {
 
   /** 插件描述（可选） */
   description?: string;
+
+  /**
+   * 日志前置拦截（在 LogEntry 创建之前调用）
+   *
+   * - 返回 false → 拦截该日志，不进入管道
+   * - 返回 { level, message, options } → 使用修改后的参数继续
+   * - 返回 true / undefined / void → 原样放行
+   */
+  beforeLog?(
+    level: LogLevel,
+    message: string,
+    options: LogOptions,
+  ): BeforeLogResult;
+
+  /**
+   * 日志后置处理（在 LogEntry 构建完成后、通知 listener 之前调用）
+   *
+   * - 返回 false → 拦截（不传递给 listener）
+   * - 返回 LogEntry → 使用修改后的 entry 继续
+   * - 返回 void → 原样继续
+   */
+  afterLog?(entry: LogEntry): AfterLogResult;
 }
 
 /**

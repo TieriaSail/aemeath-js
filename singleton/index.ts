@@ -11,7 +11,7 @@ import { AemeathLogger } from '../core/Logger';
 import { ErrorCapturePlugin } from '../plugins/ErrorCapturePlugin';
 import { EarlyErrorCapturePlugin } from '../plugins/EarlyErrorCapturePlugin';
 import { UploadPlugin, type UploadResult } from '../plugins/UploadPlugin';
-import { SafeGuardPlugin } from '../plugins/SafeGuardPlugin';
+import { SafeGuardPlugin, type SafeGuardMode } from '../plugins/SafeGuardPlugin';
 import { NetworkPlugin, type NetworkLogType } from '../plugins/NetworkPlugin';
 import type { LogEntry } from '../types';
 
@@ -56,7 +56,7 @@ export interface RouteMatchConfig {
  *
  * // 带路由过滤
  * initAemeath({
- *   upload: async (log) => { /* ... */ return { success: true }; },
+ *   upload: async (log) => { return { success: true }; },
  *   routeMatch: {
  *     includeRoutes: ['/home', '/product', /^\/user\/.+/],
  *     excludeRoutes: ['/debug']
@@ -196,18 +196,34 @@ export interface AemeathInitOptions {
   context?: Record<string, unknown>;
 
   /**
-   * 安全保护配置（防止日志系统自身错误导致死循环）
+   * 安全保护配置
+   *
+   * 提供三种保护模式：
+   * - 'standard'（默认）：被拦截的日志直接丢弃，最轻量
+   * - 'cautious'：暂存到内存回收站，浏览器空闲时低优先级回放
+   * - 'strict'：与 cautious 相同，但回收站持久化到 localStorage
+   *
+   * @example
+   * ```javascript
+   * safeGuard: { enabled: true, mode: 'cautious' }
+   * ```
    */
   safeGuard?: {
-    /** 是否启用安全保护 */
+    /** 是否启用安全保护 @default true */
     enabled?: boolean;
-    /** 最大错误数（超过后暂停 AemeathJs） */
+    /** 保护模式 @default 'standard' */
+    mode?: SafeGuardMode;
+    /** 最大错误数（触发熔断）@default 100 */
     maxErrors?: number;
-    /** 重置间隔（ms） */
-    resetInterval?: number;
-    /** 频率限制（每秒最多记录多少条） */
+    /** 熔断冷却时间 ms @default 30000 */
+    cooldownPeriod?: number;
+    /** 每秒最大日志数 @default 100 */
     rateLimit?: number;
-    /** 是否启用递归保护 */
+    /** 重复日志合并窗口 ms @default 2000 */
+    mergeWindow?: number;
+    /** 采样率（超频时每 N 条保留 1 条）@default 10 */
+    sampleRate?: number;
+    /** 是否启用递归保护 @default true */
     enableRecursionGuard?: boolean;
   };
 
@@ -351,13 +367,16 @@ export function initAemeath(options: AemeathInitOptions = {}): AemeathLogger {
     );
   }
 
-  // 3. 安全保护（防止日志系统自身错误导致死循环）
+  // 3. 安全保护
   if (options.safeGuard?.enabled !== false) {
     logger.use(
       new SafeGuardPlugin({
+        mode: options.safeGuard?.mode,
         maxErrors: options.safeGuard?.maxErrors,
-        resetInterval: options.safeGuard?.resetInterval,
+        cooldownPeriod: options.safeGuard?.cooldownPeriod,
         rateLimit: options.safeGuard?.rateLimit,
+        mergeWindow: options.safeGuard?.mergeWindow,
+        sampleRate: options.safeGuard?.sampleRate,
         enableRecursionGuard: options.safeGuard?.enableRecursionGuard,
       }),
     );

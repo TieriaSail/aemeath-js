@@ -21,6 +21,8 @@ export type {
   StackFrame,
   LogTags,
   LogContext,
+  BeforeLogResult,
+  AfterLogResult,
   AemeathPlugin,
   LogListener,
   PluginMetadata,
@@ -52,10 +54,14 @@ export type {
 
 // ==================== 可选插件 ====================
 export { PerformancePlugin } from './plugins/PerformancePlugin';
-export type { PerformancePluginOptions } from './plugins/PerformancePlugin';
+export type { PerformancePluginOptions, WebVitalsOptions } from './plugins/PerformancePlugin';
 
 export { SafeGuardPlugin } from './plugins/SafeGuardPlugin';
-export type { SafeGuardPluginOptions } from './plugins/SafeGuardPlugin';
+export type {
+  SafeGuardPluginOptions,
+  SafeGuardMode,
+  SafeGuardHealth,
+} from './plugins/SafeGuardPlugin';
 
 export { NetworkPlugin } from './plugins/NetworkPlugin';
 export type {

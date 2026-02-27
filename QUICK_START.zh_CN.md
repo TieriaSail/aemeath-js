@@ -137,11 +137,6 @@ logger.updateContext('userId', '67890');
 | `EarlyErrorCapturePlugin` | 配置了构建插件时自动启用 | — |
 
 > 💡 **需要更多能力？** 你可以随时通过 `.use()` 追加插件。重复调用是安全的，已安装的插件不会被重复添加。
->
-> ```typescript
-> const logger = getAemeath();
-> logger.use(new PerformancePlugin({ monitorWebVitals: true }));
-> ```
 
 ---
 
@@ -153,7 +148,7 @@ logger.updateContext('userId', '67890');
 | **EarlyErrorCapturePlugin** | React/Vue 挂载前的错误 | +3KB | 可选 |
 | **UploadPlugin** | 发送到服务器 | +5KB | 可选 |
 | **SourceMap Parser** | 解析混淆堆栈 | +6KB | 可选 |
-| **PerformancePlugin** | Web Vitals 监控 | +4KB | 可选 |
+| **PerformancePlugin** | 🧪 Web Vitals 监控（实验性，[了解更多](./docs/zh/6-performance-monitoring.md)） | +4KB | 可选 |
 | **SafeGuardPlugin** | 防止 Logger 崩溃 | +3KB | 生产推荐 |
 
 **按需加载示例：**
@@ -168,15 +163,6 @@ initAemeath({
   upload: async (log) => { /* ... */ return { success: true }; },
 });
 
-// 错误 + 性能监控（7KB）
-import { getAemeath } from 'aemeath-js';
-import { PerformancePlugin } from 'aemeath-js';
-
-initAemeath({ errorCapture: true });
-getAemeath().use(new PerformancePlugin({
-  monitorWebVitals: true,
-  sampleRate: 0.1,
-}));
 ```
 
 ---
@@ -301,29 +287,6 @@ const parser = createParser({
 });
 
 const result = await parser.parse(errorStack);
-```
-
-### 性能监控（可选）
-
-```typescript
-import { getAemeath } from 'aemeath-js';
-import { PerformancePlugin } from 'aemeath-js';
-
-initAemeath({ errorCapture: true });
-getAemeath().use(new PerformancePlugin({
-  monitorWebVitals: true,     // 监控 LCP, FID, CLS, FCP, TTFB
-  monitorResources: false,    // 监控慢资源（可选）
-  monitorLongTasks: true,     // 监控长任务（可选）
-  longTaskThreshold: 50,      // 长任务阈值（ms）
-  sampleRate: 0.1,            // 10% 采样率（生产环境推荐）
-}));
-
-// 自定义性能测量
-const logger = getAemeath();
-logger.startMark('data-fetch');
-const data = await fetchData();
-const duration = logger.endMark('data-fetch');
-console.log(`数据获取耗时: ${duration}ms`);
 ```
 
 ### 网络监控（默认启用）
@@ -463,6 +426,6 @@ initAemeath({
 - [早期错误捕获](./docs/zh/2-early-error-capture.md)
 - [SourceMap 解析](./docs/zh/3-sourcemap-parser.md)
 - [上报插件](./docs/zh/4-upload-plugin.md)
-- [性能监控](./docs/zh/6-performance-monitoring.md)
+- [性能监控](./docs/zh/6-performance-monitoring.md)（🧪 实验性）
 - [示例代码](./examples/)
 

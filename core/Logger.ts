@@ -8,6 +8,7 @@ import type {
   LogOptions,
   ErrorInfo,
   LogContext,
+  BeforeLogResult,
   AemeathPlugin,
   LogListener,
   PluginMetadata,
@@ -32,6 +33,7 @@ export class AemeathLogger implements AemeathInterface {
   private readonly plugins: Map<string, PluginMetadata> = new Map();
   private readonly eventListeners: EventListeners = new Map();
   private readonly logListeners: Set<LogListener> = new Set();
+  private readonly pluginInstances: AemeathPlugin[] = [];
   private enableConsole: boolean;
   private staticContext: LogContext = {};
   private readonly dynamicContext: Map<string, ContextUpdater> = new Map();
@@ -78,34 +80,74 @@ export class AemeathLogger implements AemeathInterface {
     message: string,
     options: LogOptions = {},
   ): void {
-    const timestamp = Date.now();
+    // Phase 1: beforeLog 管道 — 遍历插件，允许拦截或修改参数
+    let currentLevel = level;
+    let currentMessage = message;
+    let currentOptions = options;
 
-    // 合并上下文：全局静态 + 全局动态 + 本次传入
-    let context = this.buildContext({ level, message, timestamp });
-    if (options.context) {
-      context = { ...context, ...options.context };
+    for (const plugin of this.pluginInstances) {
+      if (!plugin.beforeLog) continue;
+      try {
+        const result: BeforeLogResult = plugin.beforeLog(
+          currentLevel,
+          currentMessage,
+          currentOptions,
+        );
+        if (result === false) {
+          return;
+        }
+        if (result && typeof result === 'object' && 'level' in result) {
+          currentLevel = result.level;
+          currentMessage = result.message;
+          currentOptions = result.options;
+        }
+      } catch (err) {
+        this.debugWarn(`Plugin "${plugin.name}" beforeLog error:`, err);
+      }
     }
 
-    // 构建日志条目
-    const entry = this.createLogEntry(
-      level,
-      message,
+    // Phase 2: 构建 LogEntry
+    const timestamp = Date.now();
+
+    let context = this.buildContext({ level: currentLevel, message: currentMessage, timestamp });
+    if (currentOptions.context) {
+      context = { ...context, ...currentOptions.context };
+    }
+
+    let entry = this.createLogEntry(
+      currentLevel,
+      currentMessage,
       timestamp,
-      options,
+      currentOptions,
       context,
     );
 
-    // 输出到控制台
+    // Phase 3: afterLog 管道 — 遍历插件，允许修改或拦截 entry
+    for (const plugin of this.pluginInstances) {
+      if (!plugin.afterLog) continue;
+      try {
+        const result = plugin.afterLog(entry);
+        if (result === false) {
+          return;
+        }
+        if (result && typeof result === 'object' && 'level' in result) {
+          entry = result;
+        }
+      } catch (err) {
+        this.debugWarn(`Plugin "${plugin.name}" afterLog error:`, err);
+      }
+    }
+
+    // Phase 4: 输出到控制台
     if (this.enableConsole) {
       this.outputToConsole(entry);
     }
 
-    // 通知监听器（不受 level 过滤，始终触发）
+    // Phase 5: 通知监听器（不受 level 过滤，始终触发）
     this.logListeners.forEach((listener) => {
       try {
         listener(entry);
       } catch (err) {
-        // 🛡️ 标记为日志系统内部错误，避免被 ErrorCapturePlugin 捕获
         if (err instanceof Error) {
           (err as any)._isAemeathInternalError = true;
         }
@@ -361,6 +403,7 @@ export class AemeathLogger implements AemeathInterface {
 
     try {
       plugin.install(this, options);
+      this.pluginInstances.push(plugin);
       this.plugins.set(plugin.name, {
         name: plugin.name,
         version: plugin.version,
@@ -386,6 +429,13 @@ export class AemeathLogger implements AemeathInterface {
     if (!metadata) {
       this.debugWarn(`Plugin "${name}" is not installed`);
       return false;
+    }
+
+    const idx = this.pluginInstances.findIndex((p) => p.name === name);
+    if (idx !== -1) {
+      const plugin = this.pluginInstances[idx]!;
+      plugin.uninstall?.(this);
+      this.pluginInstances.splice(idx, 1);
     }
 
     this.emit('plugin:uninstall', name);
@@ -449,6 +499,7 @@ export class AemeathLogger implements AemeathInterface {
     }
     this.logListeners.clear();
     this.eventListeners.clear();
+    this.pluginInstances.length = 0;
     this.staticContext = {};
     this.dynamicContext.clear();
   }

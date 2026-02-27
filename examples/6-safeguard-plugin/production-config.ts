@@ -1,5 +1,5 @@
 /**
- * SafeGuardPlugin - 生产环境配置
+ * SafeGuardPlugin v2 - 生产环境配置
  */
 
 import {
@@ -15,10 +15,15 @@ const logger = new AemeathLogger();
 
 logger.use(
   new SafeGuardPlugin({
+    mode: 'cautious', // 生产环境推荐 cautious：超限日志暂存到内存 parking lot，空闲时回放
     maxErrors: 50, // 生产环境更严格
-    resetInterval: 60000, // 60 秒重置
-    rateLimit: 50, // 每秒最多 50 条
+    cooldownPeriod: 30000, // 熔断器冷却 30 秒
+    rateLimit: 50, // 每秒最多 50 条（滑动窗口）
+    mergeWindow: 2000, // 2 秒内重复日志合并
+    sampleRate: 10, // 高频采样：每 10 条取 1 条
     enableRecursionGuard: true,
+    parkingLotSize: 200, // parking lot 最大容量
+    parkingLotTTL: 300000, // parking lot 条目 5 分钟过期
   }),
 );
 
@@ -70,14 +75,28 @@ setInterval(() => {
 
   // 发送健康指标到监控系统
   sendMetrics({
-    logger_error_count: health.errorCount,
-    logger_log_count: health.logCount,
+    logger_state: health.state, // 'closed' | 'open' | 'half-open'
+    logger_mode: health.mode, // 'standard' | 'cautious' | 'strict'
     logger_is_healthy: health.isHealthy ? 1 : 0,
-    logger_is_paused: health.isPaused ? 1 : 0,
+    logger_current_rate: health.currentRate,
+    logger_error_count: health.errorCount,
+    logger_dropped_count: health.droppedCount,
+    logger_merged_count: health.mergedCount,
+    logger_sampled_count: health.sampledCount,
+    logger_parking_lot_size: health.parkingLotSize,
     logger_uptime: health.uptime,
   });
 
-  // 错误率超过 80% 时告警
+  // 熔断器打开时告警
+  if (health.state === 'open') {
+    sendAlert({
+      level: 'critical',
+      message: 'SafeGuard circuit breaker is OPEN - logs are being blocked',
+      details: health,
+    });
+  }
+
+  // 错误率过高时告警
   if (health.errorCount > 40) {
     sendAlert({
       level: 'warning',
@@ -89,26 +108,34 @@ setInterval(() => {
 
 // ==================== 事件监听 ====================
 
-// Logger 暂停时发送告警
-logger.on('paused', () => {
-  console.error('[SafeGuard] Logger 已暂停');
+// 熔断器状态变更时发送告警
+logger.on('safeguard:stateChange', ({ from, to }: { from: string; to: string }) => {
+  if (to === 'open') {
+    console.error(`[SafeGuard] 熔断器打开: ${from} → ${to}`);
+    sendAlert({
+      level: 'critical',
+      message: `SafeGuard circuit breaker opened (${from} → ${to})`,
+      details: logger.getHealth?.(),
+    });
+  }
 
-  sendAlert({
-    level: 'critical',
-    message: 'Logger paused due to too many errors or high rate',
-    details: logger.getHealth?.(),
-  });
-});
+  if (to === 'half-open') {
+    console.warn(`[SafeGuard] 熔断器半开: ${from} → ${to}`);
+    sendAlert({
+      level: 'warning',
+      message: `SafeGuard circuit breaker half-open (${from} → ${to})`,
+      details: logger.getHealth?.(),
+    });
+  }
 
-// Logger 恢复时记录
-logger.on('resumed', () => {
-  console.info('[SafeGuard] Logger 已恢复');
-
-  sendAlert({
-    level: 'info',
-    message: 'Logger resumed',
-    details: logger.getHealth?.(),
-  });
+  if (to === 'closed') {
+    console.info(`[SafeGuard] 熔断器关闭（恢复正常）: ${from} → ${to}`);
+    sendAlert({
+      level: 'info',
+      message: `SafeGuard circuit breaker closed (${from} → ${to})`,
+      details: logger.getHealth?.(),
+    });
+  }
 });
 
 // ==================== 工具函数 ====================
@@ -117,7 +144,7 @@ function getAuthToken(): string {
   return localStorage.getItem('auth_token') || '';
 }
 
-function sendMetrics(metrics: Record<string, number>) {
+function sendMetrics(metrics: Record<string, number | string>) {
   // 发送到监控系统（Prometheus、DataDog 等）
   if (typeof navigator !== 'undefined' && navigator.sendBeacon) {
     navigator.sendBeacon('/api/metrics', JSON.stringify(metrics));

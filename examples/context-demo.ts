@@ -107,7 +107,12 @@ function resetContext() {
 
 // App.tsx
 import { initAemeath, getAemeath } from 'aemeath-js';
-import { getDeviceInfo, getUserInfo, getNetworkInfo } from './utils';
+
+// 这些是你的业务工具函数，非 aemeath-js 导出
+declare function getDeviceInfo(): Record<string, string>;
+declare function getUserInfo(): { id: string; name: string };
+declare function getNetworkInfo(): Record<string, string>;
+declare function getAuthToken(): string;
 
 // 应用启动时初始化
 function initApp() {

@@ -144,27 +144,12 @@ logger.use(
 
 ---
 
-### [模块5：性能监控](./5-performance-plugin/) ⭐
+### [模块5：性能监控](./5-performance-plugin/) 🧪
 
-监控 Web Vitals 和性能指标
-
-**示例**：
+> 实验性功能 — 详见 [性能监控插件文档](../docs/zh/6-performance-monitoring.md)
 
 - [basic.ts](./5-performance-plugin/basic.ts) - 基础使用
 - [custom-measurement.ts](./5-performance-plugin/custom-measurement.ts) - 自定义测量
-
-**快速开始**：
-
-```typescript
-import { PerformancePlugin } from 'aemeath-js';
-
-logger.use(
-  new PerformancePlugin({
-    monitorWebVitals: true,
-    sampleRate: 0.1, // 10% 采样
-  }),
-);
-```
 
 ---
 

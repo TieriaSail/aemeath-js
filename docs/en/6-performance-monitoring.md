@@ -1,5 +1,7 @@
 # PerformancePlugin - Performance Monitoring Plugin
 
+> 🧪 **Experimental** — This plugin is under active development. APIs may change in future versions. Not enabled by default; manual installation required.
+
 > Monitor Web Vitals and custom performance metrics
 
 ---
@@ -11,10 +13,12 @@
 Automatically monitor Google Core Web Vitals:
 
 - **LCP** (Largest Contentful Paint) - Largest contentful paint
-- **FID** (First Input Delay) - First input delay
-- **CLS** (Cumulative Layout Shift) - Cumulative layout shift
+- **INP** (Interaction to Next Paint) - Interaction responsiveness (replaced FID in 2024)
+- **CLS** (Cumulative Layout Shift) - Cumulative layout shift (Session Window algorithm)
 - **FCP** (First Contentful Paint) - First contentful paint
 - **TTFB** (Time to First Byte) - Time to first byte
+
+> **Note**: LCP, INP, and CLS are cumulative metrics reported once when the page becomes hidden. FCP and TTFB are one-time metrics reported immediately.
 
 ### 2. Resource Loading Monitoring
 
@@ -75,9 +79,22 @@ logger.use(
 ### PerformancePluginOptions
 
 ```typescript
+interface WebVitalsOptions {
+  lcp?: boolean;   // default true
+  inp?: boolean;   // default true
+  cls?: boolean;   // default true
+  fcp?: boolean;   // default true
+  ttfb?: boolean;  // default true
+}
+
 interface PerformancePluginOptions {
-  /** Whether to monitor Web Vitals (default: true) */
-  monitorWebVitals?: boolean;
+  /**
+   * Web Vitals monitoring
+   * - true (default): monitor all Web Vitals
+   * - false: disable all Web Vitals
+   * - WebVitalsOptions: fine-grained control per metric
+   */
+  monitorWebVitals?: boolean | WebVitalsOptions;
 
   /** Whether to monitor resource loading (default: false) */
   monitorResources?: boolean;
@@ -88,9 +105,26 @@ interface PerformancePluginOptions {
   /** Long task threshold in ms (default: 50) */
   longTaskThreshold?: number;
 
-  /** Sampling rate (0-1, default: 1) */
+  /** Slow resource threshold in ms (default: 1000) */
+  slowResourceThreshold?: number;
+
+  /** Sampling rate for auto-collection (0-1, default: 1). Does not affect manual mark/measure. */
   sampleRate?: number;
 }
+```
+
+**Fine-grained Web Vitals configuration:**
+
+```typescript
+// Only monitor LCP and FCP, disable others
+logger.use(new PerformancePlugin({
+  monitorWebVitals: { lcp: true, fcp: true, inp: false, cls: false, ttfb: false },
+}));
+
+// Only disable CLS (others default to true)
+logger.use(new PerformancePlugin({
+  monitorWebVitals: { cls: false },
+}));
 ```
 
 ### Custom Performance Measurement APIs
@@ -127,6 +161,118 @@ const duration = logger.measure('operation', 'start', 'end');
 
 ---
 
+## 📡 Reporting Strategy
+
+### Data Flow
+
+```
+PerformancePlugin
+  ↓ logger.info() / logger.warn()
+Standard log pipeline (beforeLog → build LogEntry → afterLog → console → listeners)
+  ↓
+UploadPlugin (if installed) → Server
+```
+
+Performance data is just **regular logs** flowing through the standard pipeline. If UploadPlugin is installed, performance logs are uploaded alongside other logs.
+
+### Reporting Timing
+
+| Metric | Source | When Reported | Count |
+|--------|--------|--------------|-------|
+| **FCP** | `PerformanceObserver('paint')` | **Immediately** when browser first paints content | 1 |
+| **TTFB** | `performance.getEntriesByType('navigation')` | **Immediately** on plugin install | 1 |
+| **LCP** | `PerformanceObserver('largest-contentful-paint')` | Caches latest value, reports **when page is hidden** | 1 |
+| **INP** | `PerformanceObserver('event')` | Tracks slowest interaction, reports **when page is hidden** | 1 |
+| **CLS** | `PerformanceObserver('layout-shift')` | Session Window accumulation, reports **when page is hidden** | 1 |
+| **Slow resource** | `PerformanceObserver('resource')` | **Immediately** when threshold exceeded | N |
+| **Long task** | `PerformanceObserver('longtask')` | **Immediately** when threshold exceeded | N |
+| **Manual mark** | User calls `endMark()` | **Immediately** on call | User-controlled |
+
+> **"When page is hidden"** means `document.visibilityState` becomes `'hidden'` (tab switch, minimize, etc.). This is Google's recommended timing for cumulative metrics.
+
+**No periodic polling** — everything is event-driven.
+
+### Log Structure
+
+All performance logs follow a consistent `message` + `tags` + `context` structure:
+
+**Web Vitals (LCP / INP / CLS / FCP / TTFB)**
+
+```json
+{
+  "level": "info",
+  "message": "[performance] web-vital",
+  "tags": { "category": "performance", "metric": "LCP", "rating": "good" },
+  "context": {
+    "metric": { "name": "LCP", "value": 2450, "rating": "good" }
+  }
+}
+```
+
+**Slow Resource**
+
+```json
+{
+  "level": "warn",
+  "message": "[performance] slow-resource",
+  "tags": { "category": "performance", "type": "slow-resource" },
+  "context": {
+    "resource": { "name": "https://example.com/large.js", "type": "script", "duration": 3245, "size": 102400 }
+  }
+}
+```
+
+**Long Task**
+
+```json
+{
+  "level": "warn",
+  "message": "[performance] long-task",
+  "tags": { "category": "performance", "type": "long-task" },
+  "context": {
+    "task": { "duration": 150, "startTime": 12345, "name": "self" }
+  }
+}
+```
+
+**Manual Measurement**
+
+```json
+{
+  "level": "info",
+  "message": "[performance] measurement",
+  "tags": { "category": "performance", "type": "measurement", "name": "api-call" },
+  "context": {
+    "measurement": { "name": "api-call", "duration": 500, "timestamp": 1234567890 }
+  }
+}
+```
+
+### Custom Filtering
+
+Use UploadPlugin's `onUpload` callback for flexible filtering:
+
+```typescript
+new UploadPlugin({
+  onUpload: async (log) => {
+    // Only upload performance logs
+    if (log.tags?.category !== 'performance') {
+      return { success: false, shouldRetry: false };
+    }
+
+    // Only upload poor-rated Web Vitals
+    if (log.tags?.metric && log.tags?.rating !== 'poor') {
+      return { success: false, shouldRetry: false };
+    }
+
+    await fetch('/api/metrics', { method: 'POST', body: JSON.stringify(log) });
+    return { success: true };
+  },
+})
+```
+
+---
+
 ## 🎯 Use Cases
 
 ### Case 1: Monitor Web Vitals
@@ -141,18 +287,10 @@ logger.use(
 // Automatically records:
 // {
 //   level: 'info',
-//   message: 'Performance metric',
-//   tags: {
-//     category: 'performance',
-//     metric: 'LCP',
-//     rating: 'good'
-//   },
+//   message: '[performance] web-vital',
+//   tags: { category: 'performance', metric: 'LCP', rating: 'good' },
 //   context: {
-//     metric: {
-//       name: 'LCP',
-//       value: 2450,
-//       rating: 'good'  // 'good' | 'needs-improvement' | 'poor'
-//     }
+//     metric: { name: 'LCP', value: 2450, rating: 'good' }
 //   }
 // }
 ```
@@ -169,18 +307,10 @@ logger.use(
 // Example log:
 // {
 //   level: 'warn',
-//   message: 'Slow resource loading',
-//   tags: {
-//     category: 'performance',
-//     type: 'slow-resource'
-//   },
+//   message: '[performance] slow-resource',
+//   tags: { category: 'performance', type: 'slow-resource' },
 //   context: {
-//     resource: {
-//       name: 'https://example.com/large-image.jpg',
-//       type: 'img',
-//       duration: 3245,
-//       size: 2048000
-//     }
+//     resource: { name: 'https://example.com/large.jpg', type: 'img', duration: 3245, size: 2048000 }
 //   }
 // }
 ```
@@ -198,17 +328,10 @@ logger.use(
 // Example log:
 // {
 //   level: 'warn',
-//   message: 'Long task detected',
-//   tags: {
-//     category: 'performance',
-//     type: 'long-task'
-//   },
+//   message: '[performance] long-task',
+//   tags: { category: 'performance', type: 'long-task' },
 //   context: {
-//     task: {
-//       duration: 150,
-//       startTime: 1234567890,
-//       name: 'script'
-//     }
+//     task: { duration: 150, startTime: 1234567890, name: 'script' }
 //   }
 // }
 ```
@@ -322,13 +445,13 @@ logger.use(
 
 ## 📊 Web Vitals Rating Standards
 
-| Metric   | Good   | Needs Improvement | Poor    |
-| -------- | ------ | ----------------- | ------- |
-| **LCP**  | ≤2.5s  | 2.5s - 4.0s       | >4.0s   |
-| **FID**  | ≤100ms | 100ms - 300ms     | >300ms  |
-| **CLS**  | ≤0.1   | 0.1 - 0.25        | >0.25   |
-| **FCP**  | ≤1.8s  | 1.8s - 3.0s       | >3.0s   |
-| **TTFB** | ≤800ms | 800ms - 1800ms    | >1800ms |
+| Metric   | Good    | Needs Improvement | Poor     |
+| -------- | ------- | ----------------- | -------- |
+| **LCP**  | ≤2.5s   | 2.5s - 4.0s       | >4.0s    |
+| **INP**  | ≤200ms  | 200ms - 500ms     | >500ms   |
+| **CLS**  | ≤0.1    | 0.1 - 0.25        | >0.25    |
+| **FCP**  | ≤1.8s   | 1.8s - 3.0s       | >3.0s    |
+| **TTFB** | ≤800ms  | 800ms - 1800ms    | >1800ms  |
 
 ### Rating Explanation
 
@@ -375,16 +498,7 @@ longTaskThreshold: 100; // Only record tasks >100ms
 
 ### 4. Work with UploadPlugin
 
-```typescript
-// Only upload performance metrics, not all logs
-onUpload: async (log) => {
-  if (log.tags?.category === 'performance') {
-    await uploadToServer(log);
-    return { success: true };
-  }
-  return { success: false, shouldRetry: false };
-};
-```
+See [Reporting Strategy > Custom Filtering](#custom-filtering) above.
 
 ### 5. Regular Data Analysis
 

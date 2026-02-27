@@ -1,5 +1,7 @@
 /**
  * PerformancePlugin - 自定义性能测量
+ *
+ * startMark / endMark / measure 不受采样率限制，始终可用
  */
 
 /* eslint-disable @typescript-eslint/no-unused-vars */
@@ -12,18 +14,18 @@ logger.use(new PerformancePlugin());
 // ==================== 示例1: 测量函数执行时间 ====================
 
 async function fetchUserData(userId: string) {
-  logger.startMark('fetch-user-data');
+  logger.startMark?.('fetch-user-data');
 
   try {
     const response = await fetch(`/api/users/${userId}`);
     const data = await response.json();
 
-    const duration = logger.endMark('fetch-user-data');
+    const duration = logger.endMark?.('fetch-user-data');
     console.log(`获取用户数据耗时: ${duration}ms`);
 
     return data;
   } catch (error) {
-    logger.endMark('fetch-user-data');
+    logger.endMark?.('fetch-user-data');
     throw error;
   }
 }
@@ -34,10 +36,10 @@ async function fetchUserData(userId: string) {
 //
 // function UserProfile({ userId }: { userId: string }) {
 //   useEffect(() => {
-//     logger.startMark('user-profile-render');
+//     logger.startMark?.('user-profile-render');
 //
 //     return () => {
-//       logger.endMark('user-profile-render');
+//       logger.endMark?.('user-profile-render');
 //     };
 //   }, []);
 //
@@ -48,34 +50,30 @@ async function fetchUserData(userId: string) {
 
 async function complexOperation() {
   // 阶段1: 数据获取
-  logger.startMark('stage-1-fetch');
+  logger.startMark?.('stage-1-fetch');
   const data = await fetchData();
-  logger.endMark('stage-1-fetch');
+  logger.endMark?.('stage-1-fetch');
 
   // 阶段2: 数据处理
-  logger.startMark('stage-2-process');
+  logger.startMark?.('stage-2-process');
   const processed = processData(data);
-  logger.endMark('stage-2-process');
+  logger.endMark?.('stage-2-process');
 
   // 阶段3: 渲染
-  logger.startMark('stage-3-render');
+  logger.startMark?.('stage-3-render');
   renderData(processed);
-  logger.endMark('stage-3-render');
+  logger.endMark?.('stage-3-render');
 }
 
 // ==================== 示例4: 使用原生 Performance API ====================
 
 function measureWithNativeAPI() {
-  // 开始标记
   performance.mark('operation-start');
-
   // ... 执行操作 ...
-
-  // 结束标记
   performance.mark('operation-end');
 
   // 测量并记录
-  logger.measure('my-operation', 'operation-start', 'operation-end');
+  logger.measure?.('my-operation', 'operation-start', 'operation-end');
 }
 
 // ==================== 示例5: 条件测量（只在慢时记录） ====================
@@ -97,6 +95,13 @@ async function fetchDataWithThreshold() {
   return data;
 }
 
+// Stub functions for compilation
+declare function fetchData(): Promise<any>;
+declare function processData(data: any): any;
+declare function renderData(data: any): void;
+
+export { logger, fetchUserData, PerformanceTracker };
+
 // ==================== 示例6: 批量测量 ====================
 
 class PerformanceTracker {
@@ -104,7 +109,7 @@ class PerformanceTracker {
 
   start(name: string) {
     this.marks.set(name, Date.now());
-    logger.startMark(name);
+    logger.startMark?.(name);
   }
 
   end(name: string): number | null {
@@ -113,36 +118,8 @@ class PerformanceTracker {
 
     const duration = Date.now() - startTime;
     this.marks.delete(name);
-    logger.endMark(name);
+    logger.endMark?.(name);
 
     return duration;
   }
-
-  endAll() {
-    const results: Record<string, number> = {};
-
-    for (const [name] of this.marks) {
-      const duration = this.end(name);
-      if (duration !== null) {
-        results[name] = duration;
-      }
-    }
-
-    return results;
-  }
 }
-
-// 使用
-const tracker = new PerformanceTracker();
-
-tracker.start('init');
-tracker.start('load-config');
-tracker.start('connect-db');
-
-// ... 执行操作 ...
-
-tracker.end('connect-db');
-tracker.end('load-config');
-tracker.end('init');
-
-export { logger, fetchUserData, UserProfile, PerformanceTracker };

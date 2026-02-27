@@ -87,14 +87,6 @@ logger.updateContext('userId', '67890');
 | `EarlyErrorCapturePlugin` | When build plugin is configured | — |
 
 > 💡 **Need more capabilities?** You can still `.use()` additional plugins on the singleton at any time. Duplicate `.use()` calls are safely ignored — if a plugin is already installed, it won't be added again.
->
-> ```typescript
-> import { getAemeath } from 'aemeath-js';
-> import { PerformancePlugin } from 'aemeath-js';
->
-> const logger = getAemeath();
-> logger.use(new PerformancePlugin({ monitorWebVitals: true }));
-> ```
 
 ### Browser (No Build Tools)
 
@@ -123,18 +115,9 @@ All plugins are optional. Only import what you need — unused plugins are tree-
 | `ErrorCapturePlugin` | Auto-capture global errors, unhandled rejections, resource failures | ~3KB |
 | `EarlyErrorCapturePlugin` | Capture errors before React/Vue mounts (requires build plugin) | ~3KB |
 | `UploadPlugin` | Upload logs with priority queue, retry, and local cache | ~5KB |
-| `PerformancePlugin` | Monitor Web Vitals (LCP, FID, CLS, FCP, TTFB) and long tasks | ~4KB |
+| `PerformancePlugin` | 🧪 Web Vitals performance monitoring ([learn more](./docs/en/6-performance-monitoring.md)) | ~4KB |
 | `NetworkPlugin` | Monitor fetch/XHR requests (errors, slow requests) | ~3KB |
 | `SafeGuardPlugin` | Rate limiting, recursion guard, error budget | ~3KB |
-
-```typescript
-import { PerformancePlugin } from 'aemeath-js';
-
-logger.use(new PerformancePlugin({
-  monitorWebVitals: true,
-  sampleRate: 0.1, // 10% sampling in production
-}));
-```
 
 ## Framework Integrations
 
@@ -333,7 +316,7 @@ logger.use(new MyPlugin());
 | **[SourceMap Parser](./docs/en/3-sourcemap-parser.md)** | Parse obfuscated error stacks |
 | **[Upload Plugin](./docs/en/4-upload-plugin.md)** | Log upload with queue & retry |
 | **[Global Context](./docs/en/5-global-context.md)** | Attach context to every log |
-| **[Performance Monitoring](./docs/en/6-performance-monitoring.md)** | Web Vitals & custom metrics |
+| **[Performance Monitoring](./docs/en/6-performance-monitoring.md)** | 🧪 Web Vitals performance monitoring (experimental) |
 | **[Browser Usage](./docs/en/0-browser-usage.md)** | Script tag usage (no build tools) |
 
 > 📖 中文文档：[查看中文 README](./README.zh_CN.md) | [快速开始](./QUICK_START.zh_CN.md) | [模块文档](./docs/zh/)

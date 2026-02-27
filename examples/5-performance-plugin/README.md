@@ -22,7 +22,7 @@ const logger = new AemeathLogger();
 logger.use(
   new PerformancePlugin({
     monitorWebVitals: true,
-    sampleRate: 1, // 100% 采样
+    sampleRate: 1, // 100% 采样（不影响手动 mark/measure）
   }),
 );
 
@@ -33,7 +33,7 @@ logger.use(
 
 ## Web Vitals 监控
 
-监控 Google 核心性能指标：
+监控 Google 核心性能指标（2024+ 标准）：
 
 ```typescript
 logger.use(
@@ -44,20 +44,23 @@ logger.use(
 
 // 自动监控：
 // - LCP (Largest Contentful Paint) - 最大内容绘制
-// - FID (First Input Delay) - 首次输入延迟
-// - CLS (Cumulative Layout Shift) - 累积布局偏移
+// - INP (Interaction to Next Paint) - 交互到下一帧绘制（替代已废弃的 FID）
+// - CLS (Cumulative Layout Shift) - 累积布局偏移（Session Window 算法）
 // - FCP (First Contentful Paint) - 首次内容绘制
 // - TTFB (Time to First Byte) - 首字节时间
+//
+// 其中 LCP、INP、CLS 为累积型指标，在页面隐藏时上报最终值（各只一条日志）
+// FCP、TTFB 为一次性指标，立即上报
 
 // 日志示例：
 // {
 //   level: 'info',
-//   message: '性能指标',
-//   tags: { category: 'performance', metric: 'LCP', rating: 'good' },
+//   message: '[performance] web-vital',
+//   tags: { category: 'performance', metric: 'INP', rating: 'good' },
 //   context: {
 //     metric: {
-//       name: 'LCP',
-//       value: 2450,
+//       name: 'INP',
+//       value: 120,
 //       rating: 'good'  // 'good' | 'needs-improvement' | 'poor'
 //     }
 //   }
@@ -73,14 +76,15 @@ logger.use(
 ```typescript
 logger.use(
   new PerformancePlugin({
-    monitorResources: true, // 监控 >1s 的资源
+    monitorResources: true,
+    slowResourceThreshold: 1000, // 自定义阈值（默认 1000ms）
   }),
 );
 
 // 示例日志：
 // {
 //   level: 'warn',
-//   message: '慢资源加载',
+//   message: '[performance] slow-resource',
 //   tags: { category: 'performance', type: 'slow-resource' },
 //   context: {
 //     resource: {
@@ -97,24 +101,24 @@ logger.use(
 
 ## 自定义性能测量
 
-测量特定代码段的执行时间：
+测量特定代码段的执行时间（不受采样率限制）：
 
 ```typescript
 logger.use(new PerformancePlugin());
 
 // 方式1：使用 mark
-logger.startMark('data-fetch');
+logger.startMark?.('data-fetch');
 const data = await fetchData();
-const duration = logger.endMark('data-fetch');
+const duration = logger.endMark?.('data-fetch');
 console.log(`数据获取耗时: ${duration}ms`);
 
 // 方式2：测量组件渲染
 function MyComponent() {
   useEffect(() => {
-    logger.startMark('component-mount');
+    logger.startMark?.('component-mount');
 
     return () => {
-      logger.endMark('component-mount');
+      logger.endMark?.('component-mount');
     };
   }, []);
 
@@ -125,7 +129,7 @@ function MyComponent() {
 performance.mark('start');
 // ... 执行代码 ...
 performance.mark('end');
-logger.measure('operation', 'start', 'end');
+logger.measure?.('operation', 'start', 'end');
 ```
 
 ---
@@ -143,10 +147,10 @@ const logger = new AemeathLogger();
 logger.use(
   new PerformancePlugin({
     monitorWebVitals: true,
-    monitorResources: false, // 生产环境不监控资源
+    monitorResources: false, // 生产环境按需开启
     monitorLongTasks: true,
     longTaskThreshold: 100, // 只记录 >100ms 的任务
-    sampleRate: 0.1, // 10% 采样率
+    sampleRate: 0.1, // 10% 采样率（手动 mark/measure 不受此限制）
   }),
 );
 
@@ -182,6 +186,7 @@ logger.use(new PerformancePlugin({
   monitorResources: true,
   monitorLongTasks: true,
   longTaskThreshold: 50,
+  slowResourceThreshold: 1000,
   sampleRate: process.env.NODE_ENV === 'production' ? 0.1 : 1
 }));
 
@@ -199,11 +204,10 @@ logger.use(new UploadPlugin({
 // 使用
 export function App() {
   useEffect(() => {
-    logger.startMark('app-init');
+    logger.startMark?.('app-init');
 
-    // 初始化应用
     initializeApp().then(() => {
-      logger.endMark('app-init');
+      logger.endMark?.('app-init');
     });
   }, []);
 
@@ -215,22 +219,35 @@ export function App() {
 
 ## 性能指标说明
 
-### Web Vitals 评分标准
+### Web Vitals 评分标准（2024+ 标准）
 
-| 指标     | Good   | Needs Improvement | Poor    |
-| -------- | ------ | ----------------- | ------- |
-| **LCP**  | ≤2.5s  | 2.5s - 4.0s       | >4.0s   |
-| **FID**  | ≤100ms | 100ms - 300ms     | >300ms  |
-| **CLS**  | ≤0.1   | 0.1 - 0.25        | >0.25   |
-| **FCP**  | ≤1.8s  | 1.8s - 3.0s       | >3.0s   |
-| **TTFB** | ≤800ms | 800ms - 1800ms    | >1800ms |
+| 指标     | Good    | Needs Improvement | Poor     |
+| -------- | ------- | ----------------- | -------- |
+| **LCP**  | ≤2.5s   | 2.5s - 4.0s       | >4.0s    |
+| **INP**  | ≤200ms  | 200ms - 500ms     | >500ms   |
+| **CLS**  | ≤0.1    | 0.1 - 0.25        | >0.25    |
+| **FCP**  | ≤1.8s   | 1.8s - 3.0s       | >3.0s    |
+| **TTFB** | ≤800ms  | 800ms - 1800ms    | >1800ms  |
+
+> **注意**: FID 已于 2024 年 3 月被 INP 正式替代。INP 衡量整个页面生命周期中最慢交互的完整延迟，比 FID 更能反映真实用户体验。
+
+### 上报策略
+
+| 指标 | 上报时机 | 说明 |
+| ---- | ------- | ---- |
+| LCP  | `visibilitychange` (hidden) | 缓存最新值，只上报一次 |
+| INP  | `visibilitychange` (hidden) | 取最慢交互 duration，只上报一次 |
+| CLS  | `visibilitychange` (hidden) | Session Window 算法，只上报一次 |
+| FCP  | 立即 | 一次性指标 |
+| TTFB | 立即 | 一次性指标 |
 
 ### 浏览器支持
 
-- ✅ Chrome 77+
-- ✅ Edge 79+
-- ✅ Firefox 支持部分指标
-- ⚠️ Safari 支持有限
+- ✅ Chrome 96+ (全部指标)
+- ✅ Edge 96+
+- ⚠️ Firefox 144+ (INP 需要 interactionId 支持)
+- ⚠️ Safari 支持有限（FCP/TTFB 支持，LCP/INP/CLS 部分支持）
+- 不支持的指标会静默降级，不影响业务
 
 ---
 
@@ -239,21 +256,22 @@ export function App() {
 1. **生产环境使用采样**：
 
    ```typescript
-   sampleRate: 0.1; // 10% 采样
+   sampleRate: 0.1; // 10% 采样（手动 mark 不受影响）
    ```
 
 2. **只监控关键指标**：
 
    ```typescript
    monitorWebVitals: true,
-   monitorResources: false,  // 避免过多日志
+   monitorResources: false,  // 按需开启，避免过多日志
    monitorLongTasks: true
    ```
 
 3. **合理设置阈值**：
 
    ```typescript
-   longTaskThreshold: 100; // 只记录 >100ms 的任务
+   longTaskThreshold: 100, // 只记录 >100ms 的任务
+   slowResourceThreshold: 2000, // 只记录 >2s 的资源
    ```
 
 4. **与 UploadPlugin 配合**：
