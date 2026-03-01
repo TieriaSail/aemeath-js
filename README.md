@@ -387,3 +387,7 @@ Issues and feature requests are welcome! Feel free to [open an issue](https://gi
 ## License
 
 [MIT](./LICENSE) © TieriaSail
+
+---
+
+> Built with AI assistance.

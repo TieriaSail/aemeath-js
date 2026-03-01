@@ -46,7 +46,7 @@ export interface EarlyErrorCaptureOptions {
 
 export class EarlyErrorCapturePlugin implements AemeathPlugin {
   public name = 'EarlyErrorCapture';
-  public version = '1.0.0';
+  public version = '1.1.0';
   public description = 'Capture errors before React mounts';
 
   private options: Omit<Required<EarlyErrorCaptureOptions>, 'routeMatch'>;

@@ -388,3 +388,7 @@ logger.use(new MyPlugin());
 
 [MIT](./LICENSE) © TieriaSail
 
+---
+
+> 本项目使用 AI 辅助开发。
+

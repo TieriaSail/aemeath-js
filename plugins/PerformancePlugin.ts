@@ -66,7 +66,7 @@ interface ResolvedConfig {
 
 export class PerformancePlugin implements AemeathPlugin {
   readonly name = 'performance';
-  readonly version = '2.1.0';
+  readonly version = '1.1.0';
   readonly description = 'Performance monitoring';
 
   private readonly config: ResolvedConfig;
