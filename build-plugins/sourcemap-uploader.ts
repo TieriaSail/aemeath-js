@@ -52,6 +52,12 @@ export interface SourceMapUploadConfig {
    * @default true
    */
   deleteAfterUpload?: boolean;
+
+  /**
+   * 静默模式，不输出进度日志（错误仍会输出）
+   * @default false
+   */
+  silent?: boolean;
 }
 
 /**
@@ -64,20 +70,19 @@ export async function uploadSourceMaps(
   outputPath: string,
   config: SourceMapUploadConfig,
 ): Promise<void> {
-  const { onUpload, deleteAfterUpload = true, version } = config;
+  const { onUpload, deleteAfterUpload = true, version, silent = false } = config;
+  const log = silent ? () => {} : console.log.bind(console);
   const resolvedVersion = version || new Date().toISOString().replace(/[:.]/g, '-');
   try {
-    // 查找所有 .map 文件
     const mapFiles = findSourceMapFiles(outputPath);
 
     if (mapFiles.length === 0) {
-      console.log('[Aemeath] No source map files found');
+      log('[Aemeath] No source map files found');
       return;
     }
 
-    console.log(`[Aemeath] Found ${mapFiles.length} source map files`);
+    log(`[Aemeath] Found ${mapFiles.length} source map files`);
 
-    // 上传所有 Source Map
     for (const filePath of mapFiles) {
       try {
         const content = fs.readFileSync(filePath, 'utf-8');
@@ -92,19 +97,18 @@ export async function uploadSourceMaps(
 
         await onUpload(file);
 
-        console.log(`[Aemeath] Uploaded: ${relativePath}`);
+        log(`[Aemeath] Uploaded: ${relativePath}`);
 
-        // 删除文件
         if (deleteAfterUpload) {
           fs.unlinkSync(filePath);
-          console.log(`[Aemeath] Deleted: ${relativePath}`);
+          log(`[Aemeath] Deleted: ${relativePath}`);
         }
       } catch (error) {
         console.error(`[Aemeath] Failed to upload ${filePath}:`, error);
       }
     }
 
-    console.log('[Aemeath] Source map upload completed');
+    log('[Aemeath] Source map upload completed');
   } catch (error) {
     console.error('[Aemeath] Source map upload failed:', error);
   }

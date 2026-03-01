@@ -226,7 +226,6 @@ export class AemeathLogger implements AemeathInterface {
     // 添加堆栈
     if (err.stack) {
       errorInfo.stack = err.stack;
-      // TODO: 解析 stack 为 stacktrace.frames（可选）
     }
 
     // 复制所有自定义属性

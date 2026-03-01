@@ -122,7 +122,7 @@ export class EarlyErrorCapturePlugin implements AemeathPlugin {
         return;
       }
 
-      console.log(`[Logger] Flushed ${errors.length} early errors`);
+      console.debug(`[EarlyErrorCapture] Flushed ${errors.length} early errors`);
 
       errors.forEach((earlyError) => {
         const err = new Error(earlyError.message || 'Early error');
@@ -300,7 +300,7 @@ export function generateEarlyErrorScript(
           try {
             var sent = navigator.sendBeacon(FALLBACK_ENDPOINT, payload);
             if (sent) {
-              console.log('[EarlyErrorCapture] Sent ' + errors.length + ' errors via sendBeacon');
+              console.debug('[EarlyErrorCapture] Sent ' + errors.length + ' errors via sendBeacon');
             } else {
               fallbackXHR();
             }
@@ -317,7 +317,7 @@ export function generateEarlyErrorScript(
             xhr.open('POST', FALLBACK_ENDPOINT, true);
             xhr.setRequestHeader('Content-Type', 'application/json');
             xhr.send(payload);
-            console.log('[EarlyErrorCapture] Sent ' + errors.length + ' errors via XHR');
+            console.debug('[EarlyErrorCapture] Sent ' + errors.length + ' errors via XHR');
           } catch (e) {
             console.error('[EarlyErrorCapture] Failed to send via fallback:', e);
           }
