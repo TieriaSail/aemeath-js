@@ -48,6 +48,7 @@ export type {
 export { UploadPlugin } from './plugins/UploadPlugin';
 export type {
   UploadPluginOptions,
+  UploadResult,
   UploadCallback,
   PriorityCallback,
 } from './plugins/UploadPlugin';
@@ -94,4 +95,4 @@ export {
   isAemeathInitialized,
 } from './singleton';
 
-export type { AemeathInitOptions } from './singleton';
+export type { AemeathInitOptions, RouteMatchConfig } from './singleton';

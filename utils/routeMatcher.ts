@@ -181,7 +181,7 @@ export class RouteMatcher {
         // 字符串精确匹配
         return path === pattern;
       } else if (pattern instanceof RegExp) {
-        // 正则表达式匹配
+        pattern.lastIndex = 0;
         return pattern.test(path);
       } else if (typeof pattern === 'function') {
         // 函数匹配

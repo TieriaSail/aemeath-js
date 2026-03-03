@@ -136,9 +136,10 @@ export function createAemeathPlugin(options: VueAemeathPluginOptions = {}) {
         instance: unknown,
         info: string,
       ) => {
-        // 调用原始处理器
-        if (prevErrorHandler) {
-          prevErrorHandler(err, instance, info);
+        try {
+          prevErrorHandler?.(err, instance, info);
+        } catch {
+          // prevent original handler error from blocking Aemeath reporting
         }
 
         // 上报错误
@@ -175,9 +176,10 @@ export function createAemeathPlugin(options: VueAemeathPluginOptions = {}) {
           instance: unknown,
           trace: string,
         ) => {
-          // 调用原始处理器
-          if (prevWarnHandler) {
-            prevWarnHandler(msg, instance, trace);
+          try {
+            prevWarnHandler?.(msg, instance, trace);
+          } catch {
+            // prevent original handler error from blocking Aemeath reporting
           }
 
           const componentName = getComponentName(instance as VueComponentInstance);

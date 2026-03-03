@@ -260,9 +260,12 @@ export class NetworkPlugin implements AemeathPlugin {
       return false;
     }
 
-    // 用户自定义过滤
-    if (this.config.urlFilter && !this.config.urlFilter(url)) {
-      return false;
+    if (this.config.urlFilter) {
+      try {
+        if (!this.config.urlFilter(url)) return false;
+      } catch {
+        // urlFilter error should not block network capture
+      }
     }
 
     return true;

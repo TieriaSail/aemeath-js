@@ -138,6 +138,7 @@ export class ErrorDeduplicator {
           hasLocation: currentHasLocation,
           stackLength: currentStackLength,
         });
+        this.checkCacheSize();
         return true;
       }
     }
@@ -217,7 +218,7 @@ export class ErrorDeduplicator {
 
     const hash = this.generateHash(error);
     const cached = this.cache.get(hash);
-    return cached?.count || 1;
+    return cached?.count ?? 1;
   }
 
   /**

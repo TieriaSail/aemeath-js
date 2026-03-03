@@ -52,6 +52,7 @@ export class ErrorCapturePlugin implements AemeathPlugin {
     | ((event: PromiseRejectionEvent) => void)
     | null = null;
   private originalConsoleError: typeof console.error | null = null;
+  private resourceErrorHandler: ((event: Event) => void) | null = null;
 
   constructor(options: ErrorCapturePluginOptions = {}) {
     this.debugEnabled = options.debug ?? false;
@@ -112,9 +113,7 @@ export class ErrorCapturePlugin implements AemeathPlugin {
   }
 
   uninstall(): void {
-    if (this.originalErrorHandler) {
-      window.onerror = this.originalErrorHandler;
-    }
+    window.onerror = this.originalErrorHandler;
 
     if (this.originalRejectionHandler) {
       window.removeEventListener(
@@ -123,12 +122,18 @@ export class ErrorCapturePlugin implements AemeathPlugin {
       );
     }
 
+    if (this.resourceErrorHandler) {
+      window.removeEventListener('error', this.resourceErrorHandler, true);
+      this.resourceErrorHandler = null;
+    }
+
     if (this.originalConsoleError) {
       console.error = this.originalConsoleError;
     }
 
     this.deduplicator.stop();
     this.log('Uninstalled');
+    this.logger = null;
   }
 
   private captureGlobalError(): void {
@@ -214,41 +219,36 @@ export class ErrorCapturePlugin implements AemeathPlugin {
   }
 
   private captureResourceError(): void {
-    window.addEventListener(
-      'error',
-      (event) => {
-        if (event.target !== window && event.target instanceof HTMLElement) {
-          const target = event.target;
-          const tagName = target.tagName?.toLowerCase();
-          const src =
-            'src' in target
-              ? (target.src as string)
-              : 'href' in target
-                ? (target.href as string)
-                : undefined;
+    this.resourceErrorHandler = (event: Event) => {
+      if (event.target !== window && event.target instanceof HTMLElement) {
+        const target = event.target;
+        const tagName = target.tagName?.toLowerCase();
+        const src =
+          'src' in target
+            ? (target.src as string)
+            : 'href' in target
+              ? (target.href as string)
+              : undefined;
 
-          // 🛡️ 关键：排除日志系统自身的资源加载错误
-          if (
-            src &&
-            (src.includes('aemeath-js') ||
-              src.includes('aemeath-js') ||
-              src.includes('browser.global.js'))
-          ) {
-            this.warn('忽略日志系统资源加载错误:', src);
-            return;
-          }
-
-          const error = new Error(`Failed to load ${tagName}: ${src}`);
-          (error as any).type = 'resource';
-          (error as any).tagName = tagName;
-          (error as any).src = src;
-          (error as any).outerHTML = target.outerHTML?.substring(0, 200);
-
-          this.logger?.error('Resource load error', { error });
+        if (
+          src &&
+          (src.includes('aemeath-js') ||
+            src.includes('aemeath-js.global.js'))
+        ) {
+          this.warn('忽略日志系统资源加载错误:', src);
+          return;
         }
-      },
-      true,
-    );
+
+        const error = new Error(`Failed to load ${tagName}: ${src}`);
+        (error as any).type = 'resource';
+        (error as any).tagName = tagName;
+        (error as any).src = src;
+        (error as any).outerHTML = target.outerHTML?.substring(0, 200);
+
+        this.logger?.error('Resource load error', { error });
+      }
+    };
+    window.addEventListener('error', this.resourceErrorHandler, true);
   }
 
   private captureConsoleError(): void {
@@ -316,9 +316,8 @@ export class ErrorCapturePlugin implements AemeathPlugin {
     if (error && error.stack) {
       const stack = error.stack.toString();
       const loggerPatterns = [
-        'aemeath-js',  // npm 安装路径
-        'aemeath-js',       // 本地开发路径
-        'browser.global.js', // IIFE 构建产物
+        'aemeath-js',
+        'aemeath-js.global.js',
       ];
 
       if (loggerPatterns.some((pattern) => stack.includes(pattern))) {

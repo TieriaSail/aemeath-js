@@ -30,8 +30,8 @@
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
-  "unpkg": "./dist/browser.global.js",
-  "jsdelivr": "./dist/browser.global.js",
+  "unpkg": "./dist/aemeath-js.global.js",
+  "jsdelivr": "./dist/aemeath-js.global.js",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -104,9 +104,9 @@
       "require": "./dist/vue.cjs"
     },
     "./browser": {
-      "import": "./dist/browser.global.js",
-      "require": "./dist/browser.global.js",
-      "default": "./dist/browser.global.js"
+      "import": "./dist/aemeath-js.global.js",
+      "require": "./dist/aemeath-js.global.js",
+      "default": "./dist/aemeath-js.global.js"
     }
   },
   "files": [

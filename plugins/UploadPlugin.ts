@@ -314,8 +314,12 @@ export class UploadPlugin implements AemeathPlugin {
    * 处理日志
    */
   private handleLog(entry: LogEntry): void {
-    // 计算优先级
-    const priority = this.config.getPriority(entry);
+    let priority: number;
+    try {
+      priority = this.config.getPriority(entry);
+    } catch {
+      priority = 0;
+    }
 
     // 添加到队列（不做去重，让所有日志都进入队列）
     this.addToQueue({
@@ -459,9 +463,8 @@ export class UploadPlugin implements AemeathPlugin {
     } finally {
       this.isProcessing = false;
 
-      // 如果处理过程中又有新日志进来，继续处理
       if (this.queue.length > 0) {
-        this.processQueue();
+        setTimeout(() => this.processQueue(), 0);
       }
     }
   }

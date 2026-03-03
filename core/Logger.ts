@@ -148,9 +148,6 @@ export class AemeathLogger implements AemeathInterface {
       try {
         listener(entry);
       } catch (err) {
-        if (err instanceof Error) {
-          (err as any)._isAemeathInternalError = true;
-        }
         this.debugWarn('Listener error:', err);
       }
     });
@@ -211,8 +208,8 @@ export class AemeathLogger implements AemeathInterface {
    * 标准化错误对象为 ErrorInfo
    */
   private normalizeError(error: Error | ErrorInfo): ErrorInfo {
-    // 如果已经是 ErrorInfo 格式，直接返回
-    if (!('message' in error) && 'type' in error && 'value' in error) {
+    // 如果已经是 ErrorInfo 格式（有 type+value 且非原生 Error），直接返回
+    if (!(error instanceof Error) && 'type' in error && 'value' in error) {
       return error as ErrorInfo;
     }
 
@@ -310,12 +307,12 @@ export class AemeathLogger implements AemeathInterface {
     const timestamp = new Date(entry.timestamp).toISOString();
     const prefix = `[${timestamp}] [${entry.level.toUpperCase()}]`;
 
-    const consoleMethod = {
+    const consoleMethod = ({
       [LogLevelEnum.DEBUG]: console.debug,
       [LogLevelEnum.INFO]: console.info,
       [LogLevelEnum.WARN]: console.warn,
       [LogLevelEnum.ERROR]: console.error,
-    }[entry.level];
+    } as Record<string, typeof console.log>)[entry.level] ?? console.log;
 
     consoleMethod(prefix, entry.message);
     if (entry.error) {
@@ -504,20 +501,3 @@ export class AemeathLogger implements AemeathInterface {
   }
 }
 
-// ==================== 单例 ====================
-
-let ameathInstance: AemeathLogger | null = null;
-
-export function getAemeath(): AemeathLogger {
-  if (!ameathInstance) {
-    ameathInstance = new AemeathLogger();
-  }
-  return ameathInstance;
-}
-
-export function resetAemeath(): void {
-  if (ameathInstance) {
-    ameathInstance.destroy();
-    ameathInstance = null;
-  }
-}

@@ -93,7 +93,7 @@ logger.updateContext('userId', '67890');
 适用于 jQuery、原生 JS、静态 HTML 页面 — 无需 npm：
 
 ```html
-<script src="https://unpkg.com/aemeath-js/dist/browser.global.js"></script>
+<script src="https://unpkg.com/aemeath-js/dist/aemeath-js.global.js"></script>
 <script>
   AemeathJs.init({
     upload: function(log) {
@@ -335,7 +335,7 @@ logger.use(new MyPlugin());
 | Android WebView | 64+ | 完整支持 |
 | IE | ❌ 不支持 | 如需兼容可使用浏览器 IIFE 包 + polyfill |
 
-> npm 包构建目标为 **ES2020**。浏览器 IIFE 包（`browser.global.js`）构建目标为 **ES2017**，兼容性更广。
+> npm 包构建目标为 **ES2020**。浏览器 IIFE 包（`aemeath-js.global.js`）构建目标为 **ES2017**，兼容性更广。
 
 ### Node.js
 
@@ -372,7 +372,7 @@ logger.use(new MyPlugin());
 |------|------|------|
 | **ESM** | `dist/index.js` | `import` — 现代打包工具 |
 | **CJS** | `dist/index.cjs` | `require()` — Node.js、旧版打包工具 |
-| **IIFE** | `dist/browser.global.js` | `<script>` 标签 — 无需构建工具 |
+| **IIFE** | `dist/aemeath-js.global.js` | `<script>` 标签 — 无需构建工具 |
 
 ## 推荐搭配
 

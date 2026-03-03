@@ -40,8 +40,6 @@ export interface SafeGuardPluginOptions {
   cooldownPeriod?: number;
   /** 重复日志合并窗口 ms @default 2000 */
   mergeWindow?: number;
-  /** 采样率（超频时每 N 条保留 1 条）@default 10 */
-  sampleRate?: number;
   /** 是否启用递归保护 @default true */
   enableRecursionGuard?: boolean;
   /** 回收站最大容量（cautious/strict） @default 200 */
@@ -58,7 +56,6 @@ interface SafeGuardConfig {
   maxErrors: number;
   cooldownPeriod: number;
   mergeWindow: number;
-  sampleRate: number;
   enableRecursionGuard: boolean;
   parkingLotSize: number;
   parkingLotTTL: number;
@@ -88,7 +85,6 @@ export interface SafeGuardHealth {
   errorCount: number;
   droppedCount: number;
   mergedCount: number;
-  sampledCount: number;
   parkingLotSize: number;
   uptime: number;
 }
@@ -123,14 +119,11 @@ export class SafeGuardPlugin implements AemeathPlugin {
   private mergeMap: Map<string, MergeEntry> = new Map();
   private mergeFlushTimer: ReturnType<typeof setTimeout> | null = null;
 
-  // 采样
-  private sampleCounter = 0;
   private hasWarnedHighFrequency = false;
 
   // 统计
   private droppedCount = 0;
   private mergedCount = 0;
-  private sampledCount = 0;
   private readonly startTime = Date.now();
 
   // 回收站（cautious / strict）
@@ -148,7 +141,6 @@ export class SafeGuardPlugin implements AemeathPlugin {
       maxErrors: options.maxErrors ?? 100,
       cooldownPeriod: options.cooldownPeriod ?? 30000,
       mergeWindow: options.mergeWindow ?? 2000,
-      sampleRate: options.sampleRate ?? 10,
       enableRecursionGuard: options.enableRecursionGuard ?? true,
       parkingLotSize: options.parkingLotSize ?? 200,
       parkingLotTTL: options.parkingLotTTL ?? 5 * 60 * 1000,
@@ -260,6 +252,16 @@ export class SafeGuardPlugin implements AemeathPlugin {
     }
 
     // 频率超标 → 智能分析
+    if (!this.hasWarnedHighFrequency) {
+      this.hasWarnedHighFrequency = true;
+      console.warn(
+        '[SafeGuard] 检测到高频日志调用（%d/s，限制 %d/s），建议使用 throttle/debounce。当前模式：%s',
+        rate,
+        this.config.rateLimit,
+        this.config.mode,
+      );
+    }
+
     const hash = this.computeHash(level, message, options);
 
     // 重复日志 → 合并计数
@@ -271,7 +273,7 @@ export class SafeGuardPlugin implements AemeathPlugin {
       return false;
     }
 
-    // 首次出现的日志 → 进入合并窗口（首条通过）
+    // 首次出现的日志 → 进入合并窗口，首条始终放行
     this.mergeMap.set(hash, {
       count: 1,
       level,
@@ -280,28 +282,7 @@ export class SafeGuardPlugin implements AemeathPlugin {
       firstTimestamp: Date.now(),
     });
     this.scheduleMergeFlush();
-
-    // 非重复但超频 → 采样
-    this.sampleCounter++;
-    if (this.sampleCounter % this.config.sampleRate !== 0) {
-      this.sampledCount++;
-      this.handleBlocked(level, message, options);
-
-      if (!this.hasWarnedHighFrequency) {
-        this.hasWarnedHighFrequency = true;
-        console.warn(
-          '[SafeGuard] 检测到高频日志调用（%d/s，限制 %d/s），建议使用 throttle/debounce。当前模式：%s',
-          rate,
-          this.config.rateLimit,
-          this.config.mode,
-        );
-      }
-
-      return false;
-    }
-
-    // 采样保留的这条 → 放行
-    return;
+    return; // 首条通过，跳过采样
   }
 
   // ==================== 错误计数 + 熔断 ====================
@@ -343,7 +324,6 @@ export class SafeGuardPlugin implements AemeathPlugin {
 
     if (newState === 'closed') {
       this.errorCount = 0;
-      this.sampleCounter = 0;
       this.hasWarnedHighFrequency = false;
     }
 
@@ -650,7 +630,6 @@ export class SafeGuardPlugin implements AemeathPlugin {
       errorCount: this.errorCount,
       droppedCount: this.droppedCount,
       mergedCount: this.mergedCount,
-      sampledCount: this.sampledCount,
       parkingLotSize: this.parkingLot.length,
       uptime: Date.now() - this.startTime,
     };

@@ -14,7 +14,7 @@ For jQuery, vanilla JS, static HTML pages and other non-bundled projects.
   <script src="https://unpkg.com/aemeath-js/scripts/early-error.js"></script>
   
   <!-- 2. Logger core (~24KB) -->
-  <script src="https://unpkg.com/aemeath-js/dist/browser.global.js"></script>
+  <script src="https://unpkg.com/aemeath-js/dist/aemeath-js.global.js"></script>
 </head>
 <body>
   <script>
@@ -85,7 +85,7 @@ logger.info('User action', { context: { userId: '123', action: 'click' } });
 
 ```html
 <script src="https://unpkg.com/aemeath-js/scripts/early-error.js"></script>
-<script src="https://unpkg.com/aemeath-js/dist/browser.global.js"></script>
+<script src="https://unpkg.com/aemeath-js/dist/aemeath-js.global.js"></script>
 <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
 
 <script>
@@ -123,17 +123,17 @@ logger.info('User action', { context: { userId: '123', action: 'click' } });
 
 | CDN | Logger Core | Early Error Capture |
 |-----|-------------|---------------------|
-| **unpkg** | `https://unpkg.com/aemeath-js/dist/browser.global.js` | `https://unpkg.com/aemeath-js/scripts/early-error.js` |
-| **jsDelivr** | `https://cdn.jsdelivr.net/npm/aemeath-js/dist/browser.global.js` | `https://cdn.jsdelivr.net/npm/aemeath-js/scripts/early-error.js` |
+| **unpkg** | `https://unpkg.com/aemeath-js/dist/aemeath-js.global.js` | `https://unpkg.com/aemeath-js/scripts/early-error.js` |
+| **jsDelivr** | `https://cdn.jsdelivr.net/npm/aemeath-js/dist/aemeath-js.global.js` | `https://cdn.jsdelivr.net/npm/aemeath-js/scripts/early-error.js` |
 
 ### Specify Version
 
 ```html
 <!-- Specific version -->
-<script src="https://unpkg.com/aemeath-js@1.1.0/dist/browser.global.js"></script>
+<script src="https://unpkg.com/aemeath-js@1.1.0/dist/aemeath-js.global.js"></script>
 
 <!-- Latest version -->
-<script src="https://unpkg.com/aemeath-js/dist/browser.global.js"></script>
+<script src="https://unpkg.com/aemeath-js/dist/aemeath-js.global.js"></script>
 ```
 
 ---

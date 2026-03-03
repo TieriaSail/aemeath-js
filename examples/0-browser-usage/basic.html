@@ -9,7 +9,7 @@
   <script src="https://unpkg.com/aemeath-js/scripts/early-error.js"></script>
   
   <!-- 2. Logger 核心 -->
-  <script src="https://unpkg.com/aemeath-js/dist/browser.global.js"></script>
+  <script src="https://unpkg.com/aemeath-js/dist/aemeath-js.global.js"></script>
   
   <style>
     body { font-family: system-ui, sans-serif; padding: 20px; max-width: 800px; margin: 0 auto; }
@@ -61,21 +61,20 @@
     
     // 页面加载日志
     logger.info('页面加载完成', { 
-      url: location.href,
-      userAgent: navigator.userAgent 
+      context: { url: location.href, userAgent: navigator.userAgent }
     });
     
     // 测试函数
     function logInfo() {
-      logger.info('用户点击了 Info 按钮', { timestamp: Date.now() });
+      logger.info('用户点击了 Info 按钮', { context: { timestamp: Date.now() } });
     }
     
     function logWarn() {
-      logger.warn('这是一个警告信息', { level: 'medium' });
+      logger.warn('这是一个警告信息', { tags: { severity: 'medium' } });
     }
     
     function logError() {
-      logger.error('这是一个错误信息', { code: 500 });
+      logger.error('这是一个错误信息', { context: { code: 500 } });
     }
     
     function triggerError() {

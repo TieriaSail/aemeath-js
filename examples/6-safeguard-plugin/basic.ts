@@ -28,9 +28,6 @@ logger.use(
     // 重复日志合并窗口（ms），同一条日志在此窗口内合并为 tags.repeatedCount
     mergeWindow: 2000,
 
-    // 高频日志采样率（超限后每 N 条采样 1 条，其余 console.warn）
-    sampleRate: 10,
-
     // 启用递归保护（硬阻断）
     enableRecursionGuard: true,
   }),
@@ -41,7 +38,7 @@ logger.use(new ErrorCapturePlugin());
 
 // 现在 Logger 是安全的，不会：
 // 1. 陷入无限递归（递归硬阻断）
-// 2. 产生日志风暴（滑动窗口限流 + 采样 + 合并）
+// 2. 产生日志风暴（滑动窗口限流 + 合并）
 // 3. 因为错误过多而拖垮应用（熔断器: closed → open → half-open）
 
 // 使用示例

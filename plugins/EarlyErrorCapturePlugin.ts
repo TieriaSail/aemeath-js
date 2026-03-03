@@ -159,7 +159,7 @@ export function generateEarlyErrorScript(
   window.__EARLY_ERRORS__ = [];
   
   var MAX_ERRORS = ${options.maxErrors};
-  var FALLBACK_ENDPOINT = '${options.fallbackEndpoint}';
+  var FALLBACK_ENDPOINT = ${JSON.stringify(options.fallbackEndpoint)};
   var FALLBACK_TIMEOUT = ${options.fallbackTimeout};
   var AUTO_REFRESH = ${options.autoRefreshOnChunkError};
   var CHECK_COMPAT = ${options.checkCompatibility};

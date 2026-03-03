@@ -14,7 +14,7 @@
   <script src="https://unpkg.com/aemeath-js/scripts/early-error.js"></script>
   
   <!-- Logger 核心 -->
-  <script src="https://unpkg.com/aemeath-js/dist/browser.global.js"></script>
+  <script src="https://unpkg.com/aemeath-js/dist/aemeath-js.global.js"></script>
 </head>
 <body>
   <script>
@@ -44,7 +44,7 @@
 <html>
 <head>
   <script src="https://unpkg.com/aemeath-js/scripts/early-error.js"></script>
-  <script src="https://unpkg.com/aemeath-js/dist/browser.global.js"></script>
+  <script src="https://unpkg.com/aemeath-js/dist/aemeath-js.global.js"></script>
 </head>
 <body>
   <button id="myBtn">点击我</button>
@@ -133,8 +133,8 @@ try {
 
 | CDN | Logger 核心 | 早期错误捕获 |
 |-----|------------|-------------|
-| unpkg | `https://unpkg.com/aemeath-js/dist/browser.global.js` | `https://unpkg.com/aemeath-js/scripts/early-error.js` |
-| jsDelivr | `https://cdn.jsdelivr.net/npm/aemeath-js/dist/browser.global.js` | `https://cdn.jsdelivr.net/npm/aemeath-js/scripts/early-error.js` |
+| unpkg | `https://unpkg.com/aemeath-js/dist/aemeath-js.global.js` | `https://unpkg.com/aemeath-js/scripts/early-error.js` |
+| jsDelivr | `https://cdn.jsdelivr.net/npm/aemeath-js/dist/aemeath-js.global.js` | `https://cdn.jsdelivr.net/npm/aemeath-js/scripts/early-error.js` |
 
 ## 💡 提示
 

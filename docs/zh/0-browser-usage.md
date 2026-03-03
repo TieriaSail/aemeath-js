@@ -14,7 +14,7 @@
   <script src="https://unpkg.com/aemeath-js/scripts/early-error.js"></script>
   
   <!-- 2. Logger 核心 (~24KB) -->
-  <script src="https://unpkg.com/aemeath-js/dist/browser.global.js"></script>
+  <script src="https://unpkg.com/aemeath-js/dist/aemeath-js.global.js"></script>
 </head>
 <body>
   <script>
@@ -85,7 +85,7 @@ logger.info('用户操作', { context: { userId: '123', action: 'click' } });
 
 ```html
 <script src="https://unpkg.com/aemeath-js/scripts/early-error.js"></script>
-<script src="https://unpkg.com/aemeath-js/dist/browser.global.js"></script>
+<script src="https://unpkg.com/aemeath-js/dist/aemeath-js.global.js"></script>
 <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
 
 <script>
@@ -123,17 +123,17 @@ logger.info('用户操作', { context: { userId: '123', action: 'click' } });
 
 | CDN | Logger 核心 | 早期错误捕获 |
 |-----|------------|-------------|
-| **unpkg** | `https://unpkg.com/aemeath-js/dist/browser.global.js` | `https://unpkg.com/aemeath-js/scripts/early-error.js` |
-| **jsDelivr** | `https://cdn.jsdelivr.net/npm/aemeath-js/dist/browser.global.js` | `https://cdn.jsdelivr.net/npm/aemeath-js/scripts/early-error.js` |
+| **unpkg** | `https://unpkg.com/aemeath-js/dist/aemeath-js.global.js` | `https://unpkg.com/aemeath-js/scripts/early-error.js` |
+| **jsDelivr** | `https://cdn.jsdelivr.net/npm/aemeath-js/dist/aemeath-js.global.js` | `https://cdn.jsdelivr.net/npm/aemeath-js/scripts/early-error.js` |
 
 ### 指定版本
 
 ```html
 <!-- 指定版本号 -->
-<script src="https://unpkg.com/aemeath-js@1.1.0/dist/browser.global.js"></script>
+<script src="https://unpkg.com/aemeath-js@1.1.0/dist/aemeath-js.global.js"></script>
 
 <!-- 使用最新版本 -->
-<script src="https://unpkg.com/aemeath-js/dist/browser.global.js"></script>
+<script src="https://unpkg.com/aemeath-js/dist/aemeath-js.global.js"></script>
 ```
 
 ---

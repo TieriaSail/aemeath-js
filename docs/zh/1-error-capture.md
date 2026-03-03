@@ -40,7 +40,18 @@ logger.use(new ErrorCapturePlugin());
 
 ```typescript
 interface ErrorCapturePluginOptions {
-  // 暂无配置项，使用默认配置
+  /** 是否捕获未处理的 Promise 拒绝 @default true */
+  captureUnhandledRejection?: boolean;
+  /** 是否捕获资源加载错误 @default true */
+  captureResourceError?: boolean;
+  /** 是否捕获 console.error @default false */
+  captureConsoleError?: boolean;
+  /** 自定义错误过滤函数（返回 false 跳过该错误） */
+  errorFilter?: (error: Error) => boolean;
+  /** 路由匹配配置 */
+  routeMatch?: RouteMatchConfig;
+  /** 调试模式 @default false */
+  debug?: boolean;
 }
 ```
 

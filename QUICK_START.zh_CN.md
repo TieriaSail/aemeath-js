@@ -18,7 +18,7 @@
   <script src="https://unpkg.com/aemeath-js/scripts/early-error.js"></script>
 
   <!-- 2. 核心库 (~24KB) -->
-  <script src="https://unpkg.com/aemeath-js/dist/browser.global.js"></script>
+  <script src="https://unpkg.com/aemeath-js/dist/aemeath-js.global.js"></script>
 </head>
 <body>
   <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
@@ -79,8 +79,8 @@ logger.error('错误信息');
 
 | CDN | URL |
 |-----|-----|
-| unpkg | `https://unpkg.com/aemeath-js/dist/browser.global.js` |
-| jsDelivr | `https://cdn.jsdelivr.net/npm/aemeath-js/dist/browser.global.js` |
+| unpkg | `https://unpkg.com/aemeath-js/dist/aemeath-js.global.js` |
+| jsDelivr | `https://cdn.jsdelivr.net/npm/aemeath-js/dist/aemeath-js.global.js` |
 
 ---
 

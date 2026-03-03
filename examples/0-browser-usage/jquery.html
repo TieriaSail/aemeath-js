@@ -9,7 +9,7 @@
   <script src="https://unpkg.com/aemeath-js/scripts/early-error.js"></script>
   
   <!-- 2. Logger 核心 -->
-  <script src="https://unpkg.com/aemeath-js/dist/browser.global.js"></script>
+  <script src="https://unpkg.com/aemeath-js/dist/aemeath-js.global.js"></script>
   
   <style>
     body { font-family: system-ui, sans-serif; padding: 20px; max-width: 800px; margin: 0 auto; }
@@ -75,7 +75,7 @@
       $('#btn-submit').click(function() {
         var username = $('#username').val();
         if (username) {
-          logger.info('用户提交表单', { username: username });
+          logger.info('用户提交表单', { context: { username: username } });
         } else {
           logger.warn('用户名为空');
         }
@@ -90,10 +90,10 @@
           url: 'https://jsonplaceholder.typicode.com/posts/1',
           method: 'GET',
           success: function(data) {
-            logger.info('AJAX 请求成功', { title: data.title });
+            logger.info('AJAX 请求成功', { context: { title: data.title } });
           },
           error: function(xhr, status, error) {
-            logger.error('AJAX 请求失败', { status: status, error: error });
+            logger.error('AJAX 请求失败', { error: error, context: { status: status } });
           }
         });
       });
@@ -106,9 +106,8 @@
       // 全局 AJAX 错误捕获
       $(document).ajaxError(function(event, jqxhr, settings, error) {
         logger.error('全局 AJAX 错误', {
-          url: settings.url,
-          status: jqxhr.status,
-          error: error
+          error: error,
+          context: { url: settings.url, status: jqxhr.status }
         });
       });
       
@@ -118,7 +117,7 @@
           logger.debug('输入框获得焦点');
         })
         .blur(function() {
-          logger.debug('输入框失去焦点', { value: $(this).val() });
+          logger.debug('输入框失去焦点', { context: { value: $(this).val() } });
         });
     });
   </script>

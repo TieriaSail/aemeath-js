@@ -51,7 +51,7 @@ export default defineConfig([
   // 浏览器构建：IIFE（用于 <script> 直接引入）
   {
     entry: {
-      browser: 'browser/index.ts',
+      'aemeath-js': 'browser/index.ts',
     },
     format: ['iife'],
     globalName: 'AemeathJs',

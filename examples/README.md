@@ -15,7 +15,7 @@
 
 ```html
 <script src="https://unpkg.com/aemeath-js/scripts/early-error.js"></script>
-<script src="https://unpkg.com/aemeath-js/dist/browser.global.js"></script>
+<script src="https://unpkg.com/aemeath-js/dist/aemeath-js.global.js"></script>
 <script>
   AemeathJs.init({
     upload: function(log) {

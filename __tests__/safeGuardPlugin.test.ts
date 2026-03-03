@@ -83,11 +83,12 @@ describe('SafeGuardPlugin', () => {
 
       vi.spyOn(console, 'warn').mockImplementation(() => {});
 
+      // 超频后发送重复日志，重复的会被合并拦截
       for (let i = 0; i < 50; i++) {
-        logger.info(`msg-${i}`);
+        logger.info('repeated-msg');
       }
 
-      // 由于频率限制和采样，listener 收到的日志数应远少于 50
+      // 首条通过，后续重复被合并，listener 收到的日志数应远少于 50
       expect(listener.mock.calls.length).toBeLessThan(50);
 
       vi.restoreAllMocks();
@@ -254,19 +255,23 @@ describe('SafeGuardPlugin', () => {
   // ==================== 滑动窗口频率限制 ====================
 
   describe('滑动窗口频率限制', () => {
-    it('短时间内超频应触发采样', () => {
-      const plugin = new SafeGuardPlugin({ rateLimit: 5, sampleRate: 2 });
+    it('超频时重复日志应被合并拦截', () => {
+      const plugin = new SafeGuardPlugin({ rateLimit: 5 });
       logger.use(plugin);
       const listener = vi.fn();
       logger.on('log', listener);
 
       vi.spyOn(console, 'warn').mockImplementation(() => {});
 
-      for (let i = 0; i < 20; i++) {
-        logger.info(`msg-${i}`);
+      // 先发 5 条让频率正常通过，再发 15 条重复日志
+      for (let i = 0; i < 5; i++) {
+        logger.info(`unique-${i}`);
+      }
+      for (let i = 0; i < 15; i++) {
+        logger.info('repeated-msg');
       }
 
-      // 前 5 条正常通过，之后采样（每 2 条保留 1 条）
+      // 前 5 条 + 重复日志首条通过 = 6，后续重复被合并
       const callCount = listener.mock.calls.length;
       expect(callCount).toBeGreaterThan(5);
       expect(callCount).toBeLessThan(20);
@@ -293,7 +298,7 @@ describe('SafeGuardPlugin', () => {
     });
 
     it('窗口滑过后频率应重置', () => {
-      const plugin = new SafeGuardPlugin({ rateLimit: 5, sampleRate: 2 });
+      const plugin = new SafeGuardPlugin({ rateLimit: 5 });
       logger.use(plugin);
       const listener = vi.fn();
       logger.on('log', listener);
@@ -323,7 +328,6 @@ describe('SafeGuardPlugin', () => {
       const plugin = new SafeGuardPlugin({
         rateLimit: 3,
         mergeWindow: 2000,
-        sampleRate: 10,
       });
       logger.use(plugin);
       const listener = vi.fn();
@@ -436,7 +440,6 @@ describe('SafeGuardPlugin', () => {
       expect(health).toHaveProperty('errorCount');
       expect(health).toHaveProperty('droppedCount');
       expect(health).toHaveProperty('mergedCount');
-      expect(health).toHaveProperty('sampledCount');
       expect(health).toHaveProperty('parkingLotSize');
       expect(health).toHaveProperty('uptime');
     });

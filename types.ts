@@ -149,7 +149,6 @@ export interface LogOptions {
  * - true / undefined / void：放行
  */
 export type BeforeLogResult =
-  | false
   | void
   | boolean
   | { level: LogLevel; message: string; options: LogOptions };

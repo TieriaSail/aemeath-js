@@ -40,7 +40,18 @@ logger.use(new ErrorCapturePlugin());
 
 ```typescript
 interface ErrorCapturePluginOptions {
-  // No config needed, uses defaults
+  /** Capture unhandled Promise rejections @default true */
+  captureUnhandledRejection?: boolean;
+  /** Capture resource loading errors @default true */
+  captureResourceError?: boolean;
+  /** Capture console.error calls @default false */
+  captureConsoleError?: boolean;
+  /** Custom error filter (return false to skip) */
+  errorFilter?: (error: Error) => boolean;
+  /** Route matching configuration */
+  routeMatch?: RouteMatchConfig;
+  /** Debug mode @default false */
+  debug?: boolean;
 }
 ```
 

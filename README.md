@@ -93,7 +93,7 @@ logger.updateContext('userId', '67890');
 For jQuery, vanilla JS, or static HTML pages — no npm required:
 
 ```html
-<script src="https://unpkg.com/aemeath-js/dist/browser.global.js"></script>
+<script src="https://unpkg.com/aemeath-js/dist/aemeath-js.global.js"></script>
 <script>
   AemeathJs.init({
     upload: function(log) {
@@ -335,7 +335,7 @@ logger.use(new MyPlugin());
 | Android WebView | 64+ | Full support |
 | IE | ❌ Not supported | Use browser bundle with polyfills if needed |
 
-> The npm package targets **ES2020**. The browser IIFE bundle (`browser.global.js`) targets **ES2017** for broader compatibility.
+> The npm package targets **ES2020**. The browser IIFE bundle (`aemeath-js.global.js`) targets **ES2017** for broader compatibility.
 
 ### Node.js
 
@@ -372,7 +372,7 @@ logger.use(new MyPlugin());
 |--------|------|-------|
 | **ESM** | `dist/index.js` | `import` — modern bundlers |
 | **CJS** | `dist/index.cjs` | `require()` — Node.js, older bundlers |
-| **IIFE** | `dist/browser.global.js` | `<script>` tag — no build tools |
+| **IIFE** | `dist/aemeath-js.global.js` | `<script>` tag — no build tools |
 
 ## Also Check Out
 

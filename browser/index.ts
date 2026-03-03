@@ -2,7 +2,7 @@
  * 浏览器直接引入版本
  *
  * 用法：
- * <script src="https://unpkg.com/aemeath-js/dist/browser.global.js"></script>
+ * <script src="https://unpkg.com/aemeath-js/dist/aemeath-js.global.js"></script>
  * <script>
  *   AemeathJs.init({
  *     upload: function(log) {
@@ -113,10 +113,14 @@ function init(options: BrowserLoggerOptions = {}): AemeathLogger {
     );
   }
 
-  // 刷新早期错误
-  flushEarlyErrors(logger);
-
   globalLogger = logger;
+
+  try {
+    flushEarlyErrors(logger);
+  } catch {
+    // early error flush 失败不影响 logger 正常工作
+  }
+
   return logger;
 }
 

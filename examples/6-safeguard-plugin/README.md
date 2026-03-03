@@ -115,7 +115,6 @@ logger.use(
     maxErrors: 100, // 最多 100 个错误后熔断
     cooldownPeriod: 30000, // 熔断冷却 30 秒
     mergeWindow: 2000, // 2 秒内重复日志合并
-    sampleRate: 10, // 高频采样：每 10 条取 1 条
     enableRecursionGuard: true, // 启用递归硬阻断
   }),
 );
@@ -147,7 +146,6 @@ logger.use(
     cooldownPeriod: 30000, // 30 秒冷却
     rateLimit: 50, // 生产环境限制更低
     mergeWindow: 2000,
-    sampleRate: 10,
     enableRecursionGuard: true,
     parkingLotSize: 200,
     parkingLotTTL: 300000,
@@ -195,7 +193,6 @@ console.log({
   errorCount: health.errorCount, // 当前错误数
   droppedCount: health.droppedCount, // 已丢弃日志数
   mergedCount: health.mergedCount, // 已合并日志数
-  sampledCount: health.sampledCount, // 已采样日志数
   parkingLotSize: health.parkingLotSize, // parking lot 当前大小
   uptime: health.uptime, // 运行时间（ms）
 });
@@ -272,7 +269,6 @@ logger.use(
   new SafeGuardPlugin({
     rateLimit: 10, // 每秒最多 10 条
     mergeWindow: 2000, // 2 秒内重复日志合并
-    sampleRate: 5, // 超限后每 5 条取 1 条
   }),
 );
 
@@ -283,7 +279,7 @@ websocket.on('message', (msg) => {
 
 // 如果每秒收到 100 条消息：
 // 1. 连续相同日志 → 合并为 1 条（tags.repeatedCount = N）
-// 2. 超过 10 条/秒 → 每 5 条采样 1 条 + console.warn 提示
+// 2. 超过 10 条/秒 → 超限日志被丢弃 + console.warn 提示
 // 3. 错误过多 → 熔断器打开，cooldownPeriod 后尝试恢复
 ```
 
@@ -311,7 +307,6 @@ setInterval(() => {
     logger_errors: health.errorCount,
     logger_dropped: health.droppedCount,
     logger_merged: health.mergedCount,
-    logger_sampled: health.sampledCount,
     logger_healthy: health.isHealthy ? 1 : 0,
     logger_parking_lot: health.parkingLotSize,
   });
@@ -377,7 +372,6 @@ new SafeGuardPlugin({
   cooldownPeriod: 5000, // 快速恢复
   rateLimit: 1000,
   mergeWindow: 1000,
-  sampleRate: 5,
   enableRecursionGuard: true,
 });
 ```
@@ -391,7 +385,6 @@ new SafeGuardPlugin({
   cooldownPeriod: 30000, // 较长冷却期
   rateLimit: 50,
   mergeWindow: 2000,
-  sampleRate: 10,
   enableRecursionGuard: true,
   parkingLotSize: 200,
   parkingLotTTL: 300000,
@@ -407,7 +400,6 @@ new SafeGuardPlugin({
   cooldownPeriod: 15000, // 较短冷却，快速恢复
   rateLimit: 200, // 更高的限流
   mergeWindow: 3000, // 更大的合并窗口
-  sampleRate: 20, // 更积极的采样
   enableRecursionGuard: true,
   parkingLotSize: 500, // 更大的 parking lot
   parkingLotTTL: 600000, // 10 分钟过期

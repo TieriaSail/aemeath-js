@@ -141,12 +141,12 @@ export interface AemeathInitOptions {
   /**
    * 队列配置
    *
-   * @default { maxSize: 100, uploadInterval: 5000, concurrency: 1, maxRetries: 3 }
+   * @default { maxSize: 100, uploadInterval: 30000, concurrency: 1, maxRetries: 3 }
    */
   queue?: {
     /** 最大队列大小 @default 100 */
     maxSize?: number;
-    /** 上传间隔（毫秒）@default 5000 */
+    /** 上传间隔（毫秒）@default 30000 */
     uploadInterval?: number;
     /** 并发数 @default 1 */
     concurrency?: number;
@@ -221,8 +221,6 @@ export interface AemeathInitOptions {
     rateLimit?: number;
     /** 重复日志合并窗口 ms @default 2000 */
     mergeWindow?: number;
-    /** 采样率（超频时每 N 条保留 1 条）@default 10 */
-    sampleRate?: number;
     /** 是否启用递归保护 @default true */
     enableRecursionGuard?: boolean;
   };
@@ -376,7 +374,6 @@ export function initAemeath(options: AemeathInitOptions = {}): AemeathLogger {
         cooldownPeriod: options.safeGuard?.cooldownPeriod,
         rateLimit: options.safeGuard?.rateLimit,
         mergeWindow: options.safeGuard?.mergeWindow,
-        sampleRate: options.safeGuard?.sampleRate,
         enableRecursionGuard: options.safeGuard?.enableRecursionGuard,
       }),
     );

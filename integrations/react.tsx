@@ -131,8 +131,11 @@ export class AemeathErrorBoundary extends Component<
       },
     });
 
-    // 调用用户回调
-    this.props.onError?.(error, errorInfo);
+    try {
+      this.props.onError?.(error, errorInfo);
+    } catch {
+      // prevent user callback error from crashing ErrorBoundary
+    }
   }
 
   reset = (): void => {

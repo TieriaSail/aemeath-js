@@ -20,7 +20,6 @@ logger.use(
     cooldownPeriod: 30000, // 熔断器冷却 30 秒
     rateLimit: 50, // 每秒最多 50 条（滑动窗口）
     mergeWindow: 2000, // 2 秒内重复日志合并
-    sampleRate: 10, // 高频采样：每 10 条取 1 条
     enableRecursionGuard: true,
     parkingLotSize: 200, // parking lot 最大容量
     parkingLotTTL: 300000, // parking lot 条目 5 分钟过期
@@ -82,7 +81,6 @@ setInterval(() => {
     logger_error_count: health.errorCount,
     logger_dropped_count: health.droppedCount,
     logger_merged_count: health.mergedCount,
-    logger_sampled_count: health.sampledCount,
     logger_parking_lot_size: health.parkingLotSize,
     logger_uptime: health.uptime,
   });
