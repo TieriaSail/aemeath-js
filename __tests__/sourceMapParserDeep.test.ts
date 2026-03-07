@@ -8,7 +8,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { SourceMapGenerator } from 'source-map-js';
-import { SourceMapParser } from '../parser/SourceMapParser.client';
+import { SourceMapParser } from '../src/parser/SourceMapParser.client';
 
 // ==================== 辅助函数 ====================
 

@@ -10,7 +10,7 @@ import { describe, it, expect, vi } from 'vitest';
 
 describe('Vite Plugin', () => {
   it('应返回正确的插件结构', async () => {
-    const { ameathEarlyErrorPlugin } = await import('../build-plugins/vite');
+    const { ameathEarlyErrorPlugin } = await import('../src/build-plugins/vite');
     const plugin = ameathEarlyErrorPlugin();
 
     expect(plugin.name).toBe('aemeath-early-error-capture');
@@ -18,7 +18,7 @@ describe('Vite Plugin', () => {
   });
 
   it('enabled=true 时应注入脚本到 head', async () => {
-    const { ameathEarlyErrorPlugin } = await import('../build-plugins/vite');
+    const { ameathEarlyErrorPlugin } = await import('../src/build-plugins/vite');
     const plugin = ameathEarlyErrorPlugin({ enabled: true });
 
     const html = '<html><head><title>Test</title></head><body></body></html>';
@@ -30,7 +30,7 @@ describe('Vite Plugin', () => {
   });
 
   it('enabled=false 时不应修改 HTML', async () => {
-    const { ameathEarlyErrorPlugin } = await import('../build-plugins/vite');
+    const { ameathEarlyErrorPlugin } = await import('../src/build-plugins/vite');
     const plugin = ameathEarlyErrorPlugin({ enabled: false });
 
     const html = '<html><head><title>Test</title></head><body></body></html>';
@@ -40,7 +40,7 @@ describe('Vite Plugin', () => {
   });
 
   it('脚本应注入到 <head> 最前面', async () => {
-    const { ameathEarlyErrorPlugin } = await import('../build-plugins/vite');
+    const { ameathEarlyErrorPlugin } = await import('../src/build-plugins/vite');
     const plugin = ameathEarlyErrorPlugin();
 
     const html = '<html><head><meta charset="UTF-8"></head><body></body></html>';
@@ -59,7 +59,7 @@ describe('Vite Plugin', () => {
 describe('Webpack Plugin', () => {
   it('应正确创建实例', async () => {
     const { AemeathEarlyErrorWebpackPlugin } = await import(
-      '../build-plugins/webpack'
+      '../src/build-plugins/webpack'
     );
     const plugin = new AemeathEarlyErrorWebpackPlugin();
     expect(plugin).toBeDefined();
@@ -67,7 +67,7 @@ describe('Webpack Plugin', () => {
 
   it('应支持 mode 配置', async () => {
     const { AemeathEarlyErrorWebpackPlugin } = await import(
-      '../build-plugins/webpack'
+      '../src/build-plugins/webpack'
     );
 
     const autoPlugin = new AemeathEarlyErrorWebpackPlugin({ mode: 'auto' });
@@ -81,7 +81,7 @@ describe('Webpack Plugin', () => {
 
   it('应有 apply 方法', async () => {
     const { AemeathEarlyErrorWebpackPlugin } = await import(
-      '../build-plugins/webpack'
+      '../src/build-plugins/webpack'
     );
     const plugin = new AemeathEarlyErrorWebpackPlugin();
     expect(plugin.apply).toBeTypeOf('function');
@@ -89,7 +89,7 @@ describe('Webpack Plugin', () => {
 
   it('enabled=false 时 apply 不应注册 hooks', async () => {
     const { AemeathEarlyErrorWebpackPlugin } = await import(
-      '../build-plugins/webpack'
+      '../src/build-plugins/webpack'
     );
     const plugin = new AemeathEarlyErrorWebpackPlugin({ enabled: false });
 
@@ -108,7 +108,7 @@ describe('Webpack Plugin', () => {
 
   it("mode='file' 时应注册 emit hook", async () => {
     const { AemeathEarlyErrorWebpackPlugin } = await import(
-      '../build-plugins/webpack'
+      '../src/build-plugins/webpack'
     );
     const plugin = new AemeathEarlyErrorWebpackPlugin({ mode: 'file' });
 
@@ -129,7 +129,7 @@ describe('Webpack Plugin', () => {
 
   it('自定义 filename 应传递', async () => {
     const { AemeathEarlyErrorWebpackPlugin } = await import(
-      '../build-plugins/webpack'
+      '../src/build-plugins/webpack'
     );
     const plugin = new AemeathEarlyErrorWebpackPlugin({
       mode: 'file',
@@ -158,7 +158,7 @@ describe('Webpack Plugin', () => {
 
   it('导出的 getEarlyErrorCaptureScript 应返回脚本', async () => {
     const { getEarlyErrorCaptureScript } = await import(
-      '../build-plugins/webpack'
+      '../src/build-plugins/webpack'
     );
     const script = getEarlyErrorCaptureScript();
     expect(script).toContain('__EARLY_ERRORS__');
@@ -169,7 +169,7 @@ describe('Webpack Plugin', () => {
 
 describe('Rsbuild Plugin', () => {
   it('应返回正确的插件结构', async () => {
-    const { ameathEarlyErrorPlugin } = await import('../build-plugins/rsbuild');
+    const { ameathEarlyErrorPlugin } = await import('../src/build-plugins/rsbuild');
     const plugin = ameathEarlyErrorPlugin();
 
     expect(plugin.name).toBe('aemeath-early-error-capture');
@@ -177,7 +177,7 @@ describe('Rsbuild Plugin', () => {
   });
 
   it('enabled=false 时 setup 不应注册 hooks', async () => {
-    const { ameathEarlyErrorPlugin } = await import('../build-plugins/rsbuild');
+    const { ameathEarlyErrorPlugin } = await import('../src/build-plugins/rsbuild');
     const plugin = ameathEarlyErrorPlugin({ enabled: false });
 
     const mockApi = {
@@ -189,7 +189,7 @@ describe('Rsbuild Plugin', () => {
   });
 
   it('enabled=true 时应注册 modifyHTMLTags', async () => {
-    const { ameathEarlyErrorPlugin } = await import('../build-plugins/rsbuild');
+    const { ameathEarlyErrorPlugin } = await import('../src/build-plugins/rsbuild');
     const plugin = ameathEarlyErrorPlugin({ enabled: true });
 
     const mockApi = {
@@ -201,7 +201,7 @@ describe('Rsbuild Plugin', () => {
   });
 
   it('modifyHTMLTags 回调应在 headTags 最前面插入脚本', async () => {
-    const { ameathEarlyErrorPlugin } = await import('../build-plugins/rsbuild');
+    const { ameathEarlyErrorPlugin } = await import('../src/build-plugins/rsbuild');
     const plugin = ameathEarlyErrorPlugin();
 
     let modifyCallback: Function | null = null;

@@ -2,7 +2,7 @@
  * SourceMapParser 客户端解析器测试
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { SourceMapParser, createParser } from '../parser/SourceMapParser.client';
+import { SourceMapParser, createParser } from '../src/parser/SourceMapParser.client';
 
 describe('SourceMapParser', () => {
   let originalFetch: typeof fetch;

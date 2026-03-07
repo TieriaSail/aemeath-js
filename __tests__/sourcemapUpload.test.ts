@@ -32,9 +32,9 @@ vi.mock('path', async () => {
 });
 
 import * as fs from 'fs';
-import { uploadSourceMaps } from '../build-plugins/sourcemap-uploader';
-import { ameathViteSourceMapPlugin } from '../build-plugins/vite-sourcemap';
-import { AemeathSourceMapWebpackPlugin } from '../build-plugins/webpack-sourcemap';
+import { uploadSourceMaps } from '../src/build-plugins/sourcemap-uploader';
+import { ameathViteSourceMapPlugin } from '../src/build-plugins/vite-sourcemap';
+import { AemeathSourceMapWebpackPlugin } from '../src/build-plugins/webpack-sourcemap';
 
 describe('SourceMap Upload', () => {
   beforeEach(() => {

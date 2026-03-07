@@ -6,8 +6,8 @@ import {
   ErrorDeduplicator,
   getGlobalDeduplicator,
   resetGlobalDeduplicator,
-} from '../utils/errorDeduplicator';
-import type { ErrorInfo } from '../utils/errorDeduplicator';
+} from '../src/utils/errorDeduplicator';
+import type { ErrorInfo } from '../src/utils/errorDeduplicator';
 
 describe('ErrorDeduplicator', () => {
   let dedup: ErrorDeduplicator;

@@ -93,7 +93,7 @@ export interface SafeGuardHealth {
 
 export class SafeGuardPlugin implements AemeathPlugin {
   readonly name = 'safe-guard';
-  readonly version = '1.1.0';
+  readonly version = '1.1.1';
   readonly description = '智能日志保护';
 
   private readonly config: SafeGuardConfig;

@@ -16,7 +16,7 @@
 
     // 输出目录
     "outDir": "./dist",
-    "rootDir": ".",
+    "rootDir": "./src",
 
     // 严格模式
     "strict": true,
@@ -46,24 +46,11 @@
     "forceConsistentCasingInFileNames": true
   },
   "include": [
-    "*.ts",
-    "core/**/*.ts",
-    "plugins/**/*.ts",
-    "parser/**/*.ts",
-    "singleton/**/*.ts",
-    "build-plugins/**/*.ts",
-    "cli/**/*.ts",
-    "utils/**/*.ts",
-    "integrations/**/*.ts",
-    "integrations/**/*.tsx",
-    "browser/**/*.ts"
+    "src/**/*.ts",
+    "src/**/*.tsx"
   ],
   "exclude": [
     "node_modules",
-    "dist",
-    "**/*.test.ts",
-    "**/*.spec.ts",
-    "**/*.example.ts",
-    "examples"
+    "dist"
   ]
 }

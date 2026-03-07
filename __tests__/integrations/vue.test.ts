@@ -13,9 +13,9 @@ import {
   useAemeath,
   useErrorCapture,
   AEMEATH_INJECTION_KEY,
-} from '../../integrations/vue';
-import { AemeathLogger } from '../../core/Logger';
-import * as singletonModule from '../../singleton';
+} from '../../src/integrations/vue';
+import { AemeathLogger } from '../../src/core/Logger';
+import * as singletonModule from '../../src/singleton';
 
 // ==================== Mock VueApp ====================
 

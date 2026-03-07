@@ -16,9 +16,9 @@ import {
   useErrorCapture,
   withErrorBoundary,
   AemeathContext,
-} from '../../integrations/react';
-import { AemeathLogger } from '../../core/Logger';
-import * as singletonModule from '../../singleton';
+} from '../../src/integrations/react';
+import { AemeathLogger } from '../../src/core/Logger';
+import * as singletonModule from '../../src/singleton';
 
 // ==================== 辅助组件 ====================
 

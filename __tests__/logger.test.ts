@@ -2,8 +2,8 @@
  * AemeathLogger 核心测试
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { AemeathLogger } from '../core/Logger';
-import type { AemeathPlugin, LogEntry } from '../types';
+import { AemeathLogger } from '../src/core/Logger';
+import type { AemeathPlugin, LogEntry } from '../src/types';
 
 describe('AemeathLogger Core', () => {
   let logger: AemeathLogger;

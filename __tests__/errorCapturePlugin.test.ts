@@ -2,8 +2,8 @@
  * ErrorCapturePlugin 错误捕获插件测试
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { ErrorCapturePlugin } from '../plugins/ErrorCapturePlugin';
-import { AemeathLogger } from '../core/Logger';
+import { ErrorCapturePlugin } from '../src/plugins/ErrorCapturePlugin';
+import { AemeathLogger } from '../src/core/Logger';
 
 /**
  * 创建一个"外部"错误（stack 中不含 aemeath-js 路径）

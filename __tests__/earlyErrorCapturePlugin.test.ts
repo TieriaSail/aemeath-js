@@ -2,8 +2,8 @@
  * EarlyErrorCapturePlugin 早期错误捕获插件测试
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { EarlyErrorCapturePlugin } from '../plugins/EarlyErrorCapturePlugin';
-import { AemeathLogger } from '../core/Logger';
+import { EarlyErrorCapturePlugin } from '../src/plugins/EarlyErrorCapturePlugin';
+import { AemeathLogger } from '../src/core/Logger';
 
 describe('EarlyErrorCapturePlugin', () => {
   let logger: AemeathLogger;

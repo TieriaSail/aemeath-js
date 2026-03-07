@@ -2,9 +2,9 @@
  * UploadPlugin 上传插件测试
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { UploadPlugin } from '../plugins/UploadPlugin';
-import { AemeathLogger } from '../core/Logger';
-import type { LogEntry } from '../types';
+import { UploadPlugin } from '../src/plugins/UploadPlugin';
+import { AemeathLogger } from '../src/core/Logger';
+import type { LogEntry } from '../src/types';
 
 // 创建一个假的 LogEntry
 function createLog(

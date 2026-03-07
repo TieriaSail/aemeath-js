@@ -12,7 +12,7 @@ describe('Singleton (initAemeath / getAemeath)', () => {
 
   describe('initAemeath', () => {
     it('应返回 AemeathLogger 实例', async () => {
-      const mod = await import('../singleton/index');
+      const mod = await import('../src/singleton/index');
       const logger = mod.initAemeath();
       expect(logger).toBeDefined();
       expect(logger.info).toBeTypeOf('function');
@@ -21,7 +21,7 @@ describe('Singleton (initAemeath / getAemeath)', () => {
     });
 
     it('默认应启用 ErrorCapturePlugin 和 SafeGuardPlugin', async () => {
-      const mod = await import('../singleton/index');
+      const mod = await import('../src/singleton/index');
       const logger = mod.initAemeath();
 
       expect(logger.hasPlugin('error-capture')).toBe(true);
@@ -31,7 +31,7 @@ describe('Singleton (initAemeath / getAemeath)', () => {
     });
 
     it('errorCapture=false 时不应安装 ErrorCapturePlugin', async () => {
-      const mod = await import('../singleton/index');
+      const mod = await import('../src/singleton/index');
       const logger = mod.initAemeath({ errorCapture: false });
 
       expect(logger.hasPlugin('error-capture')).toBe(false);
@@ -40,7 +40,7 @@ describe('Singleton (initAemeath / getAemeath)', () => {
     });
 
     it('传入 upload 时应安装 UploadPlugin', async () => {
-      const mod = await import('../singleton/index');
+      const mod = await import('../src/singleton/index');
       const logger = mod.initAemeath({
         upload: async () => ({ success: true }),
       });
@@ -51,7 +51,7 @@ describe('Singleton (initAemeath / getAemeath)', () => {
     });
 
     it('不传 upload 时不应安装 UploadPlugin', async () => {
-      const mod = await import('../singleton/index');
+      const mod = await import('../src/singleton/index');
       const logger = mod.initAemeath();
 
       expect(logger.hasPlugin('upload')).toBe(false);
@@ -60,7 +60,7 @@ describe('Singleton (initAemeath / getAemeath)', () => {
     });
 
     it('重复调用应返回同一实例并警告', async () => {
-      const mod = await import('../singleton/index');
+      const mod = await import('../src/singleton/index');
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
       const logger1 = mod.initAemeath();
@@ -76,7 +76,7 @@ describe('Singleton (initAemeath / getAemeath)', () => {
     });
 
     it('应传递 environment 和 release', async () => {
-      const mod = await import('../singleton/index');
+      const mod = await import('../src/singleton/index');
       const logger = mod.initAemeath({
         environment: 'production',
         release: '1.0.0',
@@ -94,7 +94,7 @@ describe('Singleton (initAemeath / getAemeath)', () => {
     });
 
     it('应传递 context', async () => {
-      const mod = await import('../singleton/index');
+      const mod = await import('../src/singleton/index');
       const logger = mod.initAemeath({
         context: { userId: '123', deviceId: 'abc' },
       });
@@ -111,7 +111,7 @@ describe('Singleton (initAemeath / getAemeath)', () => {
     });
 
     it('safeGuard.enabled=false 时不应安装 SafeGuardPlugin', async () => {
-      const mod = await import('../singleton/index');
+      const mod = await import('../src/singleton/index');
       const logger = mod.initAemeath({
         safeGuard: { enabled: false },
       });
@@ -122,7 +122,7 @@ describe('Singleton (initAemeath / getAemeath)', () => {
     });
 
     it('network.enabled=false 时不应安装 NetworkPlugin', async () => {
-      const mod = await import('../singleton/index');
+      const mod = await import('../src/singleton/index');
       const logger = mod.initAemeath({
         network: { enabled: false },
       });
@@ -133,7 +133,7 @@ describe('Singleton (initAemeath / getAemeath)', () => {
     });
 
     it('默认应安装 NetworkPlugin', async () => {
-      const mod = await import('../singleton/index');
+      const mod = await import('../src/singleton/index');
       const logger = mod.initAemeath();
 
       expect(logger.hasPlugin('network')).toBe(true);
@@ -146,7 +146,7 @@ describe('Singleton (initAemeath / getAemeath)', () => {
 
   describe('getAemeath', () => {
     it('未初始化时应返回默认实例并警告', async () => {
-      const mod = await import('../singleton/index');
+      const mod = await import('../src/singleton/index');
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
       const logger = mod.getAemeath();
@@ -160,7 +160,7 @@ describe('Singleton (initAemeath / getAemeath)', () => {
     });
 
     it('初始化后应返回同一实例', async () => {
-      const mod = await import('../singleton/index');
+      const mod = await import('../src/singleton/index');
       const logger = mod.initAemeath();
       const retrieved = mod.getAemeath();
 
@@ -174,12 +174,12 @@ describe('Singleton (initAemeath / getAemeath)', () => {
 
   describe('isAemeathInitialized', () => {
     it('未初始化时应返回 false', async () => {
-      const mod = await import('../singleton/index');
+      const mod = await import('../src/singleton/index');
       expect(mod.isAemeathInitialized()).toBe(false);
     });
 
     it('初始化后应返回 true', async () => {
-      const mod = await import('../singleton/index');
+      const mod = await import('../src/singleton/index');
       mod.initAemeath();
       expect(mod.isAemeathInitialized()).toBe(true);
       mod.resetAemeath();
@@ -190,7 +190,7 @@ describe('Singleton (initAemeath / getAemeath)', () => {
 
   describe('resetAemeath', () => {
     it('重置后应该可以重新初始化', async () => {
-      const mod = await import('../singleton/index');
+      const mod = await import('../src/singleton/index');
 
       const logger1 = mod.initAemeath();
       mod.resetAemeath();
@@ -208,7 +208,7 @@ describe('Singleton (initAemeath / getAemeath)', () => {
 
   describe('errorFilter', () => {
     it('应传递 errorFilter 到 ErrorCapturePlugin', async () => {
-      const mod = await import('../singleton/index');
+      const mod = await import('../src/singleton/index');
       const logger = mod.initAemeath({
         errorFilter: (error) => !error.message.includes('401'),
       });

@@ -201,7 +201,7 @@ const defaultGetPriority: PriorityCallback = (log: LogEntry) => {
  */
 export class UploadPlugin implements AemeathPlugin {
   readonly name = 'upload';
-  readonly version = '1.1.0';
+  readonly version = '1.1.1';
   readonly description = '日志上传插件（回调方式）';
 
   private config: {

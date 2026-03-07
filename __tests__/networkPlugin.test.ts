@@ -2,8 +2,8 @@
  * NetworkPlugin 网络请求监控插件测试
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { NetworkPlugin } from '../plugins/NetworkPlugin';
-import { AemeathLogger } from '../core/Logger';
+import { NetworkPlugin } from '../src/plugins/NetworkPlugin';
+import { AemeathLogger } from '../src/core/Logger';
 
 describe('NetworkPlugin', () => {
   let logger: AemeathLogger;

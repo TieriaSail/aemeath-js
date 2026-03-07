@@ -296,7 +296,7 @@ logger.info('test');
 
 ### 3. 模块单例重置
 
-`browser/index.ts` 和 `singleton/index.ts` 使用模块级变量存储全局实例。测试中需要 `vi.resetModules()` + 动态 `import()` 来获取干净的模块：
+`src/browser/index.ts` 和 `src/singleton/index.ts` 使用模块级变量存储全局实例。测试中需要 `vi.resetModules()` + 动态 `import()` 来获取干净的模块：
 
 ```typescript
 beforeEach(() => {
@@ -304,7 +304,7 @@ beforeEach(() => {
 });
 
 it('test', async () => {
-  const mod = await import('../singleton/index');
+  const mod = await import('../src/singleton/index');
   const logger = mod.initAemeath();
   // ...
   mod.resetAemeath();

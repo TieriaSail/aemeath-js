@@ -2,7 +2,7 @@
  * browser/index.ts IIFE 入口测试
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { init, getAemeath, AemeathLogger, ErrorCapturePlugin, UploadPlugin, SafeGuardPlugin } from '../browser/index';
+import { init, getAemeath, AemeathLogger, ErrorCapturePlugin, UploadPlugin, SafeGuardPlugin } from '../src/browser/index';
 
 // 重置全局单例（browser/index.ts 内部的 globalLogger）
 // 由于模块级变量无法直接重置，每个测试需要重新 import
@@ -46,14 +46,14 @@ describe('Browser IIFE 入口', () => {
 
   describe('init 函数', () => {
     it('应返回 Logger 实例', async () => {
-      const mod = await import('../browser/index');
+      const mod = await import('../src/browser/index');
       const logger = mod.init();
       // 动态 import 后 AemeathLogger 类引用不同，使用 instanceof mod.AemeathLogger
       expect(logger).toBeInstanceOf(mod.AemeathLogger);
     });
 
     it('默认应启用 ErrorCapturePlugin 和 SafeGuardPlugin', async () => {
-      const mod = await import('../browser/index');
+      const mod = await import('../src/browser/index');
       const logger = mod.init();
 
       expect(logger.hasPlugin('error-capture')).toBe(true);
@@ -61,21 +61,21 @@ describe('Browser IIFE 入口', () => {
     });
 
     it('errorCapture=false 时不应安装 ErrorCapturePlugin', async () => {
-      const mod = await import('../browser/index');
+      const mod = await import('../src/browser/index');
       const logger = mod.init({ errorCapture: false });
 
       expect(logger.hasPlugin('error-capture')).toBe(false);
     });
 
     it('safeGuard=false 时不应安装 SafeGuardPlugin', async () => {
-      const mod = await import('../browser/index');
+      const mod = await import('../src/browser/index');
       const logger = mod.init({ safeGuard: false });
 
       expect(logger.hasPlugin('safe-guard')).toBe(false);
     });
 
     it('传入 upload 回调应安装 UploadPlugin', async () => {
-      const mod = await import('../browser/index');
+      const mod = await import('../src/browser/index');
       const logger = mod.init({
         upload: vi.fn(),
       });
@@ -84,14 +84,14 @@ describe('Browser IIFE 入口', () => {
     });
 
     it('不传 upload 回调不应安装 UploadPlugin', async () => {
-      const mod = await import('../browser/index');
+      const mod = await import('../src/browser/index');
       const logger = mod.init();
 
       expect(logger.hasPlugin('upload')).toBe(false);
     });
 
     it('重复调用 init 应返回同一实例并警告', async () => {
-      const mod = await import('../browser/index');
+      const mod = await import('../src/browser/index');
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
       const logger1 = mod.init();
@@ -108,12 +108,12 @@ describe('Browser IIFE 入口', () => {
 
   describe('getAemeath 函数', () => {
     it('未初始化时应抛出错误', async () => {
-      const mod = await import('../browser/index');
+      const mod = await import('../src/browser/index');
       expect(() => mod.getAemeath()).toThrow('Not initialized');
     });
 
     it('初始化后应返回 AemeathLogger 实例', async () => {
-      const mod = await import('../browser/index');
+      const mod = await import('../src/browser/index');
       const logger = mod.init();
       const retrieved = mod.getAemeath();
       expect(retrieved).toBe(logger);
@@ -124,7 +124,7 @@ describe('Browser IIFE 入口', () => {
 
   describe('日志级别过滤', () => {
     it("level='warn' 时 debug 和 info 应被替换为 noop", async () => {
-      const mod = await import('../browser/index');
+      const mod = await import('../src/browser/index');
       const logger = mod.init({ level: 'warn', errorCapture: false, safeGuard: false });
 
       const logListener = vi.fn();
@@ -141,7 +141,7 @@ describe('Browser IIFE 入口', () => {
     });
 
     it("level='error' 时只有 error 生效", async () => {
-      const mod = await import('../browser/index');
+      const mod = await import('../src/browser/index');
       const logger = mod.init({ level: 'error', errorCapture: false, safeGuard: false });
 
       const logListener = vi.fn();
@@ -157,7 +157,7 @@ describe('Browser IIFE 入口', () => {
     });
 
     it("level='debug' 时所有级别都生效", async () => {
-      const mod = await import('../browser/index');
+      const mod = await import('../src/browser/index');
       const logger = mod.init({ level: 'debug', errorCapture: false, safeGuard: false });
 
       const logListener = vi.fn();
@@ -185,7 +185,7 @@ describe('Browser IIFE 入口', () => {
       });
       (window as any).__EARLY_ERRORS__ = earlyErrors;
 
-      const mod = await import('../browser/index');
+      const mod = await import('../src/browser/index');
       const logger = mod.init({ errorCapture: false, safeGuard: false });
 
       expect((window as any).__flushEarlyErrors__).toHaveBeenCalled();

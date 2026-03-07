@@ -2,8 +2,8 @@
  * SafeGuardPlugin v2 测试
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { SafeGuardPlugin } from '../plugins/SafeGuardPlugin';
-import { AemeathLogger } from '../core/Logger';
+import { SafeGuardPlugin } from '../src/plugins/SafeGuardPlugin';
+import { AemeathLogger } from '../src/core/Logger';
 
 describe('SafeGuardPlugin', () => {
   let logger: AemeathLogger;

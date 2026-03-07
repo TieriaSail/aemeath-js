@@ -5,9 +5,9 @@
  * 使用 document visibilitychange 事件触发最终指标上报。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { PerformancePlugin } from '../plugins/PerformancePlugin';
-import { AemeathLogger } from '../core/Logger';
-import type { LogEntry } from '../types';
+import { PerformancePlugin } from '../src/plugins/PerformancePlugin';
+import { AemeathLogger } from '../src/core/Logger';
+import type { LogEntry } from '../src/types';
 
 // ==================== Mock 基础设施 ====================
 

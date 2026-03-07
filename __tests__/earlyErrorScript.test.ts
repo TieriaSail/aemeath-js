@@ -2,7 +2,7 @@
  * early-error-script 共享脚本测试
  */
 import { describe, it, expect } from 'vitest';
-import { getEarlyErrorCaptureScript } from '../build-plugins/early-error-script';
+import { getEarlyErrorCaptureScript } from '../src/build-plugins/early-error-script';
 
 describe('getEarlyErrorCaptureScript', () => {
   it('应返回非空字符串', () => {

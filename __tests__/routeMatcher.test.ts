@@ -2,7 +2,7 @@
  * RouteMatcher 路由匹配器测试
  */
 import { describe, it, expect, beforeEach } from 'vitest';
-import { RouteMatcher, createRouteMatcher } from '../utils/routeMatcher';
+import { RouteMatcher, createRouteMatcher } from '../src/utils/routeMatcher';
 
 describe('RouteMatcher', () => {
   // ==================== matchRoute 基础匹配 ====================
