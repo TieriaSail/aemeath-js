@@ -137,7 +137,7 @@ type NetworkPluginConfig = Required<
 
 export class NetworkPlugin implements AemeathPlugin {
   readonly name = 'network';
-  readonly version = '1.1.1';
+  readonly version = '1.1.2';
   readonly description = '网络请求监控';
 
   private readonly config: NetworkPluginConfig;

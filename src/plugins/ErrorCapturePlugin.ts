@@ -33,7 +33,7 @@ export interface ErrorCapturePluginOptions {
 
 export class ErrorCapturePlugin implements AemeathPlugin {
   readonly name = 'error-capture';
-  readonly version = '1.1.1';
+  readonly version = '1.1.2';
   readonly description = '自动错误捕获';
 
   private readonly config: {

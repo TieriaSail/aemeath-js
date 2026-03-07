@@ -1,6 +1,6 @@
 {
   "name": "aemeath-js",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "description": "A modular, type-safe logging system with plugin architecture",
   "keywords": [
     "logger",
@@ -189,10 +189,14 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/TieriaSail/aemeath-js"
+    "url": "git+https://github.com/TieriaSail/aemeath-js.git"
   },
   "bugs": {
     "url": "https://github.com/TieriaSail/aemeath-js/issues"
+  },
+  "publishConfig": {
+    "provenance": true,
+    "access": "public"
   },
   "sideEffects": false
 }
