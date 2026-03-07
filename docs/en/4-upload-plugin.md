@@ -8,8 +8,6 @@
 
 ### 1. Upload Callback
 
-You have complete control over how logs are uploaded
-
 ### 2. Priority Callback
 
 You define log priority (number 1-100, higher = more priority)
@@ -324,26 +322,6 @@ See `examples/5-upload-plugin/` directory for complete examples:
 - `with-axios.ts` - Using Axios
 - `advanced.ts` - Advanced usage (retry, monitoring)
 - `project-config-example.ts` - Complete project configuration
-
----
-
-## 🎯 Comparison
-
-| Feature            | Old (endpoint)    | New (callback)       |
-| ------------------ | ----------------- | -------------------- |
-| **Flexibility**    | ❌ Limited        | ✅ Full control      |
-| **Auth**           | ❌ Difficult      | ✅ Easy              |
-| **CORS**           | ❌ Hard           | ✅ Native support    |
-| **Custom Headers** | ❌ Limited        | ✅ Any headers       |
-| **HTTP Client**    | ❌ Built-in fetch | ✅ Any (fetch/axios) |
-| **Priority**       | ❌ Fixed          | ✅ Custom (1-100)    |
-| **Queue**          | ✅ Yes            | ✅ Yes (improved)    |
-| **Serial**         | ❌ No             | ✅ Yes               |
-| **API Complexity** | ⭐⭐⭐            | ⭐                   |
-
-**Simpler, more flexible, more powerful!** 🎉
-
----
 
 **Version:** 1.1.0  
 **Last Updated:** 2026-02-05

@@ -17,14 +17,14 @@
 
 ---
 
-## Why aemeath-js?
+## What it does
 
-Most frontend monitoring solutions require coordination between frontend, backend, and ops — whether it's a third-party SaaS or a self-hosted service. **aemeath-js** takes a different approach: the frontend does as much as possible on its own — error tracking, performance monitoring, log management, queuing, retry, and caching are all handled in the browser. Your backend only needs to receive and store the data.
+Error tracking, log management, and performance monitoring — all handled in the browser. Your backend only needs to receive and store the data.
 
 - **🌲 Tree-shakable** — Import what you need. Unused code is never bundled.
-- **🔓 Frontend-driven** — The browser handles the heavy lifting. Your backend just records and processes data.
-- **🌐 Framework support** — Works with React, Vue, vanilla JS, jQuery, etc.
-- **🔧 Build tool support** — Supports Vite, Webpack 4+, Rsbuild.
+- **🔓 Frontend-driven** — Queuing, retry, caching, and deduplication run client-side.
+- **🌐 Framework support** — React, Vue, vanilla JS, jQuery.
+- **🔧 Build tool support** — Vite, Webpack 4+, Rsbuild.
 
 ## Installation
 
@@ -376,7 +376,7 @@ logger.use(new MyPlugin());
 
 ## Also Check Out
 
-If you need **session recording & user behavior replay**, check out [**sigillum-js**](https://github.com/TieriaSail/sigillum-js) — a lightweight session recording library based on rrweb.
+If you need **session recording & user behavior replay**, check out [**sigillum-js**](https://github.com/TieriaSail/sigillum-js) — a lightweight session recording library.
 
 Together, **aemeath-js** (logging & monitoring) + **sigillum-js** (session replay) provide a complete frontend observability solution — all data stays on your own servers.
 

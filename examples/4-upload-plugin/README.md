@@ -1,22 +1,6 @@
 # Upload Plugin Examples
 
-New simplified upload mechanism with callback functions.
-
-## Why This Approach?
-
-**Problems with endpoint-based approach:**
-
-- ❌ Can't customize request method (POST/GET/PUT)
-- ❌ Can't add custom headers (Authorization, cookies)
-- ❌ Can't handle CORS properly
-- ❌ Can't integrate with existing HTTP clients
-
-**Advantages of callback approach:**
-
-- ✅ Complete control over upload logic
-- ✅ Easy to add authentication
-- ✅ Works with any HTTP client (fetch, axios, etc.)
-- ✅ Simple to customize
+Upload logs to your backend with priority queue, retry, and local cache.
 
 ## Core Features
 
