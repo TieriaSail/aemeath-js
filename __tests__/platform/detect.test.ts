@@ -122,6 +122,106 @@ describe('detectPlatform', () => {
     expect(adapter.vendor).toBe('baidu');
   });
 
+  it('detectPlatform(true) 应跳过缓存重新检测', () => {
+    const a = detectPlatform();
+    // fresh=true 应返回新实例
+    const b = detectPlatform(true);
+    expect(a).not.toBe(b);
+    expect(b.type).toBe('unknown');
+  });
+
+  it('detectPlatform(true) 环境变更后应反映新平台', () => {
+    // 首次检测为 noop
+    const first = detectPlatform();
+    expect(first.type).toBe('unknown');
+
+    // 注入微信全局变量
+    vi.stubGlobal('wx', {
+      getSystemInfoSync: vi.fn(),
+      getStorageSync: vi.fn().mockReturnValue(''),
+      setStorageSync: vi.fn(),
+      removeStorageSync: vi.fn(),
+    });
+
+    // fresh=false 返回缓存（仍是 noop）
+    const cached = detectPlatform(false);
+    expect(cached.type).toBe('unknown');
+
+    // fresh=true 重新检测（应发现 wx）
+    const fresh = detectPlatform(true);
+    expect(fresh.type).toBe('miniapp');
+    expect(fresh.vendor).toBe('wechat');
+  });
+
+  describe('支付宝 wrapAlipayAPI 存储包装', () => {
+    it('getStorageSync 应使用 {key} 对象参数并提取 data', () => {
+      const myMock = {
+        getSystemInfoSync: vi.fn(),
+        getStorageSync: vi.fn().mockReturnValue({ data: 'cached-value' }),
+        setStorageSync: vi.fn(),
+        removeStorageSync: vi.fn(),
+      };
+      vi.stubGlobal('my', myMock);
+      resetPlatform();
+
+      const adapter = detectPlatform();
+      expect(adapter.type).toBe('miniapp');
+      expect(adapter.vendor).toBe('alipay');
+
+      const result = adapter.storage.getItem('test-key');
+      expect(myMock.getStorageSync).toHaveBeenCalledWith({ key: 'test-key' });
+      expect(result).toBe('cached-value');
+    });
+
+    it('getStorageSync 返回 null/undefined 时应返回 null', () => {
+      const myMock = {
+        getSystemInfoSync: vi.fn(),
+        getStorageSync: vi.fn().mockReturnValue({ data: undefined }),
+        setStorageSync: vi.fn(),
+        removeStorageSync: vi.fn(),
+      };
+      vi.stubGlobal('my', myMock);
+      resetPlatform();
+
+      const adapter = detectPlatform();
+      const result = adapter.storage.getItem('empty-key');
+      expect(result).toBeNull();
+    });
+
+    it('setStorageSync 应使用 {key, data} 对象参数', () => {
+      const myMock = {
+        getSystemInfoSync: vi.fn(),
+        getStorageSync: vi.fn().mockReturnValue(''),
+        setStorageSync: vi.fn(),
+        removeStorageSync: vi.fn(),
+      };
+      vi.stubGlobal('my', myMock);
+      resetPlatform();
+
+      const adapter = detectPlatform();
+      adapter.storage.setItem('my-key', 'my-value');
+      expect(myMock.setStorageSync).toHaveBeenCalledWith({
+        key: 'my-key',
+        data: 'my-value',
+      });
+    });
+
+    it('removeStorageSync 应使用 {key} 对象参数', () => {
+      const myMock = {
+        getSystemInfoSync: vi.fn(),
+        getStorageSync: vi.fn().mockReturnValue(''),
+        setStorageSync: vi.fn(),
+        removeStorageSync: vi.fn(),
+      };
+      vi.stubGlobal('my', myMock);
+      resetPlatform();
+
+      const adapter = detectPlatform();
+      adapter.storage.removeItem('old-key');
+      expect(myMock.removeStorageSync).toHaveBeenCalledWith({ key: 'old-key' });
+    });
+  });
+
   it('小程序检测优先于浏览器', () => {
     // Simulate miniapp WebView with window + wx
     vi.stubGlobal('window', { document: {} });

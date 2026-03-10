@@ -274,6 +274,82 @@ describe('createMiniAppAdapter', () => {
       expect(originalRequest).toHaveBeenCalled();
     });
 
+    it('成功请求应透传 complete 回调', () => {
+      let capturedOpts: Record<string, any> | undefined;
+      const mockApi = createMockAPI({
+        request: vi.fn((opts) => {
+          capturedOpts = opts;
+          return {};
+        }),
+      });
+      const adapter = createMiniAppAdapter('wechat', mockApi);
+      const handler = vi.fn();
+      adapter.network.intercept(handler, {
+        shouldCapture: () => true,
+        captureRequestBody: false,
+        captureResponseBody: false,
+        maxResponseBodySize: 0,
+      });
+
+      const completeCb = vi.fn();
+      mockApi.request!({
+        url: 'https://api.example.com/test',
+        complete: completeCb,
+      });
+
+      // Trigger the wrapped complete callback
+      capturedOpts?.complete?.({ errMsg: 'request:ok' });
+      expect(completeCb).toHaveBeenCalledWith({ errMsg: 'request:ok' });
+    });
+
+    it('失败请求应透传 complete 回调', () => {
+      let capturedOpts: Record<string, any> | undefined;
+      const mockApi = createMockAPI({
+        request: vi.fn((opts) => {
+          capturedOpts = opts;
+          return {};
+        }),
+      });
+      const adapter = createMiniAppAdapter('wechat', mockApi);
+      adapter.network.intercept(vi.fn(), {
+        shouldCapture: () => true,
+        captureRequestBody: false,
+        captureResponseBody: false,
+        maxResponseBodySize: 0,
+      });
+
+      const completeCb = vi.fn();
+      mockApi.request!({
+        url: 'https://api.example.com/fail',
+        complete: completeCb,
+      });
+
+      // Trigger fail then complete
+      capturedOpts?.fail?.({ errMsg: 'request:fail' });
+      capturedOpts?.complete?.({ errMsg: 'request:fail' });
+      expect(completeCb).toHaveBeenCalledWith({ errMsg: 'request:fail' });
+    });
+
+    it('无原始 complete 回调时不应抛出', () => {
+      let capturedOpts: Record<string, any> | undefined;
+      const mockApi = createMockAPI({
+        request: vi.fn((opts) => {
+          capturedOpts = opts;
+          return {};
+        }),
+      });
+      const adapter = createMiniAppAdapter('wechat', mockApi);
+      adapter.network.intercept(vi.fn(), {
+        shouldCapture: () => true,
+        captureRequestBody: false,
+        captureResponseBody: false,
+        maxResponseBodySize: 0,
+      });
+
+      mockApi.request!({ url: 'https://api.example.com/no-complete' });
+      expect(() => capturedOpts?.complete?.({ errMsg: 'request:ok' })).not.toThrow();
+    });
+
     it('无 request API 时返回空函数', () => {
       const limitedApi = createMockAPI({ request: undefined });
       const adapter = createMiniAppAdapter('tiktok', limitedApi);
