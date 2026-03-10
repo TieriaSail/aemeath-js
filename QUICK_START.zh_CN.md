@@ -428,10 +428,7 @@ import { initAemeath, createMiniAppAdapter, getAemeath } from 'aemeath-js';
 
 // 微信小程序
 initAemeath({
-  platform: createMiniAppAdapter({
-    vendor: 'wechat',
-    request: (options) => wx.request(options),
-  }),
+  platform: createMiniAppAdapter('wechat', wx),
   upload: async (log) => {
     // 使用你的后端 API 接收日志
     return { success: true };
@@ -442,7 +439,7 @@ const logger = getAemeath();
 logger.info('小程序已初始化');
 ```
 
-若使用 Taro 或 uni-app，在 `request` 回调中传入对应平台 API（如 `Taro.request` 或 `uni.request`）即可。
+若使用 Taro 或 uni-app，将框架 API 作为第二个参数传入（如 `createMiniAppAdapter('wechat', Taro)` 或 `createMiniAppAdapter('wechat', uni)`）。
 
 ---
 

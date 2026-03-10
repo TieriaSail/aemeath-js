@@ -281,7 +281,11 @@ export class UploadPlugin implements AemeathPlugin {
 
     // 监听页面卸载，保存队列到缓存
     if (this.config.saveOnUnload) {
-      this.unregisterBeforeExit = this.platform.onBeforeExit(this.boundHandleBeforeUnload);
+      try {
+        this.unregisterBeforeExit = this.platform.onBeforeExit(this.boundHandleBeforeUnload);
+      } catch {
+        this.warn('Failed to register onBeforeExit handler');
+      }
     }
   }
 

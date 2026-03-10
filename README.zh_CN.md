@@ -47,10 +47,7 @@ aemeath-js v2.0 通过 `PlatformAdapter` 模式支持 **浏览器** 和 **小程
 import { initAemeath, createMiniAppAdapter } from 'aemeath-js';
 
 initAemeath({
-  platform: createMiniAppAdapter({
-    vendor: 'wechat',
-    request: (options) => wx.request(options),
-  }),
+  platform: createMiniAppAdapter('wechat', wx),
   upload: async (log) => { /* ... */ return { success: true }; },
 });
 ```

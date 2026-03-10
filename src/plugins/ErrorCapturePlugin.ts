@@ -97,14 +97,26 @@ export class ErrorCapturePlugin implements AemeathPlugin {
     this.logger = logger;
     this.platform = logger.platform ?? detectPlatform();
 
-    this.captureGlobalError();
+    try {
+      this.captureGlobalError();
+    } catch (e) {
+      this.warn('Failed to set up global error capture:', e);
+    }
 
     if (this.config.captureUnhandledRejection) {
-      this.captureUnhandledRejection();
+      try {
+        this.captureUnhandledRejection();
+      } catch (e) {
+        this.warn('Failed to set up unhandled rejection capture:', e);
+      }
     }
 
     if (this.config.captureResourceError) {
-      this.captureResourceError();
+      try {
+        this.captureResourceError();
+      } catch (e) {
+        this.warn('Failed to set up resource error capture:', e);
+      }
     }
 
     if (this.config.captureConsoleError) {

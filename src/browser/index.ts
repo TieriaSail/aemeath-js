@@ -16,6 +16,7 @@ import { AemeathLogger } from '../core/Logger';
 import { ErrorCapturePlugin } from '../plugins/ErrorCapturePlugin';
 import { UploadPlugin } from '../plugins/UploadPlugin';
 import { SafeGuardPlugin } from '../plugins/SafeGuardPlugin';
+import { detectPlatform } from '../platform/detect';
 import type { LogEntry } from '../types';
 
 // 全局单例
@@ -80,6 +81,7 @@ function init(options: BrowserLoggerOptions = {}): AemeathLogger {
   const logger = new AemeathLogger({
     enableConsole: options.enableConsole ?? true,
   });
+  (logger as any).platform = detectPlatform();
 
   // 日志级别过滤：低于 minLevel 的方法替换为 noop
   const minLevel = options.level ?? 'info';

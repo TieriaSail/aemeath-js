@@ -12,6 +12,32 @@ import { createBrowserAdapter } from './browser';
 import { createMiniAppAdapter, type MiniAppAPI } from './miniapp';
 import { createNoopAdapter } from './noop';
 
+/**
+ * Wrap Alipay's `my` object to normalize API differences.
+ * Alipay uses object parameters for storage and different response field names.
+ */
+function wrapAlipayAPI(api: Record<string, any>): MiniAppAPI {
+  return {
+    getStorageSync(key: string): string {
+      const res = api.getStorageSync({ key });
+      return res?.data ?? '';
+    },
+    setStorageSync(key: string, data: string): void {
+      api.setStorageSync({ key, data });
+    },
+    removeStorageSync(key: string): void {
+      api.removeStorageSync({ key });
+    },
+    onAppHide: api.onAppHide?.bind(api),
+    offAppHide: api.offAppHide?.bind(api),
+    onError: api.onError?.bind(api),
+    offError: api.offError?.bind(api),
+    onUnhandledRejection: api.onUnhandledRejection?.bind(api),
+    offUnhandledRejection: api.offUnhandledRejection?.bind(api),
+    request: api.request?.bind(api),
+  };
+}
+
 let currentPlatform: PlatformAdapter | null = null;
 
 interface MiniAppCandidate {
@@ -33,7 +59,7 @@ const miniappCandidates: MiniAppCandidate[] = [
     check: () =>
       typeof my !== 'undefined' &&
       typeof (my as any).getSystemInfoSync === 'function',
-    getAPI: () => my as unknown as MiniAppAPI,
+    getAPI: () => wrapAlipayAPI(my!),
   },
   {
     vendor: 'tiktok',

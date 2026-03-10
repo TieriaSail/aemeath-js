@@ -47,10 +47,7 @@ aemeath-js v2.0 supports **browsers** and **miniapps** through a `PlatformAdapte
 import { initAemeath, createMiniAppAdapter } from 'aemeath-js';
 
 initAemeath({
-  platform: createMiniAppAdapter({
-    vendor: 'wechat',
-    request: (options) => wx.request(options),
-  }),
+  platform: createMiniAppAdapter('wechat', wx),
   upload: async (log) => { /* ... */ return { success: true }; },
 });
 ```

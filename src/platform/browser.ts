@@ -90,15 +90,17 @@ export function createBrowserAdapter(): PlatformAdapter {
         handler: (info: GlobalErrorInfo) => void,
       ): () => void {
         const prev = window.onerror;
-        window.onerror = (message, source, lineno, colno, error) => {
-          if (prev) {
-            (prev as Function).call(window, message, source, lineno, colno, error);
-          }
+        const wrappedHandler: OnErrorEventHandler = (message, source, lineno, colno, error) => {
           handler({ message, source, lineno, colno, error });
-          return true;
+          if (typeof prev === 'function') {
+            return (prev as Function).call(window, message, source, lineno, colno, error);
+          }
         };
+        window.onerror = wrappedHandler;
         return () => {
-          window.onerror = prev;
+          if (window.onerror === wrappedHandler) {
+            window.onerror = prev;
+          }
         };
       },
 

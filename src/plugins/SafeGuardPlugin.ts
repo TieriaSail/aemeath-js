@@ -166,9 +166,13 @@ export class SafeGuardPlugin implements AemeathPlugin {
     }, 60000);
 
     if (this.config.mode === 'strict') {
-      this.restoreFromStorage();
-      this.boundBeforeUnload = this.persistToStorage.bind(this);
-      this.unregisterBeforeExit = this.platform.onBeforeExit(this.boundBeforeUnload);
+      try {
+        this.restoreFromStorage();
+        this.boundBeforeUnload = this.persistToStorage.bind(this);
+        this.unregisterBeforeExit = this.platform.onBeforeExit(this.boundBeforeUnload);
+      } catch {
+        // storage or lifecycle API unavailable on this platform
+      }
     }
 
     (logger as any).getHealth = this.getHealth.bind(this);

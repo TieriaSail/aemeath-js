@@ -210,6 +210,16 @@ export class NetworkPlugin implements AemeathPlugin {
     this.logger = logger;
     this.platform = logger.platform ?? detectPlatform();
 
+    try {
+      this.setupIntercept();
+    } catch (e) {
+      this.log('Failed to set up network intercept:', e);
+    }
+
+    this.log('Installed');
+  }
+
+  private setupIntercept(): void {
     this.unregisterIntercept = this.platform.network.intercept(
       (log: NetworkRequestLog) => {
         this.recordRequest({
@@ -234,8 +244,6 @@ export class NetworkPlugin implements AemeathPlugin {
         maxResponseBodySize: this.config.maxResponseBodySize,
       },
     );
-
-    this.log('Installed');
   }
 
   uninstall(): void {

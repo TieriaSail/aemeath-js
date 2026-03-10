@@ -189,7 +189,7 @@ export function createMiniAppAdapter(
                 type: 'request',
                 url,
                 method,
-                status: res['statusCode'] as number | undefined,
+                status: (res['statusCode'] ?? res['status']) as number | undefined,
                 statusText: '',
                 duration,
                 timestamp: startTime,
@@ -214,11 +214,16 @@ export function createMiniAppAdapter(
                 duration,
                 timestamp: startTime,
                 requestBody,
-                error: String(err['errMsg'] || 'Request failed'),
+                error: String(err['errMsg'] || err['errorMessage'] || 'Request failed'),
               });
 
               if (typeof reqOptions['fail'] === 'function') {
                 (reqOptions['fail'] as Function)(err);
+              }
+            },
+            complete: (res: Record<string, unknown>) => {
+              if (typeof reqOptions['complete'] === 'function') {
+                (reqOptions['complete'] as Function)(res);
               }
             },
           };
