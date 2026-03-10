@@ -12,6 +12,8 @@
  */
 
 import type { AemeathPlugin, AemeathInterface } from '../types';
+import type { PlatformAdapter, NetworkRequestLog } from '../platform/types';
+import { detectPlatform } from '../platform/detect';
 
 /**
  * 网络请求日志
@@ -142,11 +144,8 @@ export class NetworkPlugin implements AemeathPlugin {
 
   private readonly config: NetworkPluginConfig;
   private logger: AemeathInterface | null = null;
-
-  // 保存原始方法，用于卸载时恢复
-  private originalFetch: typeof fetch | null = null;
-  private originalXHROpen: typeof XMLHttpRequest.prototype.open | null = null;
-  private originalXHRSend: typeof XMLHttpRequest.prototype.send | null = null;
+  private platform!: PlatformAdapter;
+  private unregisterIntercept: (() => void) | null = null;
 
   constructor(options: NetworkPluginOptions = {}) {
     // 默认记录全部类型
@@ -209,33 +208,40 @@ export class NetworkPlugin implements AemeathPlugin {
 
   install(logger: AemeathInterface): void {
     this.logger = logger;
+    this.platform = logger.platform ?? detectPlatform();
 
-    if (this.config.interceptFetch) {
-      this.interceptFetch();
-    }
-
-    if (this.config.interceptXHR) {
-      this.interceptXHR();
-    }
+    this.unregisterIntercept = this.platform.network.intercept(
+      (log: NetworkRequestLog) => {
+        this.recordRequest({
+          type: log.type === 'request' ? 'fetch' : log.type,
+          url: log.url,
+          method: log.method,
+          status: log.status,
+          statusText: log.statusText,
+          duration: log.duration,
+          timestamp: log.timestamp,
+          error: log.error,
+          requestBody: log.requestBody,
+          responseBody: log.responseBody,
+          responseCode: log.responseCode,
+          responseMessage: log.responseMessage,
+        });
+      },
+      {
+        shouldCapture: (url: string) => this.shouldCapture(url),
+        captureRequestBody: this.config.captureRequestBody,
+        captureResponseBody: this.config.captureResponseBody,
+        maxResponseBodySize: this.config.maxResponseBodySize,
+      },
+    );
 
     this.log('Installed');
   }
 
   uninstall(): void {
-    // 恢复原始 fetch
-    if (this.originalFetch) {
-      window.fetch = this.originalFetch;
-      this.originalFetch = null;
-    }
-
-    // 恢复原始 XMLHttpRequest
-    if (this.originalXHROpen) {
-      XMLHttpRequest.prototype.open = this.originalXHROpen;
-      this.originalXHROpen = null;
-    }
-    if (this.originalXHRSend) {
-      XMLHttpRequest.prototype.send = this.originalXHRSend;
-      this.originalXHRSend = null;
+    if (this.unregisterIntercept) {
+      this.unregisterIntercept();
+      this.unregisterIntercept = null;
     }
 
     this.logger = null;
@@ -272,20 +278,6 @@ export class NetworkPlugin implements AemeathPlugin {
   }
 
   /**
-   * 安全解析 JSON
-   */
-  private safeParseJSON(data: unknown): unknown {
-    if (typeof data === 'string') {
-      try {
-        return JSON.parse(data);
-      } catch {
-        return data;
-      }
-    }
-    return data;
-  }
-
-  /**
    * 截断过大的数据
    */
   private truncateData(data: unknown, maxSize: number): unknown {
@@ -300,24 +292,6 @@ export class NetworkPlugin implements AemeathPlugin {
       _truncated: true,
       _originalSize: str.length,
       _preview: str.substring(0, maxSize) + '...',
-    };
-  }
-
-  /**
-   * 从响应数据中提取业务码和消息
-   */
-  private extractBusinessInfo(data: unknown): {
-    code?: number | string;
-    message?: string;
-  } {
-    if (!data || typeof data !== 'object') return {};
-
-    const obj = data as Record<string, unknown>;
-    return {
-      code: obj['code'] as number | string | undefined,
-      message: (obj['message'] || obj['msg'] || obj['error']) as
-        | string
-        | undefined,
     };
   }
 
@@ -420,306 +394,4 @@ export class NetworkPlugin implements AemeathPlugin {
     }
   }
 
-  /**
-   * 拦截 fetch 请求
-   */
-  private interceptFetch(): void {
-    if (typeof window === 'undefined' || !window.fetch) {
-      return;
-    }
-
-    this.originalFetch = window.fetch;
-    // eslint-disable-next-line @typescript-eslint/no-this-alias
-    const self = this;
-
-    window.fetch = async function (
-      input: RequestInfo | URL,
-      init?: RequestInit,
-    ): Promise<Response> {
-      const startTime = Date.now();
-      const url =
-        typeof input === 'string'
-          ? input
-          : input instanceof URL
-            ? input.href
-            : input.url;
-      const method = init?.method?.toUpperCase() || 'GET';
-
-      // 检查是否需要记录
-      if (!self.shouldCapture(url)) {
-        return self.originalFetch!.call(window, input, init);
-      }
-
-      // 捕获请求体
-      let requestBody: unknown;
-      if (self.config.captureRequestBody && init?.body) {
-        try {
-          requestBody = self.safeParseJSON(init.body);
-        } catch {
-          requestBody = '[Unable to parse request body]';
-        }
-      }
-
-      try {
-        const response = await self.originalFetch!.call(window, input, init);
-
-        // 捕获响应体（需要 clone，因为 body 只能读取一次）
-        let responseBody: unknown;
-        let responseCode: number | string | undefined;
-        let responseMessage: string | undefined;
-
-        if (self.config.captureResponseBody) {
-          try {
-            const clonedResponse = response.clone();
-            const text = await clonedResponse.text();
-            responseBody = self.safeParseJSON(text);
-
-            // 提取业务码
-            const businessInfo = self.extractBusinessInfo(responseBody);
-            responseCode = businessInfo.code;
-            responseMessage = businessInfo.message;
-          } catch {
-            responseBody = '[Unable to read response body]';
-          }
-        }
-
-        self.recordRequest({
-          type: 'fetch',
-          url,
-          method,
-          status: response.status,
-          statusText: response.statusText,
-          duration: Date.now() - startTime,
-          timestamp: startTime,
-          requestBody,
-          responseBody,
-          responseCode,
-          responseMessage,
-        });
-
-        return response;
-      } catch (error) {
-        // fetch 抛出异常时，通常是网络层错误（没有 HTTP 响应）
-        const isOnline =
-          typeof navigator !== 'undefined' ? navigator.onLine : true;
-        let errorMessage =
-          error instanceof Error ? error.message : String(error);
-
-        // 补充离线状态信息
-        if (!isOnline && !errorMessage.includes('offline')) {
-          errorMessage = `${errorMessage} (device appears to be offline)`;
-        }
-
-        self.recordRequest({
-          type: 'fetch',
-          url,
-          method,
-          status: 0, // 网络层错误，没有 HTTP 状态码
-          statusText: 'Network Error',
-          duration: Date.now() - startTime,
-          timestamp: startTime,
-          requestBody,
-          error: errorMessage,
-        });
-
-        throw error;
-      }
-    };
-  }
-
-  /**
-   * 拦截 XMLHttpRequest 请求（axios 底层使用）
-   */
-  private interceptXHR(): void {
-    if (typeof window === 'undefined' || !window.XMLHttpRequest) {
-      return;
-    }
-
-    this.originalXHROpen = XMLHttpRequest.prototype.open;
-    this.originalXHRSend = XMLHttpRequest.prototype.send;
-    // eslint-disable-next-line @typescript-eslint/no-this-alias
-    const self = this;
-
-    // 拦截 open 方法，记录 URL 和方法
-    XMLHttpRequest.prototype.open = function (
-      method: string,
-      url: string | URL,
-      async: boolean = true,
-      username?: string | null,
-      password?: string | null,
-    ): void {
-      // 存储请求信息到 XHR 实例上
-      (this as any)._networkInfo = {
-        method: method.toUpperCase(),
-        url: typeof url === 'string' ? url : url.href,
-        startTime: 0,
-        requestBody: undefined,
-      };
-
-      return self.originalXHROpen!.call(
-        this,
-        method,
-        url,
-        async,
-        username,
-        password,
-      );
-    };
-
-    // 拦截 send 方法，记录请求开始和结束
-    XMLHttpRequest.prototype.send = function (
-      body?: Document | XMLHttpRequestBodyInit | null,
-    ): void {
-      const info = (this as any)._networkInfo;
-
-      if (!info || !self.shouldCapture(info.url)) {
-        return self.originalXHRSend!.call(this, body);
-      }
-
-      info.startTime = Date.now();
-
-      // 捕获请求体
-      if (self.config.captureRequestBody && body) {
-        try {
-          info.requestBody = self.safeParseJSON(body);
-        } catch {
-          info.requestBody = '[Unable to parse request body]';
-        }
-      }
-
-      // 标记请求是否已被记录（防止 error/timeout 和 loadend 重复记录）
-      let isRecorded = false;
-
-      // 清理所有事件监听器的函数
-      const cleanup = () => {
-        this.removeEventListener('loadend', handleLoadEnd);
-        this.removeEventListener('error', handleError);
-        this.removeEventListener('timeout', handleTimeout);
-      };
-
-      // 监听请求完成（无论成功还是失败，都会触发 loadend）
-      const handleLoadEnd = () => {
-        // 如果已经被 error 或 timeout 处理过，跳过
-        if (isRecorded) {
-          cleanup();
-          return;
-        }
-        isRecorded = true;
-
-        const duration = Date.now() - info.startTime;
-
-        // 捕获响应体
-        let responseBody: unknown;
-        let responseCode: number | string | undefined;
-        let responseMessage: string | undefined;
-
-        if (self.config.captureResponseBody) {
-          try {
-            responseBody = self.safeParseJSON(this.responseText);
-
-            // 提取业务码
-            const businessInfo = self.extractBusinessInfo(responseBody);
-            responseCode = businessInfo.code;
-            responseMessage = businessInfo.message;
-          } catch {
-            responseBody = '[Unable to read response body]';
-          }
-        }
-
-        self.recordRequest({
-          type: 'xhr',
-          url: info.url,
-          method: info.method,
-          status: this.status,
-          statusText: this.statusText,
-          duration,
-          timestamp: info.startTime,
-          requestBody: info.requestBody,
-          responseBody,
-          responseCode,
-          responseMessage,
-        });
-
-        cleanup();
-      };
-
-      // 监听请求错误（网络层错误，不是 HTTP 4xx/5xx 错误）
-      const handleError = () => {
-        // 防止重复记录
-        if (isRecorded) return;
-        isRecorded = true;
-
-        const duration = Date.now() - info.startTime;
-
-        // 尝试获取更多诊断信息
-        // 当 error 事件触发时，status 通常是 0（表示网络层失败，没有收到 HTTP 响应）
-        const networkStatus = this.status; // 0 表示网络层错误，非 HTTP 错误
-        const isOnline =
-          typeof navigator !== 'undefined' ? navigator.onLine : true;
-        const readyState = this.readyState;
-
-        // 构建更详细的错误信息
-        // readyState: 0=UNSENT, 1=OPENED, 2=HEADERS_RECEIVED, 3=LOADING, 4=DONE
-        let errorMessage = 'Network Error';
-        const diagnosticInfo: string[] = [];
-
-        if (!isOnline) {
-          errorMessage = 'Network Error: Device appears to be offline';
-        } else {
-          diagnosticInfo.push(`readyState=${readyState}`);
-          if (networkStatus === 0) {
-            diagnosticInfo.push('status=0 (no HTTP response)');
-            errorMessage = `Network Error: No response received (readyState=${readyState}, possible causes: CORS, DNS failure, connection refused, SSL error, server closed connection)`;
-          } else {
-            // 极少数情况下 error 事件时 status 不为 0
-            diagnosticInfo.push(`status=${networkStatus}`);
-            errorMessage = `Network Error: Unexpected error (status=${networkStatus}, readyState=${readyState})`;
-          }
-        }
-
-        self.recordRequest({
-          type: 'xhr',
-          url: info.url,
-          method: info.method,
-          status: networkStatus, // 记录 status（通常是 0）
-          statusText: this.statusText || 'Network Error',
-          duration,
-          timestamp: info.startTime,
-          requestBody: info.requestBody,
-          error: errorMessage,
-        });
-
-        // 注意：error 事件后 loadend 也会触发，cleanup 会在 loadend 中进行
-      };
-
-      // 监听请求超时
-      const handleTimeout = () => {
-        // 防止重复记录
-        if (isRecorded) return;
-        isRecorded = true;
-
-        const duration = Date.now() - info.startTime;
-
-        self.recordRequest({
-          type: 'xhr',
-          url: info.url,
-          method: info.method,
-          status: 0,
-          statusText: 'Request Timeout',
-          duration,
-          timestamp: info.startTime,
-          requestBody: info.requestBody,
-          error: `Request Timeout: No response within ${duration}ms`,
-        });
-
-        // 注意：timeout 事件后 loadend 也会触发，cleanup 会在 loadend 中进行
-      };
-
-      this.addEventListener('loadend', handleLoadEnd);
-      this.addEventListener('error', handleError);
-      this.addEventListener('timeout', handleTimeout);
-
-      return self.originalXHRSend!.call(this, body);
-    };
-  }
 }

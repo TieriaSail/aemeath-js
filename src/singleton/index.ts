@@ -14,6 +14,8 @@ import { UploadPlugin, type UploadResult } from '../plugins/UploadPlugin';
 import { SafeGuardPlugin, type SafeGuardMode } from '../plugins/SafeGuardPlugin';
 import { NetworkPlugin, type NetworkLogType } from '../plugins/NetworkPlugin';
 import type { LogEntry } from '../types';
+import type { PlatformAdapter } from '../platform/types';
+import { detectPlatform, setPlatform } from '../platform/detect';
 
 /**
  * 全局 AemeathJs 实例
@@ -65,6 +67,16 @@ export interface RouteMatchConfig {
  * ```
  */
 export interface AemeathInitOptions {
+  /**
+   * 平台适配器
+   *
+   * 自动检测时无需设置，手动指定时可传入自定义适配器
+   * - 浏览器环境自动使用 browserAdapter
+   * - 小程序环境自动使用对应厂商适配器
+   * - 也可传入 createMiniAppAdapter() 或自定义适配器
+   */
+  platform?: PlatformAdapter;
+
   /**
    * 是否启用错误捕获
    *
@@ -346,6 +358,13 @@ export function initAemeath(options: AemeathInitOptions = {}): AemeathLogger {
     release: options.release,
   });
 
+  // 设置平台适配器（供所有插件使用）
+  const platform = options.platform ?? detectPlatform();
+  if (options.platform) {
+    setPlatform(options.platform);
+  }
+  logger.platform = platform;
+
   // 1. 错误捕获（默认启用）
   if (options.errorCapture !== false) {
     logger.use(
@@ -357,7 +376,7 @@ export function initAemeath(options: AemeathInitOptions = {}): AemeathLogger {
   }
 
   // 2. 早期错误捕获（如果构建时启用了）
-  if (typeof window !== 'undefined' && (window as any).__EARLY_ERRORS__) {
+  if (platform.earlyCapture.hasEarlyErrors()) {
     logger.use(
       new EarlyErrorCapturePlugin({
         routeMatch: options.routeMatch,
@@ -436,6 +455,7 @@ export function getAemeath(): AemeathLogger {
         'Creating default instance with error capture only.',
     );
     globalAemeath = new AemeathLogger();
+    globalAemeath.platform = detectPlatform();
     globalAemeath.use(new ErrorCapturePlugin());
   }
 

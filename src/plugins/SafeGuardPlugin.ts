@@ -22,6 +22,8 @@ import type {
   LogLevel,
   LogOptions,
 } from '../types';
+import type { PlatformAdapter } from '../platform/types';
+import { detectPlatform } from '../platform/detect';
 
 // ==================== 类型定义 ====================
 
@@ -133,6 +135,8 @@ export class SafeGuardPlugin implements AemeathPlugin {
   // 事件处理函数引用
   private boundHandleError: (() => void) | null = null;
   private boundBeforeUnload: (() => void) | null = null;
+  private unregisterBeforeExit: (() => void) | null = null;
+  private platform!: PlatformAdapter;
 
   constructor(options: SafeGuardPluginOptions = {}) {
     this.config = {
@@ -152,6 +156,7 @@ export class SafeGuardPlugin implements AemeathPlugin {
 
   install(logger: AemeathInterface): void {
     this.logger = logger;
+    this.platform = logger.platform ?? detectPlatform();
 
     this.boundHandleError = this.handleError.bind(this);
     logger.on('error', this.boundHandleError);
@@ -162,10 +167,8 @@ export class SafeGuardPlugin implements AemeathPlugin {
 
     if (this.config.mode === 'strict') {
       this.restoreFromStorage();
-      if (typeof window !== 'undefined') {
-        this.boundBeforeUnload = this.persistToStorage.bind(this);
-        window.addEventListener('beforeunload', this.boundBeforeUnload);
-      }
+      this.boundBeforeUnload = this.persistToStorage.bind(this);
+      this.unregisterBeforeExit = this.platform.onBeforeExit(this.boundBeforeUnload);
     }
 
     (logger as any).getHealth = this.getHealth.bind(this);
@@ -198,10 +201,11 @@ export class SafeGuardPlugin implements AemeathPlugin {
     if (this.config.mode === 'strict') {
       this.persistToStorage();
     }
-    if (typeof window !== 'undefined' && this.boundBeforeUnload) {
-      window.removeEventListener('beforeunload', this.boundBeforeUnload);
-      this.boundBeforeUnload = null;
+    if (this.unregisterBeforeExit) {
+      this.unregisterBeforeExit();
+      this.unregisterBeforeExit = null;
     }
+    this.boundBeforeUnload = null;
 
     delete (logger as any).getHealth;
     delete (logger as any).pause;
@@ -491,11 +495,7 @@ export class SafeGuardPlugin implements AemeathPlugin {
       this.replayParkingLot();
     };
 
-    if (typeof requestIdleCallback !== 'undefined') {
-      requestIdleCallback(callback, { timeout: 10000 });
-    } else {
-      setTimeout(callback, 5000);
-    }
+    this.platform.requestIdle(callback, 10000);
   }
 
   private replayParkingLot(): void {
@@ -550,9 +550,9 @@ export class SafeGuardPlugin implements AemeathPlugin {
         options: this.serializeOptions(item.options),
         timestamp: item.timestamp,
       }));
-      localStorage.setItem(this.config.storageKey, JSON.stringify(data));
+      this.platform.storage.setItem(this.config.storageKey, JSON.stringify(data));
     } catch {
-      // localStorage 不可用或超限，静默忽略
+      // storage 不可用或超限，静默忽略
     }
   }
 
@@ -560,7 +560,7 @@ export class SafeGuardPlugin implements AemeathPlugin {
     if (this.config.mode !== 'strict') return;
 
     try {
-      const raw = localStorage.getItem(this.config.storageKey);
+      const raw = this.platform.storage.getItem(this.config.storageKey);
       if (!raw) return;
 
       const data = JSON.parse(raw) as ParkedLog[];
@@ -583,7 +583,7 @@ export class SafeGuardPlugin implements AemeathPlugin {
 
   private removeStorage(): void {
     try {
-      localStorage.removeItem(this.config.storageKey);
+      this.platform.storage.removeItem(this.config.storageKey);
     } catch {
       // 静默忽略
     }

@@ -3,6 +3,8 @@
  */
 
 import type { AemeathPlugin, AemeathInterface } from '../types';
+import type { PlatformAdapter } from '../platform/types';
+import { detectPlatform } from '../platform/detect';
 import { ErrorDeduplicator } from '../utils/errorDeduplicator';
 import {
   RouteMatcher,
@@ -47,12 +49,11 @@ export class ErrorCapturePlugin implements AemeathPlugin {
   private readonly routeMatcher: RouteMatcher;
   private readonly debugEnabled: boolean;
   private logger: AemeathInterface | null = null;
-  private originalErrorHandler: OnErrorEventHandler | null = null;
-  private originalRejectionHandler:
-    | ((event: PromiseRejectionEvent) => void)
-    | null = null;
   private originalConsoleError: typeof console.error | null = null;
-  private resourceErrorHandler: ((event: Event) => void) | null = null;
+  private platform!: PlatformAdapter;
+  private unregisterGlobalError: (() => void) | null = null;
+  private unregisterRejection: (() => void) | null = null;
+  private unregisterResourceError: (() => void) | null = null;
 
   constructor(options: ErrorCapturePluginOptions = {}) {
     this.debugEnabled = options.debug ?? false;
@@ -94,6 +95,7 @@ export class ErrorCapturePlugin implements AemeathPlugin {
 
   install(logger: AemeathInterface): void {
     this.logger = logger;
+    this.platform = logger.platform ?? detectPlatform();
 
     this.captureGlobalError();
 
@@ -113,18 +115,19 @@ export class ErrorCapturePlugin implements AemeathPlugin {
   }
 
   uninstall(): void {
-    window.onerror = this.originalErrorHandler;
-
-    if (this.originalRejectionHandler) {
-      window.removeEventListener(
-        'unhandledrejection',
-        this.originalRejectionHandler,
-      );
+    if (this.unregisterGlobalError) {
+      this.unregisterGlobalError();
+      this.unregisterGlobalError = null;
     }
 
-    if (this.resourceErrorHandler) {
-      window.removeEventListener('error', this.resourceErrorHandler, true);
-      this.resourceErrorHandler = null;
+    if (this.unregisterRejection) {
+      this.unregisterRejection();
+      this.unregisterRejection = null;
+    }
+
+    if (this.unregisterResourceError) {
+      this.unregisterResourceError();
+      this.unregisterResourceError = null;
     }
 
     if (this.originalConsoleError) {
@@ -137,90 +140,80 @@ export class ErrorCapturePlugin implements AemeathPlugin {
   }
 
   private captureGlobalError(): void {
-    this.originalErrorHandler = window.onerror;
+    this.unregisterGlobalError = this.platform.errorCapture.onGlobalError(
+      (info) => {
+        const err = info.error || new Error(String(info.message));
 
-    window.onerror = (message, source, lineno, colno, error) => {
-      if (this.originalErrorHandler) {
-        this.originalErrorHandler.call(
-          window,
-          message,
-          source,
-          lineno,
-          colno,
-          error,
-        );
-      }
+        if (this.shouldCaptureError(err)) {
+          (err as any).source = info.source;
+          (err as any).lineno = info.lineno;
+          (err as any).colno = info.colno;
+          (err as any).type = 'global';
 
-      const err = error || new Error(String(message));
+          const errorInfo = {
+            message: err.message,
+            stack: err.stack,
+            type: 'global',
+            filename: info.source,
+            lineno: info.lineno,
+            colno: info.colno,
+          };
 
-      if (this.shouldCaptureError(err)) {
-        // 附加错误位置信息（用于 SourceMap 还原和自动分类）
-        (err as any).source = source;
-        (err as any).lineno = lineno;
-        (err as any).colno = colno;
-        (err as any).type = 'global';
-
-        const errorInfo = {
-          message: err.message,
-          stack: err.stack,
-          type: 'global',
-          filename: source,
-          lineno,
-          colno,
-        };
-
-        if (this.deduplicator.check(errorInfo)) {
-          this.logger?.error('Global error', { error: err });
+          if (this.deduplicator.check(errorInfo)) {
+            this.logger?.error('Global error', { error: err });
+          }
         }
-      }
-
-      return true;
-    };
+      },
+    );
   }
 
   private captureUnhandledRejection(): void {
-    const handler = (event: PromiseRejectionEvent): void => {
-      let error: Error;
+    this.unregisterRejection = this.platform.errorCapture.onUnhandledRejection(
+      (info) => {
+        let error: Error;
+        const reason = info.reason;
 
-      if (event.reason instanceof Error) {
-        // ✅ reason 是 Error，直接使用
-        error = event.reason;
-      } else {
-        // ✅ reason 不是 Error，转换为 Error
-        // 优化 message：如果是对象，使用 JSON.stringify 保留信息
-        if (typeof event.reason === 'object' && event.reason !== null) {
-          try {
-            error = new Error(JSON.stringify(event.reason));
-          } catch {
-            error = new Error(String(event.reason));
-          }
+        if (reason instanceof Error) {
+          error = reason;
         } else {
-          error = new Error(String(event.reason));
+          if (typeof reason === 'object' && reason !== null) {
+            try {
+              error = new Error(JSON.stringify(reason));
+            } catch {
+              error = new Error(String(reason));
+            }
+          } else {
+            error = new Error(String(reason));
+          }
         }
-      }
 
-      if (this.shouldCaptureError(error)) {
-        (error as any).type = 'unhandledrejection';
+        if (this.shouldCaptureError(error)) {
+          (error as any).type = 'unhandledrejection';
 
-        const errorInfo = {
-          message: error.message,
-          stack: error.stack,
-          type: 'unhandledrejection',
-        };
+          const errorInfo = {
+            message: error.message,
+            stack: error.stack,
+            type: 'unhandledrejection',
+          };
 
-        if (this.deduplicator.check(errorInfo)) {
-          this.logger?.error('Unhandled promise rejection', { error });
+          if (this.deduplicator.check(errorInfo)) {
+            this.logger?.error('Unhandled promise rejection', { error });
+          }
         }
-      }
-    };
-
-    this.originalRejectionHandler = handler;
-    window.addEventListener('unhandledrejection', handler);
+      },
+    );
   }
 
   private captureResourceError(): void {
-    this.resourceErrorHandler = (event: Event) => {
-      if (event.target !== window && event.target instanceof HTMLElement) {
+    const onResourceError = this.platform.errorCapture.onResourceError;
+    if (!onResourceError) return;
+
+    this.unregisterResourceError = onResourceError((event: Event) => {
+      if (
+        typeof HTMLElement !== 'undefined' &&
+        event.target !== window &&
+        event.target instanceof HTMLElement
+      ) {
         const target = event.target;
         const tagName = target.tagName?.toLowerCase();
         const src =
@@ -247,8 +240,7 @@ export class ErrorCapturePlugin implements AemeathPlugin {
 
         this.logger?.error('Resource load error', { error });
       }
-    };
-    window.addEventListener('error', this.resourceErrorHandler, true);
+    });
   }
 
   private captureConsoleError(): void {
@@ -336,7 +328,7 @@ export class ErrorCapturePlugin implements AemeathPlugin {
     }
 
     // 🎯 2. 检查路由匹配（使用共享的路由匹配器）
-    if (!this.routeMatcher.shouldCapture()) {
+    if (!this.routeMatcher.shouldCapture(this.platform.getCurrentPath())) {
       return false;
     }
 

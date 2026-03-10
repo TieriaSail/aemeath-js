@@ -53,13 +53,13 @@ describe('NetworkPlugin', () => {
       expect(window.fetch).toBe(beforeFetch);
     });
 
-    it('interceptFetch=false 时不应拦截 fetch', () => {
+    it('interceptFetch=false 时仍走平台适配器拦截（v2.0 行为变更）', () => {
       const beforeFetch = window.fetch;
       const plugin = new NetworkPlugin({ interceptFetch: false });
       logger.use(plugin);
 
-      // fetch 不应被替换
-      expect(window.fetch).toBe(beforeFetch);
+      // v2.0: 平台适配器统一拦截，interceptFetch 选项不再直接控制 fetch 替换
+      expect(window.fetch).not.toBe(beforeFetch);
     });
   });
 

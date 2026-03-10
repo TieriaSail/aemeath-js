@@ -99,15 +99,16 @@ export class RouteMatcher {
   /**
    * 检查当前路由是否匹配配置
    *
+   * @param path 可选，外部传入的路径（跨平台场景使用），不传则自动获取
    * @returns true 表示应该监控当前路由，false 表示不监控
    */
-  public shouldCapture(): boolean {
+  public shouldCapture(path?: string): boolean {
     // 如果没有配置路由过滤，默认监控所有路由
     if (!this.config) {
       return true;
     }
 
-    const currentPath = this.getCurrentPath();
+    const currentPath = path ?? this.getCurrentPath();
     const { excludeRoutes, includeRoutes } = this.config;
 
     // 1. 检查黑名单（优先级更高）

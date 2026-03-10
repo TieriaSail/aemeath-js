@@ -71,6 +71,19 @@ export type {
   NetworkLogType,
 } from './plugins/NetworkPlugin';
 
+// ==================== 平台适配器 ====================
+export { createBrowserAdapter } from './platform/browser';
+export { createMiniAppAdapter } from './platform/miniapp';
+export { createNoopAdapter } from './platform/noop';
+export { detectPlatform, setPlatform, resetPlatform } from './platform/detect';
+export type {
+  PlatformAdapter,
+  PlatformType,
+  MiniAppVendor,
+  NetworkRequestLog,
+  NetworkInterceptOptions,
+} from './platform/types';
+
 // ==================== 构建插件（按需导入）====================
 // 使用方式：
 // import { ameathEarlyErrorPlugin } from 'aemeath-js/build-plugins/rsbuild';

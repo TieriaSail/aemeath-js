@@ -275,6 +275,9 @@ export interface AemeathInterface {
   getContext(): Record<string, unknown>;
   clearContext(keys?: string[]): void;
 
+  // 平台适配器
+  platform?: import('./platform/types').PlatformAdapter;
+
   // 生命周期
   destroy(): void;
 

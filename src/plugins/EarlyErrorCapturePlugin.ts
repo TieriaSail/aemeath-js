@@ -6,6 +6,8 @@
  */
 
 import type { AemeathInterface, AemeathPlugin } from '../types';
+import type { PlatformAdapter } from '../platform/types';
+import { detectPlatform } from '../platform/detect';
 import { RouteMatcher, type RouteMatchConfig } from '../utils/routeMatcher';
 
 // 重新导出 RouteMatchConfig 以保持向后兼容
@@ -52,6 +54,7 @@ export class EarlyErrorCapturePlugin implements AemeathPlugin {
   private options: Omit<Required<EarlyErrorCaptureOptions>, 'routeMatch'>;
   private readonly routeMatcher: RouteMatcher;
   private logger: AemeathInterface | null = null;
+  private platform!: PlatformAdapter;
 
   constructor(options: EarlyErrorCaptureOptions = {}) {
     this.options = {
@@ -76,6 +79,7 @@ export class EarlyErrorCapturePlugin implements AemeathPlugin {
     }
 
     this.logger = logger;
+    this.platform = logger.platform ?? detectPlatform();
     this.flushEarlyErrors();
   }
 
@@ -84,40 +88,25 @@ export class EarlyErrorCapturePlugin implements AemeathPlugin {
   }
 
   private flushEarlyErrors(): void {
-    if (typeof window === 'undefined') {
-      return;
-    }
-
     // 🎯 检查路由匹配（使用共享的路由匹配器）
-    if (!this.routeMatcher.shouldCapture()) {
+    if (!this.routeMatcher.shouldCapture(this.platform.getCurrentPath())) {
       console.debug(
         '[EarlyErrorCapture] 当前路由不在监控范围内，跳过早期错误上报:',
-        window.location.pathname,
+        this.platform.getCurrentPath(),
       );
       // 清空早期错误，避免后续路由切换时重复上报
-      const flushFn = (window as any).__flushEarlyErrors__;
-      if (typeof flushFn === 'function') {
-        flushFn(() => {}); // 清空但不上报
-      }
+      this.platform.earlyCapture.flush(() => {});
       return;
     }
 
-    const flushFn = (
-      window as Window & {
-        __flushEarlyErrors__?: (
-          callback: (errors: EarlyError[]) => void,
-        ) => void;
-      }
-    ).__flushEarlyErrors__;
-
-    if (typeof flushFn !== 'function') {
+    if (!this.platform.earlyCapture.hasEarlyErrors()) {
       console.warn(
         '[EarlyErrorCapture] Early error capture script not found. Make sure to use the build plugin.',
       );
       return;
     }
 
-    flushFn((errors: EarlyError[]) => {
+    this.platform.earlyCapture.flush((errors) => {
       if (!this.logger || errors.length === 0) {
         return;
       }
@@ -132,7 +121,7 @@ export class EarlyErrorCapturePlugin implements AemeathPlugin {
         (err as any).lineno = earlyError.lineno;
         (err as any).colno = earlyError.colno;
         (err as any).source = earlyError.source;
-        (err as any).earlyError = true; // 用于自动识别为早期错误
+        (err as any).earlyError = true;
         (err as any).captureTimestamp = earlyError.timestamp;
         (err as any).device = earlyError.device;
 

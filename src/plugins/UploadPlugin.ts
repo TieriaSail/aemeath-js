@@ -10,6 +10,8 @@
  */
 
 import type { AemeathPlugin, LogEntry, AemeathInterface } from '../types';
+import type { PlatformAdapter } from '../platform/types';
+import { detectPlatform } from '../platform/detect';
 
 /**
  * 队列中的日志项
@@ -221,6 +223,8 @@ export class UploadPlugin implements AemeathPlugin {
   // 绑定后的事件处理函数引用（用于正确移除监听器）
   private boundHandleLog: ((entry: LogEntry) => void) | null = null;
   private boundHandleBeforeUnload: (() => void) | null = null;
+  private unregisterBeforeExit: (() => void) | null = null;
+  private platform!: PlatformAdapter;
 
   constructor(options: UploadPluginOptions) {
     this.debugEnabled = options.debug ?? false;
@@ -258,6 +262,8 @@ export class UploadPlugin implements AemeathPlugin {
   }
 
   install(logger: AemeathInterface): void {
+    this.platform = logger.platform ?? detectPlatform();
+
     // 从本地缓存恢复队列（这是真正可靠的"不丢失"机制）
     if (this.config.cache.enabled) {
       this.restoreFromCache();
@@ -274,8 +280,8 @@ export class UploadPlugin implements AemeathPlugin {
     this.startPeriodicUpload();
 
     // 监听页面卸载，保存队列到缓存
-    if (this.config.saveOnUnload && typeof window !== 'undefined') {
-      window.addEventListener('beforeunload', this.boundHandleBeforeUnload);
+    if (this.config.saveOnUnload) {
+      this.unregisterBeforeExit = this.platform.onBeforeExit(this.boundHandleBeforeUnload);
     }
   }
 
@@ -300,9 +306,10 @@ export class UploadPlugin implements AemeathPlugin {
       logger.off('log', this.boundHandleLog as (...args: unknown[]) => void);
     }
 
-    // 移除页面卸载事件监听（使用保存的引用）
-    if (typeof window !== 'undefined' && this.boundHandleBeforeUnload) {
-      window.removeEventListener('beforeunload', this.boundHandleBeforeUnload);
+    // 移除页面卸载事件监听
+    if (this.unregisterBeforeExit) {
+      this.unregisterBeforeExit();
+      this.unregisterBeforeExit = null;
     }
 
     // 清理引用
@@ -665,7 +672,7 @@ export class UploadPlugin implements AemeathPlugin {
         timestamp: item.timestamp,
       }));
 
-      localStorage.setItem(this.config.cache.key, JSON.stringify(cacheData));
+      this.platform.storage.setItem(this.config.cache.key, JSON.stringify(cacheData));
     } catch (error) {
       // 忽略缓存失败（可能是 quota 超限）
       this.warn('Failed to save to cache:', error);
@@ -679,7 +686,7 @@ export class UploadPlugin implements AemeathPlugin {
     if (!this.config.cache.enabled) return;
 
     try {
-      const data = localStorage.getItem(this.config.cache.key);
+      const data = this.platform.storage.getItem(this.config.cache.key);
       if (data) {
         const cacheData = JSON.parse(data) as QueuedLog[];
 
