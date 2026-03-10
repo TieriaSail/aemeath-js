@@ -115,7 +115,7 @@ logger.updateContext('userId', '67890');
 | `ErrorCapturePlugin` | 自动捕获全局错误、未处理的 Promise 拒绝、资源加载失败 | ~3KB |
 | `EarlyErrorCapturePlugin` | 捕获 React/Vue 挂载前的错误（需配合构建插件） | ~3KB |
 | `UploadPlugin` | 带优先级队列、重试和本地缓存的日志上报 | ~5KB |
-| `PerformancePlugin` | 🧪 Web Vitals 性能监控（[了解更多](./docs/zh/6-performance-monitoring.md)） | ~4KB |
+| `PerformancePlugin` | 🌐🧪 Web Vitals 性能监控 — **仅浏览器可用**（[了解更多](./docs/zh/6-performance-monitoring.md)） | ~4KB |
 | `NetworkPlugin` | 监控 fetch/XHR 请求（错误、慢请求） | ~3KB |
 | `SafeGuardPlugin` | 频率限制、递归保护、错误预算 | ~3KB |
 
@@ -316,7 +316,7 @@ logger.use(new MyPlugin());
 | **[SourceMap 解析](./docs/zh/3-sourcemap-parser.md)** | 解析混淆的错误堆栈 |
 | **[上报插件](./docs/zh/4-upload-plugin.md)** | 带队列和重试的日志上报 |
 | **[全局上下文](./docs/zh/5-global-context.md)** | 自动附加上下文到每条日志 |
-| **[性能监控](./docs/zh/6-performance-monitoring.md)** | 🧪 Web Vitals 性能监控（实验性） |
+| **[性能监控](./docs/zh/6-performance-monitoring.md)** | 🌐🧪 Web Vitals 性能监控 — **仅浏览器可用**，实验性 |
 | **[浏览器直接使用](./docs/zh/0-browser-usage.md)** | Script 标签引入（无需构建工具） |
 
 > 📖 English docs: [README](./README.md) | [Quick Start](./QUICK_START.md) | [Module Docs](./docs/en/)

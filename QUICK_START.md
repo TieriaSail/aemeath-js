@@ -147,7 +147,7 @@ logger.updateContext('userId', '67890');
 | **EarlyErrorCapturePlugin** | Errors before React/Vue mount | +3KB | Optional |
 | **UploadPlugin** | Upload to server | +5KB | Optional |
 | **SourceMap Parser** | Parse obfuscated stacks | +6KB | Optional |
-| **PerformancePlugin** | 🧪 Web Vitals monitoring (experimental, [learn more](./docs/en/6-performance-monitoring.md)) | +4KB | Optional |
+| **PerformancePlugin** | 🌐🧪 Web Vitals monitoring — **browser only**, experimental ([learn more](./docs/en/6-performance-monitoring.md)) | +4KB | Optional |
 | **SafeGuardPlugin** | Prevent logger crashes | +3KB | Recommended for production |
 
 **On-demand loading examples:**
@@ -425,5 +425,5 @@ initAemeath({
 - [Early Error Capture](./docs/en/2-early-error-capture.md)
 - [SourceMap Parser](./docs/en/3-sourcemap-parser.md)
 - [Upload Plugin](./docs/en/4-upload-plugin.md)
-- [Performance Monitoring](./docs/en/6-performance-monitoring.md) (🧪 experimental)
+- [Performance Monitoring](./docs/en/6-performance-monitoring.md) (🌐🧪 browser only, experimental)
 - [Examples](./examples/)

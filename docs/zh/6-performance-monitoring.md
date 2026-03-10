@@ -1,5 +1,7 @@
 # PerformancePlugin - 性能监控插件
 
+> 🌐 **仅浏览器可用** — 该插件依赖浏览器专属 API（PerformanceObserver、visibilitychange 等），在小程序等非浏览器环境中不可用。
+
 > 🧪 **实验性功能** — 该插件仍在持续优化中，API 可能在未来版本中调整。默认不启用，需手动安装。
 
 > 监控 Web Vitals 和自定义性能指标

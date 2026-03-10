@@ -1,6 +1,10 @@
 /**
  * Performance monitoring plugin — Web Vitals & custom metrics
  *
+ * @platform browser — This plugin relies on browser-only APIs (PerformanceObserver,
+ * visibilitychange, etc.) and is NOT available in miniapp or other non-browser environments.
+ * @experimental APIs may change in future versions. Not enabled by default.
+ *
  * Design principles:
  * 1. Lightweight: zero dependencies, pure PerformanceObserver API
  * 2. Safe: all browser API calls are wrapped in try/catch, never breaks the app

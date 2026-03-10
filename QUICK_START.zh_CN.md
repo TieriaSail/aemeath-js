@@ -148,7 +148,7 @@ logger.updateContext('userId', '67890');
 | **EarlyErrorCapturePlugin** | React/Vue 挂载前的错误 | +3KB | 可选 |
 | **UploadPlugin** | 发送到服务器 | +5KB | 可选 |
 | **SourceMap Parser** | 解析混淆堆栈 | +6KB | 可选 |
-| **PerformancePlugin** | 🧪 Web Vitals 监控（实验性，[了解更多](./docs/zh/6-performance-monitoring.md)） | +4KB | 可选 |
+| **PerformancePlugin** | 🌐🧪 Web Vitals 监控 — **仅浏览器可用**，实验性（[了解更多](./docs/zh/6-performance-monitoring.md)） | +4KB | 可选 |
 | **SafeGuardPlugin** | 防止 Logger 崩溃 | +3KB | 生产推荐 |
 
 **按需加载示例：**
@@ -426,6 +426,6 @@ initAemeath({
 - [早期错误捕获](./docs/zh/2-early-error-capture.md)
 - [SourceMap 解析](./docs/zh/3-sourcemap-parser.md)
 - [上报插件](./docs/zh/4-upload-plugin.md)
-- [性能监控](./docs/zh/6-performance-monitoring.md)（🧪 实验性）
+- [性能监控](./docs/zh/6-performance-monitoring.md)（🌐🧪 仅浏览器可用，实验性）
 - [示例代码](./examples/)
 

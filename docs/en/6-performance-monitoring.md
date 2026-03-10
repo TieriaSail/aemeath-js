@@ -1,5 +1,7 @@
 # PerformancePlugin - Performance Monitoring Plugin
 
+> 🌐 **Browser only** — This plugin relies on browser-only APIs (PerformanceObserver, visibilitychange, etc.) and is NOT available in miniapp or other non-browser environments.
+
 > 🧪 **Experimental** — This plugin is under active development. APIs may change in future versions. Not enabled by default; manual installation required.
 
 > Monitor Web Vitals and custom performance metrics
