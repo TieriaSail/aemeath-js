@@ -81,7 +81,7 @@ function init(options: BrowserLoggerOptions = {}): AemeathLogger {
   const logger = new AemeathLogger({
     enableConsole: options.enableConsole ?? true,
   });
-  (logger as any).platform = detectPlatform();
+  logger.platform = detectPlatform();
 
   // 日志级别过滤：低于 minLevel 的方法替换为 noop
   const minLevel = options.level ?? 'info';

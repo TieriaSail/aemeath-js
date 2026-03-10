@@ -17,6 +17,7 @@ import type {
   ContextUpdater,
   ContextValue,
 } from '../types';
+import type { PlatformAdapter } from '../platform/types';
 import { LogLevel as LogLevelEnum, ErrorCategory } from '../types';
 
 interface AemeathOptions {
@@ -40,6 +41,8 @@ export class AemeathLogger implements AemeathInterface {
   private readonly environment?: string;
   private readonly release?: string;
   private readonly debugEnabled: boolean;
+
+  public platform?: PlatformAdapter;
 
   [key: string]: unknown;
 

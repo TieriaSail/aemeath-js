@@ -166,6 +166,9 @@ describe('createMiniAppAdapter', () => {
           error: expect.any(Error),
         }),
       );
+      const passedError = handler.mock.calls[0]![0].error;
+      expect(passedError.message).toBe('Something went wrong');
+      expect((passedError as any)._syntheticStack).toBe(true);
     });
 
     it('onGlobalError 取消应调用 offError', () => {

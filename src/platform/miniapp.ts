@@ -116,9 +116,11 @@ export function createMiniAppAdapter(
       ): () => void {
         if (!api.onError) return () => {};
         const cb = (message: string) => {
+          const err = new Error(message);
+          (err as any)._syntheticStack = true;
           handler({
             message,
-            error: new Error(message),
+            error: err,
           });
         };
         api.onError(cb);

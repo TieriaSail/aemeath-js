@@ -38,6 +38,15 @@ function wrapAlipayAPI(api: Record<string, any>): MiniAppAPI {
   };
 }
 
+/**
+ * Module-level singleton cache.
+ *
+ * Known limitation: in micro-frontend or SSR environments where multiple
+ * bundles share the same module scope, this cache may cause cross-instance
+ * conflicts. In such cases, pass an explicit `platform` option to
+ * `initAemeath()` instead of relying on auto-detection, or call
+ * `resetPlatform()` before each initialization.
+ */
 let currentPlatform: PlatformAdapter | null = null;
 
 interface MiniAppCandidate {
@@ -93,9 +102,12 @@ function detectMiniApp(): PlatformAdapter | null {
 /**
  * Auto-detect current platform and return the appropriate adapter.
  * Result is cached — subsequent calls return the same instance.
+ *
+ * @param fresh - If true, bypass the cache and re-detect.
+ *   Useful in micro-frontend or testing scenarios.
  */
-export function detectPlatform(): PlatformAdapter {
-  if (currentPlatform) return currentPlatform;
+export function detectPlatform(fresh?: boolean): PlatformAdapter {
+  if (!fresh && currentPlatform) return currentPlatform;
 
   // 1. Check miniapp first (some WebViews have window)
   const miniapp = detectMiniApp();

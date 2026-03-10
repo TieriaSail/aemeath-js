@@ -162,9 +162,14 @@ export class ErrorCapturePlugin implements AemeathPlugin {
           (err as any).colno = info.colno;
           (err as any).type = 'global';
 
+          // If the Error was synthetically created (e.g. miniapp App.onError
+          // only provides a message string), its stack points to adapter
+          // internals and has no diagnostic value — exclude it.
+          const hasMeaningfulStack = err.stack && !(err as any)._syntheticStack;
+
           const errorInfo = {
             message: err.message,
-            stack: err.stack,
+            stack: hasMeaningfulStack ? err.stack : undefined,
             type: 'global',
             filename: info.source,
             lineno: info.lineno,
