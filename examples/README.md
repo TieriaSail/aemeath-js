@@ -177,6 +177,26 @@ logger.use(
 
 ---
 
+### [模块7：多平台](./7-multi-platform/) 📱
+
+支持浏览器、微信/支付宝小程序、Taro、uni-app 及自定义适配器
+
+**快速开始**：
+
+```typescript
+// 浏览器（默认）
+import { initAemeath, getAemeath } from 'aemeath-js';
+initAemeath({ upload: async (log) => ({ success: true }) });
+const logger = getAemeath();
+
+// 微信小程序
+import { createMiniAppAdapter } from 'aemeath-js/platform/miniapp';
+const platform = createMiniAppAdapter('wechat', wx);
+initAemeath({ platform, upload: async (log) => ({ success: true }) });
+```
+
+---
+
 ### [推荐配置](./recommended-config.ts) ⭐
 
 完整的生产环境配置示例
@@ -237,6 +257,10 @@ logger.updateContext('userId', '67890');
 ### 我想要完整的生产环境方案
 
 → [推荐配置](./recommended-config.ts) ⭐
+
+### 我需要在小程序 / Taro / uni-app 中使用
+
+→ [模块7：多平台](./7-multi-platform/)
 
 ---
 

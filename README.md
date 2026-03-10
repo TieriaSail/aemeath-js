@@ -26,6 +26,35 @@ Error tracking, log management, and performance monitoring — all handled in th
 - **🌐 Framework support** — React, Vue, vanilla JS, jQuery.
 - **🔧 Build tool support** — Vite, Webpack 4+, Rsbuild.
 
+## Multi-Platform Support
+
+aemeath-js v2.0 supports **browsers** and **miniapps** through a `PlatformAdapter` pattern. Platform detection is automatic — browser users experience zero changes.
+
+| Platform | Support | Notes |
+|----------|---------|-------|
+| **Browser** | ✅ Auto-detected | Zero config, works out of the box |
+| **MiniApps** | ✅ Via adapter | WeChat, Alipay, Douyin/TikTok, Baidu |
+| **Taro / uni-app** | ✅ Via adapter | Pass the appropriate adapter to `initAemeath` |
+| **Node.js** | ❌ Not supported | Architecture is extensible for future support |
+
+**New exports:** `createBrowserAdapter`, `createMiniAppAdapter`, `createNoopAdapter`, `detectPlatform`, `setPlatform`, `resetPlatform`  
+**New types:** `PlatformAdapter`, `PlatformType`, `MiniAppVendor`
+
+`initAemeath()` accepts an optional `platform` option. `PerformancePlugin` is browser-only and not enabled by default.
+
+```typescript
+// MiniApp usage (e.g. WeChat)
+import { initAemeath, createMiniAppAdapter } from 'aemeath-js';
+
+initAemeath({
+  platform: createMiniAppAdapter({
+    vendor: 'wechat',
+    request: (options) => wx.request(options),
+  }),
+  upload: async (log) => { /* ... */ return { success: true }; },
+});
+```
+
 ## Installation
 
 ```bash

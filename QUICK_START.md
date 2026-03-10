@@ -418,6 +418,33 @@ initAemeath({
 
 ---
 
+## MiniApp
+
+For WeChat, Alipay, Douyin, Baidu miniapps, or cross-platform frameworks (Taro, uni-app), pass a `PlatformAdapter` to `initAemeath`:
+
+```typescript
+import { initAemeath, createMiniAppAdapter, getAemeath } from 'aemeath-js';
+
+// WeChat miniapp
+initAemeath({
+  platform: createMiniAppAdapter({
+    vendor: 'wechat',
+    request: (options) => wx.request(options),
+  }),
+  upload: async (log) => {
+    // Use your backend API to receive logs
+    return { success: true };
+  },
+});
+
+const logger = getAemeath();
+logger.info('MiniApp initialized');
+```
+
+For Taro or uni-app, use the appropriate platform API in the `request` callback (e.g. `Taro.request` or `uni.request`).
+
+---
+
 ## 📚 More Documentation
 
 - [Full API Reference](./README.md)

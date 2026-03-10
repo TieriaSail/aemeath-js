@@ -26,6 +26,35 @@
 - **🌐 框架支持** — React、Vue、原生 JS、jQuery
 - **🔧 构建工具支持** — Vite、Webpack 4+、Rsbuild
 
+## 多平台支持
+
+aemeath-js v2.0 通过 `PlatformAdapter` 模式支持 **浏览器** 和 **小程序**。平台检测自动完成 — 浏览器用户零配置、零改动。
+
+| 平台 | 支持 | 说明 |
+|------|------|------|
+| **浏览器** | ✅ 自动检测 | 零配置，开箱即用 |
+| **小程序** | ✅ 通过适配器 | 微信、支付宝、抖音、百度 |
+| **Taro / uni-app** | ✅ 通过适配器 | 传入对应适配器到 `initAemeath` |
+| **Node.js** | ❌ 不支持 | 架构可扩展，未来可支持 |
+
+**新增导出：** `createBrowserAdapter`、`createMiniAppAdapter`、`createNoopAdapter`、`detectPlatform`、`setPlatform`、`resetPlatform`  
+**新增类型：** `PlatformAdapter`、`PlatformType`、`MiniAppVendor`
+
+`initAemeath()` 接受可选的 `platform` 配置。`PerformancePlugin` 仅适用于浏览器，且默认不启用。
+
+```typescript
+// 小程序用法（如微信）
+import { initAemeath, createMiniAppAdapter } from 'aemeath-js';
+
+initAemeath({
+  platform: createMiniAppAdapter({
+    vendor: 'wechat',
+    request: (options) => wx.request(options),
+  }),
+  upload: async (log) => { /* ... */ return { success: true }; },
+});
+```
+
 ## 安装
 
 ```bash

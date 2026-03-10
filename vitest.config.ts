@@ -7,7 +7,7 @@ export default defineConfig({
     include: ['__tests__/**/*.test.{ts,tsx}'],
     coverage: {
       provider: 'v8',
-      include: ['src/core/**', 'src/plugins/**', 'src/utils/**', 'src/singleton/**', 'src/browser/**'],
+      include: ['src/core/**', 'src/plugins/**', 'src/utils/**', 'src/singleton/**', 'src/browser/**', 'src/platform/**'],
       exclude: ['**/*.d.ts', 'dist/**', 'node_modules/**'],
     },
   },

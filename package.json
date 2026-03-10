@@ -48,6 +48,31 @@
       "import": "./dist/plugins/*.js",
       "require": "./dist/plugins/*.cjs"
     },
+    "./platform": {
+      "types": "./dist/platform.d.ts",
+      "import": "./dist/platform.js",
+      "require": "./dist/platform.cjs"
+    },
+    "./platform/browser": {
+      "types": "./dist/platform/browser.d.ts",
+      "import": "./dist/platform/browser.js",
+      "require": "./dist/platform/browser.cjs"
+    },
+    "./platform/miniapp": {
+      "types": "./dist/platform/miniapp.d.ts",
+      "import": "./dist/platform/miniapp.js",
+      "require": "./dist/platform/miniapp.cjs"
+    },
+    "./platform/noop": {
+      "types": "./dist/platform/noop.d.ts",
+      "import": "./dist/platform/noop.js",
+      "require": "./dist/platform/noop.cjs"
+    },
+    "./platform/detect": {
+      "types": "./dist/platform/detect.d.ts",
+      "import": "./dist/platform/detect.js",
+      "require": "./dist/platform/detect.cjs"
+    },
     "./parser": {
       "types": "./dist/parser.d.ts",
       "import": "./dist/parser.js",

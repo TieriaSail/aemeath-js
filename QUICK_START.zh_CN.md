@@ -419,6 +419,33 @@ initAemeath({
 
 ---
 
+## 小程序
+
+适用于微信、支付宝、抖音、百度小程序，或跨平台框架（Taro、uni-app）。通过 `initAemeath` 传入 `PlatformAdapter`：
+
+```typescript
+import { initAemeath, createMiniAppAdapter, getAemeath } from 'aemeath-js';
+
+// 微信小程序
+initAemeath({
+  platform: createMiniAppAdapter({
+    vendor: 'wechat',
+    request: (options) => wx.request(options),
+  }),
+  upload: async (log) => {
+    // 使用你的后端 API 接收日志
+    return { success: true };
+  },
+});
+
+const logger = getAemeath();
+logger.info('小程序已初始化');
+```
+
+若使用 Taro 或 uni-app，在 `request` 回调中传入对应平台 API（如 `Taro.request` 或 `uni.request`）即可。
+
+---
+
 ## 📚 更多文档
 
 - [完整 API 文档](./README.zh_CN.md)
