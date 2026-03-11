@@ -33,7 +33,7 @@ aemeath-js v2.0 supports **browsers** and **miniapps** through a `PlatformAdapte
 | Platform | Support | Notes |
 |----------|---------|-------|
 | **Browser** | ✅ Auto-detected | Zero config, works out of the box |
-| **MiniApps** | ✅ Via adapter | WeChat, Alipay, Douyin/TikTok, Baidu |
+| **MiniApps** | ✅ Via adapter | WeChat, Douyin/TikTok, Baidu pass global directly; **Alipay is auto-wrapped** |
 | **Taro / uni-app** | ✅ Via adapter | Pass the appropriate adapter to `initAemeath` |
 | **Node.js** | ❌ Not supported | Architecture is extensible for future support |
 

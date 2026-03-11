@@ -70,7 +70,7 @@ interface ResolvedConfig {
 
 export class PerformancePlugin implements AemeathPlugin {
   readonly name = 'performance';
-  readonly version = '1.1.2';
+  readonly version = '2.0.0';
   readonly description = 'Performance monitoring';
 
   private readonly config: ResolvedConfig;
@@ -124,9 +124,9 @@ export class PerformancePlugin implements AemeathPlugin {
     this.logger = logger;
 
     // 手动 mark/measure API 始终可用，不受采样率限制
-    (logger as any).startMark = this.startMark.bind(this);
-    (logger as any).endMark = this.endMark.bind(this);
-    (logger as any).measure = this.measure.bind(this);
+    logger.extensions.startMark = this.startMark.bind(this);
+    logger.extensions.endMark = this.endMark.bind(this);
+    logger.extensions.measure = this.measure.bind(this);
 
     // 自动采集受采样率控制
     this.sampled = Math.random() < this.config.sampleRate;
@@ -177,9 +177,9 @@ export class PerformancePlugin implements AemeathPlugin {
     this.inpWorstLatency = 0;
     this.inpReported = false;
 
-    delete (logger as any).startMark;
-    delete (logger as any).endMark;
-    delete (logger as any).measure;
+    delete logger.extensions.startMark;
+    delete logger.extensions.endMark;
+    delete logger.extensions.measure;
   }
 
   // ==================== Web Vitals ====================
@@ -314,7 +314,9 @@ export class PerformancePlugin implements AemeathPlugin {
       }
 
       this.clsSessionValue += entry.value;
-      this.clsSessionEntries.push(now);
+      if (this.clsSessionEntries.length < 100) {
+        this.clsSessionEntries.push(now);
+      }
       this.clsLastEntryTime = now;
     });
   }
@@ -526,11 +528,11 @@ export class PerformancePlugin implements AemeathPlugin {
   }
 }
 
-// 扩展 Logger 接口（用于 TypeScript 类型提示）
-declare module '../types' {
-  interface AemeathInterface {
-    startMark?(name: string): void;
-    endMark?(name: string): number | null;
-    measure?(name: string, startMark: string, endMark: string): number | null;
-  }
-}
+/**
+ * PerformancePlugin exposes startMark/endMark/measure via `logger.extensions`.
+ *
+ * Usage:
+ *   const startMark = logger.extensions.startMark as (name: string) => void;
+ *   const endMark = logger.extensions.endMark as (name: string) => number | null;
+ *   const measure = logger.extensions.measure as (name: string, startMark: string, endMark: string) => number | null;
+ */

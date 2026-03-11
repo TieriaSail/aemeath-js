@@ -10,10 +10,17 @@ import type {
   MiniAppVendor,
   GlobalErrorInfo,
   UnhandledRejectionInfo,
-  NetworkRequestLog,
-  NetworkInterceptOptions,
   EarlyError,
 } from './types';
+
+import { SYNTHETIC_STACK } from './constants';
+export { SYNTHETIC_STACK };
+
+const wrappedApis = new WeakSet<object>();
+
+function isAlreadyWrapped(api: unknown): boolean {
+  return typeof api === 'object' && api !== null && wrappedApis.has(api);
+}
 
 /**
  * Unified MiniApp API interface.
@@ -33,10 +40,10 @@ export interface MiniAppAPI {
   onError?(callback: (message: string) => void): void;
   offError?(callback: (message: string) => void): void;
   onUnhandledRejection?(
-    callback: (res: { reason: string; promise: Promise<unknown> }) => void,
+    callback: (res: { reason: unknown; promise: Promise<unknown> }) => void,
   ): void;
   offUnhandledRejection?(
-    callback: (res: { reason: string; promise: Promise<unknown> }) => void,
+    callback: (res: { reason: unknown; promise: Promise<unknown> }) => void,
   ): void;
 
   // Network
@@ -44,23 +51,78 @@ export interface MiniAppAPI {
 }
 
 /**
+ * Wrap Alipay's raw `my` object to normalize API differences.
+ * Alipay uses object parameters for storage and different response field names.
+ */
+function wrapAlipayAPI(api: Record<string, any>): MiniAppAPI {
+  const safeBind = (fn: unknown): ((...args: any[]) => any) | undefined =>
+    typeof fn === 'function' ? (fn as Function).bind(api) : undefined;
+
+  const result: MiniAppAPI = {
+    getStorageSync(key: string): string {
+      const res = api.getStorageSync({ key });
+      const data = res?.data;
+      if (data == null || data === '') return '';
+      if (typeof data === 'object') {
+        try { return JSON.stringify(data); } catch { return ''; }
+      }
+      return String(data);
+    },
+    setStorageSync(key: string, data: string): void {
+      api.setStorageSync({ key, data });
+    },
+    removeStorageSync(key: string): void {
+      api.removeStorageSync({ key });
+    },
+    onAppHide: safeBind(api.onAppHide) as MiniAppAPI['onAppHide'],
+    offAppHide: safeBind(api.offAppHide) as MiniAppAPI['offAppHide'],
+    onError: safeBind(api.onError) as MiniAppAPI['onError'],
+    offError: safeBind(api.offError) as MiniAppAPI['offError'],
+    onUnhandledRejection: safeBind(api.onUnhandledRejection) as MiniAppAPI['onUnhandledRejection'],
+    offUnhandledRejection: safeBind(api.offUnhandledRejection) as MiniAppAPI['offUnhandledRejection'],
+    request: safeBind(api.request) as MiniAppAPI['request'],
+  };
+
+  wrappedApis.add(result);
+  return result;
+}
+
+/**
  * Create a miniapp platform adapter for a specific vendor.
  *
+ * When `vendor` is `'alipay'`, the raw API object is automatically wrapped
+ * via `wrapAlipayAPI` to normalize storage signatures and response fields.
+ * Users can safely pass the raw `my` global — no manual wrapping needed.
+ *
  * @param vendor - The miniapp vendor identifier
- * @param api - The vendor's global API object (e.g. wx, my, tt, swan)
+ * @param api - The vendor's global API object (e.g. wx, my, tt, swan).
+ *   For Alipay, the raw `my` object is accepted and auto-wrapped.
  */
 export function createMiniAppAdapter(
   vendor: MiniAppVendor,
-  api: MiniAppAPI,
+  rawApi: MiniAppAPI | Record<string, any>,
 ): PlatformAdapter {
+  const api: MiniAppAPI =
+    vendor === 'alipay' && !isAlreadyWrapped(rawApi)
+      ? wrapAlipayAPI(rawApi as Record<string, any>)
+      : (rawApi as MiniAppAPI);
+
+  if (typeof api.getStorageSync !== 'function') {
+    throw new TypeError(
+      `[MiniApp] Invalid API object for vendor "${vendor}": getStorageSync must be a function`,
+    );
+  }
+
   return {
     type: 'miniapp',
     vendor,
+    nativeAPI: api,
 
     storage: {
       getItem(key: string): string | null {
         try {
           const val = api.getStorageSync(key);
+          // Empty string is treated as "no data" for consistency across vendors
           return val != null && val !== '' ? String(val) : null;
         } catch {
           return null;
@@ -92,8 +154,8 @@ export function createMiniAppAdapter(
       return () => {};
     },
 
-    requestIdle(callback: () => void, timeout?: number): void {
-      setTimeout(callback, timeout != null ? Math.min(timeout, 16) : 0);
+    requestIdle(callback: () => void, _timeout?: number): void {
+      setTimeout(callback, 0);
     },
 
     getCurrentPath(): string {
@@ -117,7 +179,7 @@ export function createMiniAppAdapter(
         if (!api.onError) return () => {};
         const cb = (message: string) => {
           const err = new Error(message);
-          (err as any)._syntheticStack = true;
+          (err as any)[SYNTHETIC_STACK] = true;
           handler({
             message,
             error: err,
@@ -133,7 +195,7 @@ export function createMiniAppAdapter(
         handler: (info: UnhandledRejectionInfo) => void,
       ): () => void {
         if (!api.onUnhandledRejection) return () => {};
-        const cb = (res: { reason: string; promise: Promise<unknown> }) => {
+        const cb = (res: { reason: unknown; promise: Promise<unknown> }) => {
           handler({ reason: res.reason });
         };
         api.onUnhandledRejection(cb);
@@ -143,102 +205,6 @@ export function createMiniAppAdapter(
       },
 
       // No resource error concept in miniapps
-    },
-
-    network: {
-      intercept(
-        handler: (log: NetworkRequestLog) => void,
-        options: NetworkInterceptOptions,
-      ): () => void {
-        if (!api.request) return () => {};
-
-        const originalRequest = api.request.bind(api);
-        api.request = (reqOptions: Record<string, unknown>) => {
-          const url = String(reqOptions['url'] || '');
-          const method = String(reqOptions['method'] || 'GET').toUpperCase();
-
-          if (!options.shouldCapture(url)) {
-            return originalRequest(reqOptions);
-          }
-
-          const startTime = Date.now();
-
-          let requestBody: unknown;
-          if (options.captureRequestBody && reqOptions['data'] != null) {
-            requestBody = reqOptions['data'];
-          }
-
-          const wrappedOptions = {
-            ...reqOptions,
-            success: (res: Record<string, unknown>) => {
-              const duration = Date.now() - startTime;
-              let responseBody: unknown;
-              let responseCode: number | string | undefined;
-              let responseMessage: string | undefined;
-
-              if (options.captureResponseBody && res['data'] != null) {
-                responseBody = res['data'];
-                if (typeof responseBody === 'object' && responseBody) {
-                  const obj = responseBody as Record<string, unknown>;
-                  responseCode = obj['code'] as number | string | undefined;
-                  responseMessage = (obj['message'] || obj['msg']) as
-                    | string
-                    | undefined;
-                }
-              }
-
-              handler({
-                type: 'request',
-                url,
-                method,
-                status: (res['statusCode'] ?? res['status']) as number | undefined,
-                statusText: '',
-                duration,
-                timestamp: startTime,
-                requestBody,
-                responseBody,
-                responseCode,
-                responseMessage,
-              });
-
-              if (typeof reqOptions['success'] === 'function') {
-                (reqOptions['success'] as Function)(res);
-              }
-            },
-            fail: (err: Record<string, unknown>) => {
-              const duration = Date.now() - startTime;
-              handler({
-                type: 'request',
-                url,
-                method,
-                status: 0,
-                statusText: 'Request Failed',
-                duration,
-                timestamp: startTime,
-                requestBody,
-                error: String(err['errMsg'] || err['errorMessage'] || 'Request failed'),
-              });
-
-              if (typeof reqOptions['fail'] === 'function') {
-                (reqOptions['fail'] as Function)(err);
-              }
-            },
-            complete: (res: Record<string, unknown>) => {
-              if (typeof reqOptions['complete'] === 'function') {
-                (reqOptions['complete'] as Function)(res);
-              }
-            },
-          };
-
-          return originalRequest(wrappedOptions);
-        };
-
-        return () => {
-          if (originalRequest) {
-            api.request = originalRequest;
-          }
-        };
-      },
     },
 
     earlyCapture: {

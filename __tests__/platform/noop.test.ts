@@ -70,19 +70,6 @@ describe('createNoopAdapter', () => {
     });
   });
 
-  describe('network', () => {
-    it('intercept 应返回空函数', () => {
-      const unregister = adapter.network.intercept(vi.fn(), {
-        shouldCapture: () => true,
-        captureRequestBody: false,
-        captureResponseBody: false,
-        maxResponseBodySize: 0,
-      });
-      expect(typeof unregister).toBe('function');
-      unregister();
-    });
-  });
-
   describe('earlyCapture', () => {
     it('hasEarlyErrors 应返回 false', () => {
       expect(adapter.earlyCapture.hasEarlyErrors()).toBe(false);

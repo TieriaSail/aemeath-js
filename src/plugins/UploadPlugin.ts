@@ -11,7 +11,6 @@
 
 import type { AemeathPlugin, LogEntry, AemeathInterface } from '../types';
 import type { PlatformAdapter } from '../platform/types';
-import { detectPlatform } from '../platform/detect';
 
 /**
  * 队列中的日志项
@@ -203,7 +202,7 @@ const defaultGetPriority: PriorityCallback = (log: LogEntry) => {
  */
 export class UploadPlugin implements AemeathPlugin {
   readonly name = 'upload';
-  readonly version = '1.1.2';
+  readonly version = '2.0.0';
   readonly description = '日志上传插件（回调方式）';
 
   private config: {
@@ -216,6 +215,7 @@ export class UploadPlugin implements AemeathPlugin {
   };
   private queue: QueuedLog[] = [];
   private isProcessing = false;
+  private destroyed = false;
   private timer: ReturnType<typeof setInterval> | null = null;
   private deduplicationTimer: ReturnType<typeof setTimeout> | null = null;
   private debugEnabled: boolean;
@@ -228,15 +228,18 @@ export class UploadPlugin implements AemeathPlugin {
 
   constructor(options: UploadPluginOptions) {
     this.debugEnabled = options.debug ?? false;
+    const clamp = (v: number | undefined, fallback: number, min: number) =>
+      v != null && Number.isFinite(v) && v >= min ? v : fallback;
+
     this.config = {
       onUpload: options.onUpload,
       getPriority: options.getPriority || defaultGetPriority,
       queue: {
-        maxSize: options.queue?.maxSize ?? 100,
-        concurrency: options.queue?.concurrency ?? 1,
-        maxRetries: options.queue?.maxRetries ?? 3,
-        uploadInterval: options.queue?.uploadInterval ?? 30000,
-        deduplicationDelay: options.queue?.deduplicationDelay ?? 50,
+        maxSize: clamp(options.queue?.maxSize, 100, 1),
+        concurrency: clamp(options.queue?.concurrency, 1, 1),
+        maxRetries: clamp(options.queue?.maxRetries, 3, 0),
+        uploadInterval: clamp(options.queue?.uploadInterval, 30000, 1000),
+        deduplicationDelay: clamp(options.queue?.deduplicationDelay, 50, 0),
       },
       cache: {
         enabled: options.cache?.enabled !== false,
@@ -262,11 +265,14 @@ export class UploadPlugin implements AemeathPlugin {
   }
 
   install(logger: AemeathInterface): void {
-    this.platform = logger.platform ?? detectPlatform();
+    this.platform = logger.platform;
 
-    // 从本地缓存恢复队列（这是真正可靠的"不丢失"机制）
     if (this.config.cache.enabled) {
-      this.restoreFromCache();
+      try {
+        this.restoreFromCache();
+      } catch (e) {
+        this.warn('Failed to restore from cache:', e);
+      }
     }
 
     // 创建绑定后的事件处理函数引用
@@ -290,7 +296,8 @@ export class UploadPlugin implements AemeathPlugin {
   }
 
   uninstall(logger?: AemeathInterface): void {
-    // 停止定时器
+    this.destroyed = true;
+
     if (this.timer) {
       clearInterval(this.timer);
       this.timer = null;
@@ -302,8 +309,11 @@ export class UploadPlugin implements AemeathPlugin {
       this.deduplicationTimer = null;
     }
 
-    // 最后一次上传
-    this.flush();
+    // uninstall is synchronous; flush() is async and cannot reliably complete.
+    // Save remaining queue to cache so it can be recovered on next init.
+    if (this.config.cache.enabled && this.queue.length > 0) {
+      this.saveToCache();
+    }
 
     // 移除日志事件监听
     if (logger && this.boundHandleLog) {
@@ -393,8 +403,7 @@ export class UploadPlugin implements AemeathPlugin {
    * 处理队列（串行上传）
    */
   private async processQueue(): Promise<void> {
-    // 如果正在处理，或队列为空，则跳过
-    if (this.isProcessing || this.queue.length === 0) {
+    if (this.destroyed || this.isProcessing || this.queue.length === 0) {
       return;
     }
 
@@ -410,8 +419,15 @@ export class UploadPlugin implements AemeathPlugin {
         if (!item) break;
 
         try {
-          // 调用用户的上传回调
-          const result = await this.config.onUpload(item.log);
+          let timeoutId: ReturnType<typeof setTimeout> | undefined;
+          const result = await Promise.race([
+            this.config.onUpload(item.log).finally(() => {
+              if (timeoutId !== undefined) clearTimeout(timeoutId);
+            }),
+            new Promise<UploadResult>((_, reject) => {
+              timeoutId = setTimeout(() => reject(new Error('Upload timeout (30s)')), 30000);
+            }),
+          ]);
 
           // 检查上传结果
           if (result.success) {
@@ -692,12 +708,21 @@ export class UploadPlugin implements AemeathPlugin {
     try {
       const data = this.platform.storage.getItem(this.config.cache.key);
       if (data) {
-        const cacheData = JSON.parse(data) as QueuedLog[];
+        const parsed = JSON.parse(data, (key, value) => {
+          if (key === '__proto__' || key === 'constructor' || key === 'prototype') return undefined;
+          return value;
+        });
+        if (!Array.isArray(parsed)) return;
 
-        // 过滤掉过期的日志（超过 1 小时）
         const now = Date.now();
-        const validLogs = cacheData.filter(
-          (item) => now - item.timestamp < 60 * 60 * 1000,
+        const validLogs = parsed.filter(
+          (item: unknown): item is QueuedLog =>
+            item != null &&
+            typeof item === 'object' &&
+            'log' in item &&
+            'priority' in item &&
+            'timestamp' in item &&
+            now - (item as QueuedLog).timestamp < 60 * 60 * 1000,
         );
 
         this.queue = validLogs;

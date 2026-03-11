@@ -1,65 +1,78 @@
 /**
- * NetworkPlugin 网络请求监控插件测试
+ * NetworkPlugin 集成测试
+ *
+ * 验证 NetworkPlugin 通过 instrumentation 层正确地：
+ * - 拦截 fetch 请求
+ * - 根据 logTypes 过滤
+ * - 处理慢请求
+ * - 提取业务响应码
+ * - 安装/卸载生命周期正确
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { NetworkPlugin } from '../src/plugins/NetworkPlugin';
 import { AemeathLogger } from '../src/core/Logger';
+import { _resetFetchInstrumentation } from '../src/instrumentation/fetch';
+import { _resetXHRInstrumentation } from '../src/instrumentation/xhr';
 
 describe('NetworkPlugin', () => {
   let logger: AemeathLogger;
   let originalFetch: typeof fetch;
 
   beforeEach(() => {
-    vi.useFakeTimers();
-    logger = new AemeathLogger({ enableConsole: false });
+    _resetFetchInstrumentation();
+    _resetXHRInstrumentation();
     originalFetch = window.fetch;
   });
 
   afterEach(() => {
-    logger.destroy();
-    // 确保 fetch 被恢复
+    if (logger) {
+      logger.destroy();
+    }
+    _resetFetchInstrumentation();
+    _resetXHRInstrumentation();
     window.fetch = originalFetch;
-    vi.useRealTimers();
   });
+
+  function createLogger(): AemeathLogger {
+    logger = new AemeathLogger({ enableConsole: false });
+    return logger;
+  }
 
   // ==================== 安装与卸载 ====================
 
   describe('安装与卸载', () => {
     it('应正确安装', () => {
+      const l = createLogger();
       const plugin = new NetworkPlugin();
-      logger.use(plugin);
-      expect(logger.hasPlugin('network')).toBe(true);
+      l.use(plugin);
+      expect(l.hasPlugin('network')).toBe(true);
     });
 
     it('卸载后不再有插件', () => {
+      const l = createLogger();
       const plugin = new NetworkPlugin();
-      logger.use(plugin);
-      expect(logger.hasPlugin('network')).toBe(true);
-
-      logger.uninstall('network');
-      expect(logger.hasPlugin('network')).toBe(false);
+      l.use(plugin);
+      l.uninstall('network');
+      expect(l.hasPlugin('network')).toBe(false);
     });
 
     it('手动调用 uninstall 应恢复 fetch', () => {
       const beforeFetch = window.fetch;
+      const l = createLogger();
       const plugin = new NetworkPlugin();
-      logger.use(plugin);
-
-      // fetch 应该被替换
+      l.use(plugin);
       expect(window.fetch).not.toBe(beforeFetch);
 
-      // 直接调用插件的 uninstall
       plugin.uninstall();
       expect(window.fetch).toBe(beforeFetch);
     });
 
-    it('interceptFetch=false 时仍走平台适配器拦截（v2.0 行为变更）', () => {
+    it('interceptFetch=false 时不替换 fetch', () => {
       const beforeFetch = window.fetch;
+      const l = createLogger();
       const plugin = new NetworkPlugin({ interceptFetch: false });
-      logger.use(plugin);
-
-      // v2.0: 平台适配器统一拦截，interceptFetch 选项不再直接控制 fetch 替换
-      expect(window.fetch).not.toBe(beforeFetch);
+      l.use(plugin);
+      expect(window.fetch).toBe(beforeFetch);
     });
   });
 
@@ -67,38 +80,36 @@ describe('NetworkPlugin', () => {
 
   describe('URL 过滤', () => {
     it('应排除日志上报接口', async () => {
-      const logListener = vi.fn();
-      logger.on('log', logListener);
-
-      // 模拟 fetch 返回成功
       const mockFetch = vi.fn().mockResolvedValue(
         new Response(JSON.stringify({ code: 200 }), { status: 200 }),
       );
       window.fetch = mockFetch;
 
+      const l = createLogger();
+      const logListener = vi.fn();
+      l.on('log', logListener);
+
       const plugin = new NetworkPlugin();
-      logger.use(plugin);
+      l.use(plugin);
 
-      // 调用日志上报接口
       await window.fetch('/api/logs', { method: 'POST' });
-
-      // 不应有日志记录（被排除了）
       expect(logListener).not.toHaveBeenCalled();
     });
 
     it('urlFilter 返回 false 的 URL 不应被记录', async () => {
-      const logListener = vi.fn();
-      logger.on('log', logListener);
-
       const mockFetch = vi.fn().mockResolvedValue(
         new Response(JSON.stringify({ code: 200 }), { status: 200 }),
       );
       window.fetch = mockFetch;
 
+      const l = createLogger();
+      const logListener = vi.fn();
+      l.on('log', logListener);
+
       const plugin = new NetworkPlugin({
         urlFilter: (url) => !url.includes('/health'),
       });
-      logger.use(plugin);
+      l.use(plugin);
 
       await window.fetch('/health');
       expect(logListener).not.toHaveBeenCalled();
@@ -109,9 +120,6 @@ describe('NetworkPlugin', () => {
 
   describe('Fetch 拦截', () => {
     it('应记录成功的 fetch 请求', async () => {
-      const logListener = vi.fn();
-      logger.on('log', logListener);
-
       const mockResponse = new Response(
         JSON.stringify({ code: 200, data: 'ok' }),
         { status: 200, statusText: 'OK' },
@@ -119,8 +127,12 @@ describe('NetworkPlugin', () => {
       const mockFetch = vi.fn().mockResolvedValue(mockResponse);
       window.fetch = mockFetch;
 
+      const l = createLogger();
+      const logListener = vi.fn();
+      l.on('log', logListener);
+
       const plugin = new NetworkPlugin();
-      logger.use(plugin);
+      l.use(plugin);
 
       await window.fetch('/api/data', { method: 'GET' });
 
@@ -133,9 +145,6 @@ describe('NetworkPlugin', () => {
     });
 
     it('应记录失败的 fetch 请求（状态码 >= 400）', async () => {
-      const logListener = vi.fn();
-      logger.on('log', logListener);
-
       const mockResponse = new Response(
         JSON.stringify({ code: 500, message: 'Internal Error' }),
         { status: 500, statusText: 'Internal Server Error' },
@@ -143,8 +152,12 @@ describe('NetworkPlugin', () => {
       const mockFetch = vi.fn().mockResolvedValue(mockResponse);
       window.fetch = mockFetch;
 
+      const l = createLogger();
+      const logListener = vi.fn();
+      l.on('log', logListener);
+
       const plugin = new NetworkPlugin();
-      logger.use(plugin);
+      l.use(plugin);
 
       await window.fetch('/api/data', { method: 'POST' });
 
@@ -155,19 +168,20 @@ describe('NetworkPlugin', () => {
     });
 
     it('应记录网络错误（fetch 抛异常）', async () => {
-      const logListener = vi.fn();
-      logger.on('log', logListener);
-
       const mockFetch = vi.fn().mockRejectedValue(new Error('Failed to fetch'));
       window.fetch = mockFetch;
 
+      const l = createLogger();
+      const logListener = vi.fn();
+      l.on('log', logListener);
+
       const plugin = new NetworkPlugin();
-      logger.use(plugin);
+      l.use(plugin);
 
       try {
         await window.fetch('/api/data');
       } catch {
-        // 预期抛出
+        // expected
       }
 
       expect(logListener).toHaveBeenCalled();
@@ -177,9 +191,6 @@ describe('NetworkPlugin', () => {
     });
 
     it('应捕获请求体', async () => {
-      const logListener = vi.fn();
-      logger.on('log', logListener);
-
       const mockResponse = new Response(
         JSON.stringify({ code: 200 }),
         { status: 200 },
@@ -187,8 +198,12 @@ describe('NetworkPlugin', () => {
       const mockFetch = vi.fn().mockResolvedValue(mockResponse);
       window.fetch = mockFetch;
 
+      const l = createLogger();
+      const logListener = vi.fn();
+      l.on('log', logListener);
+
       const plugin = new NetworkPlugin({ captureRequestBody: true });
-      logger.use(plugin);
+      l.use(plugin);
 
       await window.fetch('/api/data', {
         method: 'POST',
@@ -200,9 +215,6 @@ describe('NetworkPlugin', () => {
     });
 
     it('captureRequestBody=false 时不应捕获请求体', async () => {
-      const logListener = vi.fn();
-      logger.on('log', logListener);
-
       const mockResponse = new Response(
         JSON.stringify({ code: 200 }),
         { status: 200 },
@@ -210,8 +222,12 @@ describe('NetworkPlugin', () => {
       const mockFetch = vi.fn().mockResolvedValue(mockResponse);
       window.fetch = mockFetch;
 
+      const l = createLogger();
+      const logListener = vi.fn();
+      l.on('log', logListener);
+
       const plugin = new NetworkPlugin({ captureRequestBody: false });
-      logger.use(plugin);
+      l.use(plugin);
 
       await window.fetch('/api/data', {
         method: 'POST',
@@ -227,40 +243,25 @@ describe('NetworkPlugin', () => {
 
   describe('logTypes 过滤', () => {
     it("logTypes=['error'] 时只记录错误请求", async () => {
+      let callCount = 0;
+      const mockFetch = vi.fn().mockImplementation(async (url: string) => {
+        callCount++;
+        if (url.includes('/api/ok')) {
+          return new Response(JSON.stringify({ code: 200 }), { status: 200 });
+        }
+        return new Response(JSON.stringify({ code: 500 }), { status: 500 });
+      });
+      window.fetch = mockFetch;
+
+      const l = createLogger();
       const logListener = vi.fn();
-      logger.on('log', logListener);
+      l.on('log', logListener);
 
       const plugin = new NetworkPlugin({ logTypes: ['error'] });
-      logger.use(plugin);
-
-      // 成功请求
-      const successResponse = new Response(
-        JSON.stringify({ code: 200 }),
-        { status: 200 },
-      );
-      const mockFetch = vi.fn().mockResolvedValue(successResponse);
-      window.fetch = mockFetch;
-
-      // 需要重新安装来拦截新的 fetch
-      logger.uninstall('network');
-      const plugin2 = new NetworkPlugin({ logTypes: ['error'] });
-      window.fetch = mockFetch;
-      logger.use(plugin2);
+      l.use(plugin);
 
       await window.fetch('/api/ok');
       expect(logListener).not.toHaveBeenCalled();
-
-      // 错误请求
-      const errorResponse = new Response(
-        JSON.stringify({ code: 500 }),
-        { status: 500 },
-      );
-      const mockFetch2 = vi.fn().mockResolvedValue(errorResponse);
-      // 卸载再安装
-      logger.uninstall('network');
-      window.fetch = mockFetch2;
-      const plugin3 = new NetworkPlugin({ logTypes: ['error'] });
-      logger.use(plugin3);
 
       await window.fetch('/api/error');
       expect(logListener).toHaveBeenCalled();
@@ -272,22 +273,23 @@ describe('NetworkPlugin', () => {
 
   describe('慢请求', () => {
     it('超过 slowThreshold 应记录为慢请求', async () => {
+      vi.useFakeTimers();
+
+      const mockFetch = vi.fn().mockImplementation(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        return new Response(JSON.stringify({ code: 200 }), { status: 200 });
+      });
+      window.fetch = mockFetch;
+
+      const l = createLogger();
       const logListener = vi.fn();
-      logger.on('log', logListener);
+      l.on('log', logListener);
 
       const plugin = new NetworkPlugin({
         slowThreshold: 100,
         logTypes: ['slow'],
       });
-
-      // 模拟一个需要时间的 fetch
-      const mockFetch = vi.fn().mockImplementation(async () => {
-        // 模拟延迟
-        await new Promise((resolve) => setTimeout(resolve, 200));
-        return new Response(JSON.stringify({ code: 200 }), { status: 200 });
-      });
-      window.fetch = mockFetch;
-      logger.use(plugin);
+      l.use(plugin);
 
       const fetchPromise = window.fetch('/api/slow-data');
       await vi.advanceTimersByTimeAsync(200);
@@ -297,31 +299,37 @@ describe('NetworkPlugin', () => {
       const entry = logListener.mock.calls[0][0];
       expect(entry.level).toBe('warn');
       expect(entry.tags?.slow).toBe(true);
+
+      vi.useRealTimers();
     });
 
     it('慢请求排除模式应忽略匹配的 URL', async () => {
-      const logListener = vi.fn();
-      logger.on('log', logListener);
-
-      const plugin = new NetworkPlugin({
-        slowThreshold: 100,
-        logTypes: ['slow'],
-        slowRequestExcludePatterns: ['.mp3'],
-      });
+      vi.useFakeTimers();
 
       const mockFetch = vi.fn().mockImplementation(async () => {
         await new Promise((resolve) => setTimeout(resolve, 200));
         return new Response('audio data', { status: 200 });
       });
       window.fetch = mockFetch;
-      logger.use(plugin);
+
+      const l = createLogger();
+      const logListener = vi.fn();
+      l.on('log', logListener);
+
+      const plugin = new NetworkPlugin({
+        slowThreshold: 100,
+        logTypes: ['slow'],
+        slowRequestExcludePatterns: ['.mp3'],
+      });
+      l.use(plugin);
 
       const fetchPromise = window.fetch('/audio/song.mp3');
       await vi.advanceTimersByTimeAsync(200);
       await fetchPromise;
 
-      // .mp3 被排除，不应记录慢请求
       expect(logListener).not.toHaveBeenCalled();
+
+      vi.useRealTimers();
     });
   });
 
@@ -329,9 +337,6 @@ describe('NetworkPlugin', () => {
 
   describe('业务码提取', () => {
     it('应从响应中提取 code 和 message', async () => {
-      const logListener = vi.fn();
-      logger.on('log', logListener);
-
       const mockResponse = new Response(
         JSON.stringify({ code: 10001, message: '参数错误' }),
         { status: 200 },
@@ -339,8 +344,12 @@ describe('NetworkPlugin', () => {
       const mockFetch = vi.fn().mockResolvedValue(mockResponse);
       window.fetch = mockFetch;
 
+      const l = createLogger();
+      const logListener = vi.fn();
+      l.on('log', logListener);
+
       const plugin = new NetworkPlugin();
-      logger.use(plugin);
+      l.use(plugin);
 
       await window.fetch('/api/data');
 
@@ -350,4 +359,3 @@ describe('NetworkPlugin', () => {
     });
   });
 });
-

@@ -260,7 +260,7 @@ export function useErrorCapture() {
   const logger = useAemeath();
 
   const captureError = useCallback(
-    (error: Error, extra?: Record<string, unknown>) => {
+    (error: Error, extra?: Record<string, string | number | boolean>) => {
       logger.error(error.message, {
         error,
         tags: {
@@ -277,7 +277,7 @@ export function useErrorCapture() {
     (
       message: string,
       level: 'info' | 'warn' | 'error' = 'info',
-      extra?: Record<string, unknown>,
+      extra?: Record<string, string | number | boolean>,
     ) => {
       logger[level](message, {
         tags: {

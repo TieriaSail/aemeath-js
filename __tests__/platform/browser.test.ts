@@ -154,61 +154,6 @@ describe('createBrowserAdapter', () => {
     });
   });
 
-  // ==================== network ====================
-
-  describe('network.intercept', () => {
-    let originalFetch: typeof fetch;
-
-    beforeEach(() => {
-      originalFetch = window.fetch;
-    });
-
-    afterEach(() => {
-      window.fetch = originalFetch;
-    });
-
-    it('应替换 fetch', () => {
-      const handler = vi.fn();
-      adapter.network.intercept(handler, {
-        shouldCapture: () => true,
-        captureRequestBody: false,
-        captureResponseBody: false,
-        maxResponseBodySize: 0,
-      });
-      expect(window.fetch).not.toBe(originalFetch);
-    });
-
-    it('取消应恢复 fetch', () => {
-      const handler = vi.fn();
-      const unregister = adapter.network.intercept(handler, {
-        shouldCapture: () => true,
-        captureRequestBody: false,
-        captureResponseBody: false,
-        maxResponseBodySize: 0,
-      });
-      unregister();
-      expect(window.fetch).toBe(originalFetch);
-    });
-
-    it('shouldCapture 返回 false 时不拦截', async () => {
-      const mockResponse = new Response('ok', { status: 200 });
-      window.fetch = vi.fn().mockResolvedValue(mockResponse);
-      const savedFetch = window.fetch;
-
-      adapter = createBrowserAdapter();
-      const handler = vi.fn();
-      adapter.network.intercept(handler, {
-        shouldCapture: () => false,
-        captureRequestBody: false,
-        captureResponseBody: false,
-        maxResponseBodySize: 0,
-      });
-
-      await window.fetch('https://excluded.com/api');
-      expect(handler).not.toHaveBeenCalled();
-    });
-  });
-
   // ==================== earlyCapture ====================
 
   describe('earlyCapture', () => {

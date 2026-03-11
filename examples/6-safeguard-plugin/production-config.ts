@@ -7,6 +7,7 @@ import {
   SafeGuardPlugin,
   ErrorCapturePlugin,
   UploadPlugin,
+  type SafeGuardHealth,
 } from 'aemeath-js';
 
 const logger = new AemeathLogger();
@@ -68,7 +69,7 @@ logger.use(
 
 // 定期检查健康状态
 setInterval(() => {
-  const health = logger.getHealth?.();
+  const health = (logger.extensions.getHealth as (() => SafeGuardHealth) | undefined)?.();
 
   if (!health) return;
 
@@ -113,7 +114,7 @@ logger.on('safeguard:stateChange', ({ from, to }: { from: string; to: string }) 
     sendAlert({
       level: 'critical',
       message: `SafeGuard circuit breaker opened (${from} → ${to})`,
-      details: logger.getHealth?.(),
+      details: (logger.extensions.getHealth as (() => SafeGuardHealth) | undefined)?.(),
     });
   }
 
@@ -122,7 +123,7 @@ logger.on('safeguard:stateChange', ({ from, to }: { from: string; to: string }) 
     sendAlert({
       level: 'warning',
       message: `SafeGuard circuit breaker half-open (${from} → ${to})`,
-      details: logger.getHealth?.(),
+      details: (logger.extensions.getHealth as (() => SafeGuardHealth) | undefined)?.(),
     });
   }
 
@@ -131,7 +132,7 @@ logger.on('safeguard:stateChange', ({ from, to }: { from: string; to: string }) 
     sendAlert({
       level: 'info',
       message: `SafeGuard circuit breaker closed (${from} → ${to})`,
-      details: logger.getHealth?.(),
+      details: (logger.extensions.getHealth as (() => SafeGuardHealth) | undefined)?.(),
     });
   }
 });

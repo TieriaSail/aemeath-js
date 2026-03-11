@@ -3,42 +3,17 @@
  *
  * Implements PlatformAdapter using standard browser APIs:
  * localStorage, beforeunload, requestIdleCallback, window.onerror,
- * fetch/XHR interception, window.__EARLY_ERRORS__.
+ * window.__EARLY_ERRORS__.
+ *
+ * Network interception (fetch/XHR) has been moved to the instrumentation layer.
  */
 
 import type {
   PlatformAdapter,
   GlobalErrorInfo,
   UnhandledRejectionInfo,
-  NetworkRequestLog,
-  NetworkInterceptOptions,
   EarlyError,
 } from './types';
-
-function safeParseJSON(data: unknown): unknown {
-  if (typeof data === 'string') {
-    try {
-      return JSON.parse(data);
-    } catch {
-      return data;
-    }
-  }
-  return data;
-}
-
-function extractBusinessInfo(data: unknown): {
-  code?: number | string;
-  message?: string;
-} {
-  if (!data || typeof data !== 'object') return {};
-  const obj = data as Record<string, unknown>;
-  return {
-    code: obj['code'] as number | string | undefined,
-    message: (obj['message'] || obj['msg'] || obj['error']) as
-      | string
-      | undefined,
-  };
-}
 
 export function createBrowserAdapter(): PlatformAdapter {
   return {
@@ -82,7 +57,11 @@ export function createBrowserAdapter(): PlatformAdapter {
     },
 
     getCurrentPath(): string {
-      return window.location.pathname;
+      try {
+        return window.location.pathname;
+      } catch {
+        return '';
+      }
     },
 
     errorCapture: {
@@ -117,257 +96,6 @@ export function createBrowserAdapter(): PlatformAdapter {
       onResourceError(handler: (event: Event) => void): () => void {
         window.addEventListener('error', handler, true);
         return () => window.removeEventListener('error', handler, true);
-      },
-    },
-
-    network: {
-      intercept(
-        handler: (log: NetworkRequestLog) => void,
-        options: NetworkInterceptOptions,
-      ): () => void {
-        let originalFetch: typeof fetch | null = null;
-        let originalXHROpen: typeof XMLHttpRequest.prototype.open | null = null;
-        let originalXHRSend: typeof XMLHttpRequest.prototype.send | null = null;
-
-        // --- fetch interception ---
-        if (typeof window !== 'undefined' && window.fetch) {
-          originalFetch = window.fetch;
-          const savedFetch = originalFetch;
-
-          window.fetch = async function (
-            input: RequestInfo | URL,
-            init?: RequestInit,
-          ): Promise<Response> {
-            const startTime = Date.now();
-            const url =
-              typeof input === 'string'
-                ? input
-                : input instanceof URL
-                  ? input.href
-                  : input.url;
-            const method = init?.method?.toUpperCase() || 'GET';
-
-            if (!options.shouldCapture(url)) {
-              return savedFetch.call(window, input, init);
-            }
-
-            let requestBody: unknown;
-            if (options.captureRequestBody && init?.body) {
-              try {
-                requestBody = safeParseJSON(init.body);
-              } catch {
-                requestBody = '[Unable to parse request body]';
-              }
-            }
-
-            try {
-              const response = await savedFetch.call(window, input, init);
-
-              let responseBody: unknown;
-              let responseCode: number | string | undefined;
-              let responseMessage: string | undefined;
-
-              if (options.captureResponseBody) {
-                try {
-                  const cloned = response.clone();
-                  const text = await cloned.text();
-                  responseBody = safeParseJSON(text);
-                  const biz = extractBusinessInfo(responseBody);
-                  responseCode = biz.code;
-                  responseMessage = biz.message;
-                } catch {
-                  responseBody = '[Unable to read response body]';
-                }
-              }
-
-              handler({
-                type: 'fetch',
-                url,
-                method,
-                status: response.status,
-                statusText: response.statusText,
-                duration: Date.now() - startTime,
-                timestamp: startTime,
-                requestBody,
-                responseBody,
-                responseCode,
-                responseMessage,
-              });
-
-              return response;
-            } catch (error) {
-              const isOnline =
-                typeof navigator !== 'undefined' ? navigator.onLine : true;
-              let errorMessage =
-                error instanceof Error ? error.message : String(error);
-              if (!isOnline && !errorMessage.includes('offline')) {
-                errorMessage = `${errorMessage} (device appears to be offline)`;
-              }
-
-              handler({
-                type: 'fetch',
-                url,
-                method,
-                status: 0,
-                statusText: 'Network Error',
-                duration: Date.now() - startTime,
-                timestamp: startTime,
-                requestBody,
-                error: errorMessage,
-              });
-
-              throw error;
-            }
-          };
-        }
-
-        // --- XHR interception ---
-        if (typeof window !== 'undefined' && window.XMLHttpRequest) {
-          originalXHROpen = XMLHttpRequest.prototype.open;
-          originalXHRSend = XMLHttpRequest.prototype.send;
-          const savedOpen = originalXHROpen;
-          const savedSend = originalXHRSend;
-
-          XMLHttpRequest.prototype.open = function (
-            method: string,
-            url: string | URL,
-            async: boolean = true,
-            username?: string | null,
-            password?: string | null,
-          ): void {
-            (this as any)._networkInfo = {
-              method: method.toUpperCase(),
-              url: typeof url === 'string' ? url : url.href,
-              startTime: 0,
-              requestBody: undefined,
-            };
-            return savedOpen.call(this, method, url, async, username, password);
-          };
-
-          XMLHttpRequest.prototype.send = function (
-            body?: Document | XMLHttpRequestBodyInit | null,
-          ): void {
-            const info = (this as any)._networkInfo;
-
-            if (!info || !options.shouldCapture(info.url)) {
-              return savedSend.call(this, body);
-            }
-
-            info.startTime = Date.now();
-
-            if (options.captureRequestBody && body) {
-              try {
-                info.requestBody = safeParseJSON(body);
-              } catch {
-                info.requestBody = '[Unable to parse request body]';
-              }
-            }
-
-            let isRecorded = false;
-
-            const cleanup = () => {
-              this.removeEventListener('loadend', handleLoadEnd);
-              this.removeEventListener('error', handleError);
-              this.removeEventListener('timeout', handleTimeout);
-            };
-
-            const handleLoadEnd = () => {
-              if (isRecorded) { cleanup(); return; }
-              isRecorded = true;
-
-              let responseBody: unknown;
-              let responseCode: number | string | undefined;
-              let responseMessage: string | undefined;
-
-              if (options.captureResponseBody) {
-                try {
-                  responseBody = safeParseJSON(this.responseText);
-                  const biz = extractBusinessInfo(responseBody);
-                  responseCode = biz.code;
-                  responseMessage = biz.message;
-                } catch {
-                  responseBody = '[Unable to read response body]';
-                }
-              }
-
-              handler({
-                type: 'xhr',
-                url: info.url,
-                method: info.method,
-                status: this.status,
-                statusText: this.statusText,
-                duration: Date.now() - info.startTime,
-                timestamp: info.startTime,
-                requestBody: info.requestBody,
-                responseBody,
-                responseCode,
-                responseMessage,
-              });
-              cleanup();
-            };
-
-            const handleError = () => {
-              if (isRecorded) return;
-              isRecorded = true;
-              const isOnline =
-                typeof navigator !== 'undefined' ? navigator.onLine : true;
-              let errorMessage = 'Network Error';
-              if (!isOnline) {
-                errorMessage = 'Network Error: Device appears to be offline';
-              } else if (this.status === 0) {
-                errorMessage = `Network Error: No response received (readyState=${this.readyState})`;
-              }
-
-              handler({
-                type: 'xhr',
-                url: info.url,
-                method: info.method,
-                status: this.status,
-                statusText: this.statusText || 'Network Error',
-                duration: Date.now() - info.startTime,
-                timestamp: info.startTime,
-                requestBody: info.requestBody,
-                error: errorMessage,
-              });
-            };
-
-            const handleTimeout = () => {
-              if (isRecorded) return;
-              isRecorded = true;
-              const duration = Date.now() - info.startTime;
-              handler({
-                type: 'xhr',
-                url: info.url,
-                method: info.method,
-                status: 0,
-                statusText: 'Request Timeout',
-                duration,
-                timestamp: info.startTime,
-                requestBody: info.requestBody,
-                error: `Request Timeout: No response within ${duration}ms`,
-              });
-            };
-
-            this.addEventListener('loadend', handleLoadEnd);
-            this.addEventListener('error', handleError);
-            this.addEventListener('timeout', handleTimeout);
-
-            return savedSend.call(this, body);
-          };
-        }
-
-        // Return cleanup function
-        return () => {
-          if (originalFetch) {
-            window.fetch = originalFetch;
-          }
-          if (originalXHROpen) {
-            XMLHttpRequest.prototype.open = originalXHROpen;
-          }
-          if (originalXHRSend) {
-            XMLHttpRequest.prototype.send = originalXHRSend;
-          }
-        };
       },
     },
 

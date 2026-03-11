@@ -27,11 +27,11 @@ describe('SafeGuardPlugin', () => {
       expect(logger.hasPlugin('safe-guard')).toBe(true);
     });
 
-    it('安装后应给 logger 添加 getHealth/pause/resume', () => {
+    it('安装后应给 logger.extensions 添加 getHealth/pause/resume', () => {
       logger.use(new SafeGuardPlugin());
-      expect((logger as any).getHealth).toBeTypeOf('function');
-      expect((logger as any).pause).toBeTypeOf('function');
-      expect((logger as any).resume).toBeTypeOf('function');
+      expect(logger.extensions.getHealth).toBeTypeOf('function');
+      expect(logger.extensions.pause).toBeTypeOf('function');
+      expect(logger.extensions.resume).toBeTypeOf('function');
     });
 
     it('卸载后应移除插件', () => {
@@ -361,7 +361,7 @@ describe('SafeGuardPlugin', () => {
       const plugin = new SafeGuardPlugin();
       logger.use(plugin);
 
-      (logger as any).pause();
+      (logger.extensions.pause as () => void)();
       expect(plugin.getHealth().state).toBe('open');
     });
 
@@ -369,8 +369,8 @@ describe('SafeGuardPlugin', () => {
       const plugin = new SafeGuardPlugin();
       logger.use(plugin);
 
-      (logger as any).pause();
-      (logger as any).resume();
+      (logger.extensions.pause as () => void)();
+      (logger.extensions.resume as () => void)();
       expect(plugin.getHealth().state).toBe('closed');
     });
   });

@@ -40,12 +40,6 @@ export function createNoopAdapter(): PlatformAdapter {
       },
     },
 
-    network: {
-      intercept(): () => void {
-        return () => {};
-      },
-    },
-
     earlyCapture: {
       hasEarlyErrors(): boolean {
         return false;

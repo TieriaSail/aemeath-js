@@ -90,7 +90,7 @@ describe('Browser IIFE 入口', () => {
       expect(logger.hasPlugin('upload')).toBe(false);
     });
 
-    it('重复调用 init 应返回同一实例并警告', async () => {
+    it('重复调用 init 应返回同一实例（静默）', async () => {
       const mod = await import('../src/browser/index');
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
@@ -98,7 +98,7 @@ describe('Browser IIFE 入口', () => {
       const logger2 = mod.init();
 
       expect(logger1).toBe(logger2);
-      expect(warnSpy).toHaveBeenCalledWith('[AemeathJs] Already initialized');
+      expect(warnSpy).not.toHaveBeenCalled();
 
       warnSpy.mockRestore();
     });

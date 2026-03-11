@@ -52,36 +52,13 @@ export interface UnhandledRejectionInfo {
 }
 
 /**
- * Network request log — identical to NetworkPlugin's NetworkLog.
- * Re-declared here to avoid circular imports between platform and plugins.
- */
-export interface NetworkRequestLog {
-  type: 'fetch' | 'xhr' | 'request';
-  url: string;
-  method: string;
-  status?: number;
-  statusText?: string;
-  duration: number;
-  timestamp: number;
-  error?: string;
-  requestBody?: unknown;
-  responseBody?: unknown;
-  responseCode?: number | string;
-  responseMessage?: string;
-}
-
-export interface NetworkInterceptOptions {
-  shouldCapture: (url: string) => boolean;
-  captureRequestBody: boolean;
-  captureResponseBody: boolean;
-  maxResponseBodySize: number;
-}
-
-/**
  * Unified platform adapter interface.
  *
  * Each platform (browser, miniapp, noop) implements this interface.
  * Plugins consume it without knowing which platform they're running on.
+ *
+ * Network interception is NOT part of this interface — it lives in the
+ * independent `src/instrumentation/` layer, which owns all monkey-patch logic.
  */
 export interface PlatformAdapter {
   readonly type: PlatformType;
@@ -114,17 +91,17 @@ export interface PlatformAdapter {
     onResourceError?(handler: (event: Event) => void): () => void;
   };
 
-  /** Network interception (NetworkPlugin) */
-  network: {
-    intercept(
-      handler: (log: NetworkRequestLog) => void,
-      options: NetworkInterceptOptions,
-    ): () => void;
-  };
-
   /** Early error capture (EarlyErrorCapturePlugin) */
   earlyCapture: {
     hasEarlyErrors(): boolean;
     flush(callback: (errors: EarlyError[]) => void): void;
   };
+
+  /**
+   * The underlying native API object for the platform, if applicable.
+   * For miniapps this is the (possibly wrapped) API object used internally by
+   * the adapter. Exposed so that the instrumentation layer patches the exact
+   * same object the adapter uses, avoiding Alipay wrapper divergence.
+   */
+  readonly nativeAPI?: { request?: (options: Record<string, unknown>) => unknown };
 }

@@ -5,54 +5,28 @@
  * 1. MiniApp vendors (wx, my, tt, swan)
  * 2. Browser (window + document)
  * 3. Noop fallback
+ *
+ * Since `platform` is now a required property on `AemeathLogger` (injected
+ * at construction time), `detectPlatform()` is typically called once per
+ * Logger instance. There is no module-level cache — this avoids micro-frontend
+ * and SSR cross-instance conflicts by design.
  */
 
 import type { PlatformAdapter, MiniAppVendor } from './types';
 import { createBrowserAdapter } from './browser';
-import { createMiniAppAdapter, type MiniAppAPI } from './miniapp';
+import { createMiniAppAdapter } from './miniapp';
 import { createNoopAdapter } from './noop';
 
 /**
- * Wrap Alipay's `my` object to normalize API differences.
- * Alipay uses object parameters for storage and different response field names.
+ * Manual override slot. When set, `detectPlatform()` returns this adapter.
+ * @internal — primarily for testing and custom environments.
  */
-function wrapAlipayAPI(api: Record<string, any>): MiniAppAPI {
-  return {
-    getStorageSync(key: string): string {
-      const res = api.getStorageSync({ key });
-      return res?.data ?? '';
-    },
-    setStorageSync(key: string, data: string): void {
-      api.setStorageSync({ key, data });
-    },
-    removeStorageSync(key: string): void {
-      api.removeStorageSync({ key });
-    },
-    onAppHide: api.onAppHide?.bind(api),
-    offAppHide: api.offAppHide?.bind(api),
-    onError: api.onError?.bind(api),
-    offError: api.offError?.bind(api),
-    onUnhandledRejection: api.onUnhandledRejection?.bind(api),
-    offUnhandledRejection: api.offUnhandledRejection?.bind(api),
-    request: api.request?.bind(api),
-  };
-}
-
-/**
- * Module-level singleton cache.
- *
- * Known limitation: in micro-frontend or SSR environments where multiple
- * bundles share the same module scope, this cache may cause cross-instance
- * conflicts. In such cases, pass an explicit `platform` option to
- * `initAemeath()` instead of relying on auto-detection, or call
- * `resetPlatform()` before each initialization.
- */
-let currentPlatform: PlatformAdapter | null = null;
+let overridePlatform: PlatformAdapter | null = null;
 
 interface MiniAppCandidate {
   vendor: MiniAppVendor;
   check: () => boolean;
-  getAPI: () => MiniAppAPI;
+  getRawAPI: () => Record<string, any>;
 }
 
 const miniappCandidates: MiniAppCandidate[] = [
@@ -60,29 +34,33 @@ const miniappCandidates: MiniAppCandidate[] = [
     vendor: 'wechat',
     check: () =>
       typeof wx !== 'undefined' &&
+      wx != null &&
       typeof (wx as any).getSystemInfoSync === 'function',
-    getAPI: () => wx as unknown as MiniAppAPI,
+    getRawAPI: () => wx as unknown as Record<string, any>,
   },
   {
     vendor: 'alipay',
     check: () =>
       typeof my !== 'undefined' &&
+      my != null &&
       typeof (my as any).getSystemInfoSync === 'function',
-    getAPI: () => wrapAlipayAPI(my!),
+    getRawAPI: () => my as unknown as Record<string, any>,
   },
   {
     vendor: 'tiktok',
     check: () =>
       typeof tt !== 'undefined' &&
+      tt != null &&
       typeof (tt as any).getSystemInfoSync === 'function',
-    getAPI: () => tt as unknown as MiniAppAPI,
+    getRawAPI: () => tt as unknown as Record<string, any>,
   },
   {
     vendor: 'baidu',
     check: () =>
       typeof swan !== 'undefined' &&
+      swan != null &&
       typeof (swan as any).getSystemInfoSync === 'function',
-    getAPI: () => swan as unknown as MiniAppAPI,
+    getRawAPI: () => swan as unknown as Record<string, any>,
   },
 ];
 
@@ -90,7 +68,7 @@ function detectMiniApp(): PlatformAdapter | null {
   for (const candidate of miniappCandidates) {
     try {
       if (candidate.check()) {
-        return createMiniAppAdapter(candidate.vendor, candidate.getAPI());
+        return createMiniAppAdapter(candidate.vendor, candidate.getRawAPI());
       }
     } catch {
       // Detection failed for this vendor, try next
@@ -100,43 +78,36 @@ function detectMiniApp(): PlatformAdapter | null {
 }
 
 /**
- * Auto-detect current platform and return the appropriate adapter.
- * Result is cached — subsequent calls return the same instance.
+ * Auto-detect current platform and return a new adapter instance.
  *
- * @param fresh - If true, bypass the cache and re-detect.
- *   Useful in micro-frontend or testing scenarios.
+ * If a manual override has been set via `setPlatform()`, that adapter
+ * is returned instead.
  */
-export function detectPlatform(fresh?: boolean): PlatformAdapter {
-  if (!fresh && currentPlatform) return currentPlatform;
+export function detectPlatform(): PlatformAdapter {
+  if (overridePlatform) return overridePlatform;
 
-  // 1. Check miniapp first (some WebViews have window)
   const miniapp = detectMiniApp();
-  if (miniapp) {
-    currentPlatform = miniapp;
-    return currentPlatform;
-  }
+  if (miniapp) return miniapp;
 
-  // 2. Check browser
   if (typeof window !== 'undefined' && typeof document !== 'undefined') {
-    currentPlatform = createBrowserAdapter();
-    return currentPlatform;
+    return createBrowserAdapter();
   }
 
-  // 3. Fallback to noop
-  currentPlatform = createNoopAdapter();
-  return currentPlatform;
+  return createNoopAdapter();
 }
 
 /**
  * Manually set the platform adapter (for testing or custom environments).
+ * @internal
  */
 export function setPlatform(adapter: PlatformAdapter): void {
-  currentPlatform = adapter;
+  overridePlatform = adapter;
 }
 
 /**
- * Reset platform detection (mainly for testing).
+ * Reset platform override (mainly for testing).
+ * @internal
  */
 export function resetPlatform(): void {
-  currentPlatform = null;
+  overridePlatform = null;
 }

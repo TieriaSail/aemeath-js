@@ -4,6 +4,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   createMiniAppAdapter,
+  SYNTHETIC_STACK,
   type MiniAppAPI,
 } from '../../src/platform/miniapp';
 
@@ -168,7 +169,7 @@ describe('createMiniAppAdapter', () => {
       );
       const passedError = handler.mock.calls[0]![0].error;
       expect(passedError.message).toBe('Something went wrong');
-      expect((passedError as any)._syntheticStack).toBe(true);
+      expect((passedError as any)[SYNTHETIC_STACK]).toBe(true);
     });
 
     it('onGlobalError 取消应调用 offError', () => {
@@ -191,174 +192,6 @@ describe('createMiniAppAdapter', () => {
       const limitedApi = createMockAPI({ onError: undefined });
       const adapter = createMiniAppAdapter('baidu', limitedApi);
       const unregister = adapter.errorCapture.onGlobalError(vi.fn());
-      expect(typeof unregister).toBe('function');
-    });
-  });
-
-  // ==================== network.intercept ====================
-
-  describe('network.intercept', () => {
-    it('应拦截 request 调用', () => {
-      const adapter = createMiniAppAdapter('wechat', api);
-      const handler = vi.fn();
-      adapter.network.intercept(handler, {
-        shouldCapture: () => true,
-        captureRequestBody: true,
-        captureResponseBody: true,
-        maxResponseBodySize: 10240,
-      });
-
-      // api.request 应已被替换
-      expect(api.request).not.toBe(createMockAPI().request);
-    });
-
-    it('成功请求应产生日志', () => {
-      let wrappedRequest: Function | undefined;
-      const mockApi = createMockAPI({
-        request: vi.fn((opts) => {
-          wrappedRequest = opts.success;
-          return {};
-        }),
-      });
-      // 第一次 request 用于拿到 originalRequest
-      const adapter = createMiniAppAdapter('wechat', mockApi);
-      const handler = vi.fn();
-      adapter.network.intercept(handler, {
-        shouldCapture: () => true,
-        captureRequestBody: true,
-        captureResponseBody: true,
-        maxResponseBodySize: 10240,
-      });
-
-      // 调用被拦截的 request
-      mockApi.request!({
-        url: 'https://api.example.com/data',
-        method: 'POST',
-        data: { foo: 'bar' },
-      });
-
-      // 模拟成功回调
-      wrappedRequest?.({
-        statusCode: 200,
-        data: { code: 0, message: 'ok' },
-      });
-
-      expect(handler).toHaveBeenCalledWith(
-        expect.objectContaining({
-          type: 'request',
-          url: 'https://api.example.com/data',
-          method: 'POST',
-          status: 200,
-        }),
-      );
-    });
-
-    it('取消拦截应恢复 request', () => {
-      const originalRequest = vi.fn();
-      const mockApi = createMockAPI({ request: originalRequest });
-      const adapter = createMiniAppAdapter('wechat', mockApi);
-
-      // 拦截后 request 被替换
-      const unregister = adapter.network.intercept(vi.fn(), {
-        shouldCapture: () => true,
-        captureRequestBody: false,
-        captureResponseBody: false,
-        maxResponseBodySize: 0,
-      });
-      expect(mockApi.request).not.toBe(originalRequest);
-
-      // 取消后 request 应被恢复（原始函数的 bind 版本）
-      unregister();
-      // 恢复的是 originalRequest.bind(api)，直接验证恢复后可正常调用
-      mockApi.request!({ url: 'test' });
-      expect(originalRequest).toHaveBeenCalled();
-    });
-
-    it('成功请求应透传 complete 回调', () => {
-      let capturedOpts: Record<string, any> | undefined;
-      const mockApi = createMockAPI({
-        request: vi.fn((opts) => {
-          capturedOpts = opts;
-          return {};
-        }),
-      });
-      const adapter = createMiniAppAdapter('wechat', mockApi);
-      const handler = vi.fn();
-      adapter.network.intercept(handler, {
-        shouldCapture: () => true,
-        captureRequestBody: false,
-        captureResponseBody: false,
-        maxResponseBodySize: 0,
-      });
-
-      const completeCb = vi.fn();
-      mockApi.request!({
-        url: 'https://api.example.com/test',
-        complete: completeCb,
-      });
-
-      // Trigger the wrapped complete callback
-      capturedOpts?.complete?.({ errMsg: 'request:ok' });
-      expect(completeCb).toHaveBeenCalledWith({ errMsg: 'request:ok' });
-    });
-
-    it('失败请求应透传 complete 回调', () => {
-      let capturedOpts: Record<string, any> | undefined;
-      const mockApi = createMockAPI({
-        request: vi.fn((opts) => {
-          capturedOpts = opts;
-          return {};
-        }),
-      });
-      const adapter = createMiniAppAdapter('wechat', mockApi);
-      adapter.network.intercept(vi.fn(), {
-        shouldCapture: () => true,
-        captureRequestBody: false,
-        captureResponseBody: false,
-        maxResponseBodySize: 0,
-      });
-
-      const completeCb = vi.fn();
-      mockApi.request!({
-        url: 'https://api.example.com/fail',
-        complete: completeCb,
-      });
-
-      // Trigger fail then complete
-      capturedOpts?.fail?.({ errMsg: 'request:fail' });
-      capturedOpts?.complete?.({ errMsg: 'request:fail' });
-      expect(completeCb).toHaveBeenCalledWith({ errMsg: 'request:fail' });
-    });
-
-    it('无原始 complete 回调时不应抛出', () => {
-      let capturedOpts: Record<string, any> | undefined;
-      const mockApi = createMockAPI({
-        request: vi.fn((opts) => {
-          capturedOpts = opts;
-          return {};
-        }),
-      });
-      const adapter = createMiniAppAdapter('wechat', mockApi);
-      adapter.network.intercept(vi.fn(), {
-        shouldCapture: () => true,
-        captureRequestBody: false,
-        captureResponseBody: false,
-        maxResponseBodySize: 0,
-      });
-
-      mockApi.request!({ url: 'https://api.example.com/no-complete' });
-      expect(() => capturedOpts?.complete?.({ errMsg: 'request:ok' })).not.toThrow();
-    });
-
-    it('无 request API 时返回空函数', () => {
-      const limitedApi = createMockAPI({ request: undefined });
-      const adapter = createMiniAppAdapter('tiktok', limitedApi);
-      const unregister = adapter.network.intercept(vi.fn(), {
-        shouldCapture: () => true,
-        captureRequestBody: false,
-        captureResponseBody: false,
-        maxResponseBodySize: 0,
-      });
       expect(typeof unregister).toBe('function');
     });
   });

@@ -17,14 +17,11 @@ import { ErrorCapturePlugin } from '../plugins/ErrorCapturePlugin';
 import { UploadPlugin } from '../plugins/UploadPlugin';
 import { SafeGuardPlugin } from '../plugins/SafeGuardPlugin';
 import { detectPlatform } from '../platform/detect';
-import type { LogEntry } from '../types';
+import type { LogEntry, LogLevel, LogOptions } from '../types';
 
 // 全局单例
 let globalLogger: AemeathLogger | null = null;
 
-/**
- * 日志级别顺序（用于过滤）
- */
 const LOG_LEVEL_ORDER: Record<string, number> = {
   debug: 0,
   info: 1,
@@ -33,64 +30,45 @@ const LOG_LEVEL_ORDER: Record<string, number> = {
 };
 
 export interface BrowserLoggerOptions {
-  /**
-   * 上报函数
-   */
+  /** 上报函数 */
   upload?: (log: LogEntry) => void | Promise<void>;
-
-  /**
-   * 是否启用错误捕获
-   * @default true
-   */
+  /** 是否启用错误捕获 @default true */
   errorCapture?: boolean;
-
-  /**
-   * 是否启用安全保护
-   * @default true
-   */
+  /** 是否启用安全保护 @default true */
   safeGuard?: boolean;
-
-  /**
-   * 是否启用控制台输出
-   * @default true
-   */
+  /** 是否启用控制台输出 @default true */
   enableConsole?: boolean;
-
-  /**
-   * 最低日志级别（低于此级别的日志不会被记录和上报）
-   * @default 'info'
-   */
+  /** 最低日志级别 @default 'info' */
   level?: 'debug' | 'info' | 'warn' | 'error';
 }
-
-// ==================== 无操作函数 ====================
-
-const noop = (): void => {
-  /* 被级别过滤 */
-};
 
 /**
  * 初始化 Logger
  */
 function init(options: BrowserLoggerOptions = {}): AemeathLogger {
   if (globalLogger) {
-    console.warn('[AemeathJs] Already initialized');
     return globalLogger;
   }
 
   const logger = new AemeathLogger({
     enableConsole: options.enableConsole ?? true,
+    platform: detectPlatform(),
   });
-  logger.platform = detectPlatform();
 
-  // 日志级别过滤：低于 minLevel 的方法替换为 noop
   const minLevel = options.level ?? 'info';
   const minOrder = LOG_LEVEL_ORDER[minLevel] ?? 1;
 
-  if (minOrder > 0) logger.debug = noop;
-  if (minOrder > 1) logger.info = noop;
-  if (minOrder > 2) logger.warn = noop;
-  // error 永远不过滤
+  if (minOrder > 0) {
+    logger.use({
+      name: 'level-filter',
+      install() {},
+      beforeLog(level: LogLevel, _message: string, _options: LogOptions) {
+        const order = LOG_LEVEL_ORDER[level as string] ?? 0;
+        if (order < minOrder) return false;
+        return undefined;
+      },
+    });
+  }
 
   // 错误捕获
   if (options.errorCapture !== false) {
@@ -108,8 +86,12 @@ function init(options: BrowserLoggerOptions = {}): AemeathLogger {
     logger.use(
       new UploadPlugin({
         onUpload: async (log) => {
-          await uploadFn(log);
-          return { success: true };
+          try {
+            await uploadFn(log);
+            return { success: true };
+          } catch (err) {
+            return { success: false, shouldRetry: true, error: String(err) };
+          }
         },
       }),
     );
@@ -138,41 +120,43 @@ function getAemeath(): AemeathLogger {
   return globalLogger;
 }
 
-/**
- * 刷新早期错误
- */
 function flushEarlyErrors(logger: AemeathLogger): void {
-  if (typeof window === 'undefined') return;
+  const platform = logger.platform;
+  if (!platform.earlyCapture.hasEarlyErrors()) return;
 
-  const win = window as Window & {
-    __flushEarlyErrors__?: (callback: (errors: unknown[]) => void) => void;
-    __EARLY_ERRORS__?: unknown[];
-  };
-
-  if (typeof win.__flushEarlyErrors__ === 'function') {
-    win.__flushEarlyErrors__((errors) => {
-      errors.forEach((err) => {
-        const errorObj = err as Record<string, unknown>;
-        if (errorObj.type === 'error') {
-          logger.error(String(errorObj.message || 'Unknown error'), {
-            tags: { source: 'early-error' },
-            context: errorObj,
-          });
-        } else if (errorObj.type === 'unhandledrejection') {
-          logger.error('Unhandled Promise rejection', {
-            tags: { source: 'early-error' },
-            context: errorObj,
-          });
-        } else if (errorObj.type === 'resource') {
-          logger.warn('Resource loading failed', {
-            tags: { source: 'early-error' },
-            context: errorObj,
-          });
-        }
-      });
+  platform.earlyCapture.flush((errors) => {
+    errors.forEach((err) => {
+      const context: Record<string, unknown> = {
+        errorType: err.type,
+        message: err.message,
+        stack: err.stack,
+        filename: err.filename,
+        lineno: err.lineno,
+        colno: err.colno,
+        source: err.source,
+        timestamp: err.timestamp,
+        device: err.device,
+      };
+      if (err.type === 'error' || err.type === 'unhandledrejection') {
+        logger.error(err.message || 'Unknown error', {
+          tags: { source: 'early-error' },
+          context,
+        });
+      } else if (err.type === 'resource') {
+        logger.warn('Resource loading failed', {
+          tags: { source: 'early-error' },
+          context,
+        });
+      }
     });
+  });
+}
+
+function destroy(): void {
+  if (globalLogger) {
+    globalLogger.destroy();
+    globalLogger = null;
   }
 }
 
-// 导出 API（仅使用 named export，避免 IIFE 构建警告）
-export { init, getAemeath, AemeathLogger, ErrorCapturePlugin, UploadPlugin, SafeGuardPlugin };
+export { init, getAemeath, destroy, AemeathLogger, ErrorCapturePlugin, UploadPlugin, SafeGuardPlugin };

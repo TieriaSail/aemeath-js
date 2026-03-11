@@ -440,6 +440,8 @@ logger.info('MiniApp initialized');
 
 For Taro or uni-app, pass the framework API as the second argument (e.g. `createMiniAppAdapter('wechat', Taro)` or `createMiniAppAdapter('wechat', uni)`).
 
+> **Alipay MiniApp**: Alipay's storage API signatures differ from other vendors. `createMiniAppAdapter('alipay', my)` automatically wraps these differences — no manual handling needed.
+
 ---
 
 ## 📚 More Documentation

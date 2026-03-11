@@ -15,7 +15,7 @@ import { SafeGuardPlugin, type SafeGuardMode } from '../plugins/SafeGuardPlugin'
 import { NetworkPlugin, type NetworkLogType } from '../plugins/NetworkPlugin';
 import type { LogEntry } from '../types';
 import type { PlatformAdapter } from '../platform/types';
-import { detectPlatform, setPlatform } from '../platform/detect';
+import { detectPlatform } from '../platform/detect';
 
 /**
  * 全局 AemeathJs 实例
@@ -341,7 +341,6 @@ export interface AemeathInitOptions {
  */
 export function initAemeath(options: AemeathInitOptions = {}): AemeathLogger {
   if (globalAemeath) {
-    console.warn('[Aemeath] Already initialized, returning existing instance');
     return globalAemeath;
   }
 
@@ -351,19 +350,15 @@ export function initAemeath(options: AemeathInitOptions = {}): AemeathLogger {
     ...options.context,
   };
 
+  const platform = options.platform ?? detectPlatform();
+
   const logger = new AemeathLogger({
     enableConsole: options.enableConsole ?? true,
     context,
     environment: options.environment,
     release: options.release,
+    platform,
   });
-
-  // 设置平台适配器（供所有插件使用）
-  const platform = options.platform ?? detectPlatform();
-  if (options.platform) {
-    setPlatform(options.platform);
-  }
-  logger.platform = platform;
 
   // 1. 错误捕获（默认启用）
   if (options.errorCapture !== false) {
@@ -450,12 +445,7 @@ export function initAemeath(options: AemeathInitOptions = {}): AemeathLogger {
  */
 export function getAemeath(): AemeathLogger {
   if (!globalAemeath) {
-    console.warn(
-      '[Aemeath] Not initialized. Call initAemeath() first.\n' +
-        'Creating default instance with error capture only.',
-    );
-    globalAemeath = new AemeathLogger();
-    globalAemeath.platform = detectPlatform();
+    globalAemeath = new AemeathLogger({ platform: detectPlatform() });
     globalAemeath.use(new ErrorCapturePlugin());
   }
 

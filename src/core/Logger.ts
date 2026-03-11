@@ -18,6 +18,7 @@ import type {
   ContextValue,
 } from '../types';
 import type { PlatformAdapter } from '../platform/types';
+import { detectPlatform } from '../platform/detect';
 import { LogLevel as LogLevelEnum, ErrorCategory } from '../types';
 
 interface AemeathOptions {
@@ -28,6 +29,8 @@ interface AemeathOptions {
   release?: string;
   /** 是否启用调试模式（输出 AemeathJs 内部日志） */
   debug?: boolean;
+  /** 平台适配器（不传则自动检测） */
+  platform?: PlatformAdapter;
 }
 
 export class AemeathLogger implements AemeathInterface {
@@ -36,21 +39,23 @@ export class AemeathLogger implements AemeathInterface {
   private readonly logListeners: Set<LogListener> = new Set();
   private readonly pluginInstances: AemeathPlugin[] = [];
   private enableConsole: boolean;
+  private destroyed = false;
   private staticContext: LogContext = {};
   private readonly dynamicContext: Map<string, ContextUpdater> = new Map();
   private readonly environment?: string;
   private readonly release?: string;
   private readonly debugEnabled: boolean;
 
-  public platform?: PlatformAdapter;
+  public readonly platform: PlatformAdapter;
 
-  [key: string]: unknown;
+  public readonly extensions: Record<string, unknown> = {};
 
   constructor(options?: AemeathOptions) {
     this.enableConsole = options?.enableConsole ?? true;
     this.environment = options?.environment;
     this.release = options?.release;
     this.debugEnabled = options?.debug ?? false;
+    this.platform = options?.platform ?? detectPlatform();
     if (options?.context) {
       this.setContext(options.context);
     }
@@ -83,6 +88,8 @@ export class AemeathLogger implements AemeathInterface {
     message: string,
     options: LogOptions = {},
   ): void {
+    if (this.destroyed) return;
+
     // Phase 1: beforeLog 管道 — 遍历插件，允许拦截或修改参数
     let currentLevel = level;
     let currentMessage = message;
@@ -99,7 +106,10 @@ export class AemeathLogger implements AemeathInterface {
         if (result === false) {
           return;
         }
-        if (result && typeof result === 'object' && 'level' in result) {
+        if (
+          result && typeof result === 'object' &&
+          'level' in result && 'message' in result && 'options' in result
+        ) {
           currentLevel = result.level;
           currentMessage = result.message;
           currentOptions = result.options;
@@ -147,13 +157,14 @@ export class AemeathLogger implements AemeathInterface {
     }
 
     // Phase 5: 通知监听器（不受 level 过滤，始终触发）
-    this.logListeners.forEach((listener) => {
+    const listenerSnapshot = Array.from(this.logListeners);
+    for (const listener of listenerSnapshot) {
       try {
         listener(entry);
       } catch (err) {
         this.debugWarn('Listener error:', err);
       }
-    });
+    }
   }
 
   /**
@@ -211,7 +222,10 @@ export class AemeathLogger implements AemeathInterface {
    * 标准化错误对象为 ErrorInfo
    */
   private normalizeError(error: Error | ErrorInfo): ErrorInfo {
-    // 如果已经是 ErrorInfo 格式（有 type+value 且非原生 Error），直接返回
+    if (error == null || typeof error !== 'object') {
+      return { type: 'Error', value: String(error) };
+    }
+
     if (!(error instanceof Error) && 'type' in error && 'value' in error) {
       return error as ErrorInfo;
     }
@@ -228,19 +242,12 @@ export class AemeathLogger implements AemeathInterface {
       errorInfo.stack = err.stack;
     }
 
-    // 复制所有自定义属性
-    Object.keys(err).forEach((key) => {
-      if (!['message', 'name', 'stack'].includes(key)) {
-        errorInfo[key] = (err as any)[key];
+    const skip = new Set(['message', 'name', 'stack']);
+    for (const key of Object.getOwnPropertyNames(err)) {
+      if (!skip.has(key)) {
+        errorInfo[key] = (err as unknown as Record<string, unknown>)[key];
       }
-    });
-
-    // 复制不可枚举属性
-    Object.getOwnPropertyNames(err).forEach((key) => {
-      if (!['message', 'name', 'stack'].includes(key) && !(key in errorInfo)) {
-        errorInfo[key] = (err as any)[key];
-      }
-    });
+    }
 
     return errorInfo;
   }
@@ -291,7 +298,10 @@ export class AemeathLogger implements AemeathInterface {
       this.dynamicContext.forEach((updater, key) => {
         try {
           const result = updater(context, partialEntry);
-          if (result && typeof result === 'object') {
+          if (
+            result && typeof result === 'object' &&
+            typeof (result as any).then !== 'function'
+          ) {
             context = { ...context, ...result };
           }
         } catch (err) {
@@ -373,15 +383,16 @@ export class AemeathLogger implements AemeathInterface {
 
   public emit(event: string, ...args: unknown[]): void {
     const listeners = this.eventListeners.get(event);
-    if (!listeners) return;
+    if (!listeners || listeners.size === 0) return;
 
-    listeners.forEach((listener) => {
+    const snapshot = Array.from(listeners);
+    for (const listener of snapshot) {
       try {
         listener(...args);
       } catch (err) {
         this.debugWarn(`Error in event listener for "${event}":`, err);
       }
-    });
+    }
   }
 
   // ==================== 插件系统 ====================
@@ -492,12 +503,18 @@ export class AemeathLogger implements AemeathInterface {
   }
 
   public destroy(): void {
+    this.destroyed = true;
     const pluginNames = Array.from(this.plugins.keys());
     for (const name of pluginNames) {
-      this.uninstall(name);
+      try {
+        this.uninstall(name);
+      } catch (err) {
+        this.debugWarn(`Failed to uninstall plugin "${name}" during destroy:`, err);
+      }
     }
     this.logListeners.clear();
     this.eventListeners.clear();
+    this.plugins.clear();
     this.pluginInstances.length = 0;
     this.staticContext = {};
     this.dynamicContext.clear();

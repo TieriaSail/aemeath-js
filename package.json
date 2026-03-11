@@ -73,6 +73,31 @@
       "import": "./dist/platform/detect.js",
       "require": "./dist/platform/detect.cjs"
     },
+    "./instrumentation/types": {
+      "types": "./dist/instrumentation/types.d.ts",
+      "import": "./dist/instrumentation/types.js",
+      "require": "./dist/instrumentation/types.cjs"
+    },
+    "./instrumentation/helpers": {
+      "types": "./dist/instrumentation/helpers.d.ts",
+      "import": "./dist/instrumentation/helpers.js",
+      "require": "./dist/instrumentation/helpers.cjs"
+    },
+    "./instrumentation/fetch": {
+      "types": "./dist/instrumentation/fetch.d.ts",
+      "import": "./dist/instrumentation/fetch.js",
+      "require": "./dist/instrumentation/fetch.cjs"
+    },
+    "./instrumentation/xhr": {
+      "types": "./dist/instrumentation/xhr.d.ts",
+      "import": "./dist/instrumentation/xhr.js",
+      "require": "./dist/instrumentation/xhr.cjs"
+    },
+    "./instrumentation/miniapp-request": {
+      "types": "./dist/instrumentation/miniapp-request.d.ts",
+      "import": "./dist/instrumentation/miniapp-request.js",
+      "require": "./dist/instrumentation/miniapp-request.cjs"
+    },
     "./parser": {
       "types": "./dist/parser.d.ts",
       "import": "./dist/parser.js",

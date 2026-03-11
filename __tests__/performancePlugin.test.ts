@@ -100,9 +100,9 @@ describe('PerformancePlugin', () => {
 
     it('安装后应给 logger 添加 startMark/endMark/measure', () => {
       logger.use(new PerformancePlugin());
-      expect((logger as any).startMark).toBeTypeOf('function');
-      expect((logger as any).endMark).toBeTypeOf('function');
-      expect((logger as any).measure).toBeTypeOf('function');
+      expect(logger.extensions.startMark).toBeTypeOf('function');
+      expect(logger.extensions.endMark).toBeTypeOf('function');
+      expect(logger.extensions.measure).toBeTypeOf('function');
     });
 
     it('卸载后应清理 API', () => {
@@ -110,9 +110,9 @@ describe('PerformancePlugin', () => {
       logger.uninstall('performance');
 
       expect(logger.hasPlugin('performance')).toBe(false);
-      expect((logger as any).startMark).toBeUndefined();
-      expect((logger as any).endMark).toBeUndefined();
-      expect((logger as any).measure).toBeUndefined();
+      expect(logger.extensions.startMark).toBeUndefined();
+      expect(logger.extensions.endMark).toBeUndefined();
+      expect(logger.extensions.measure).toBeUndefined();
       expect(disconnectCalls).toBeGreaterThan(0);
     });
   });
@@ -129,8 +129,8 @@ describe('PerformancePlugin', () => {
       expect(registeredCallbacks.size).toBe(0);
 
       // 但 mark API 仍可用
-      expect((logger as any).startMark).toBeTypeOf('function');
-      expect((logger as any).endMark).toBeTypeOf('function');
+      expect(logger.extensions.startMark).toBeTypeOf('function');
+      expect(logger.extensions.endMark).toBeTypeOf('function');
     });
 
     it('sampleRate=1 时应启动 observer', () => {

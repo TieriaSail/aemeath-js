@@ -148,15 +148,16 @@ describe('EarlyErrorCapturePlugin', () => {
       expect(logListener).not.toHaveBeenCalled();
     });
 
-    it('没有 __flushEarlyErrors__ 时应发出警告', () => {
+    it('没有 __flushEarlyErrors__ 时应静默跳过', () => {
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const logListener = vi.fn();
+      logger.on('log', logListener);
 
       const plugin = new EarlyErrorCapturePlugin();
       logger.use(plugin);
 
-      expect(warnSpy).toHaveBeenCalledWith(
-        expect.stringContaining('Early error capture script not found'),
-      );
+      expect(warnSpy).not.toHaveBeenCalled();
+      expect(logListener).not.toHaveBeenCalled();
 
       warnSpy.mockRestore();
     });

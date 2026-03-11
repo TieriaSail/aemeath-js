@@ -149,9 +149,12 @@ export function createAemeathPlugin(options: VueAemeathPluginOptions = {}) {
         // 尝试获取组件名
         const componentName = getComponentName(instance as VueComponentInstance);
 
-        // 增强错误信息
-        (error as Error & { vueInfo?: string; componentName?: string }).vueInfo = info;
-        (error as Error & { componentName?: string }).componentName = componentName;
+        try {
+          (error as Error & { vueInfo?: string; componentName?: string }).vueInfo = info;
+          (error as Error & { componentName?: string }).componentName = componentName;
+        } catch {
+          // error may be frozen or non-extensible
+        }
 
         logger.error('Vue component error', {
           error,
@@ -292,7 +295,7 @@ export function useAemeath(inject: InjectFn): AemeathLogger {
 export function useErrorCapture(inject: InjectFn) {
   const logger = useAemeath(inject);
 
-  const captureError = (error: Error, extra?: Record<string, unknown>) => {
+  const captureError = (error: Error, extra?: Record<string, string | number | boolean>) => {
     logger.error(error.message, {
       error,
       tags: {
@@ -306,7 +309,7 @@ export function useErrorCapture(inject: InjectFn) {
   const captureMessage = (
     message: string,
     level: 'info' | 'warn' | 'error' = 'info',
-    extra?: Record<string, unknown>,
+    extra?: Record<string, string | number | boolean>,
   ) => {
     logger[level](message, {
       tags: {

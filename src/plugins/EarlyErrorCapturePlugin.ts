@@ -7,29 +7,23 @@
 
 import type { AemeathInterface, AemeathPlugin } from '../types';
 import type { PlatformAdapter } from '../platform/types';
-import { detectPlatform } from '../platform/detect';
 import { RouteMatcher, type RouteMatchConfig } from '../utils/routeMatcher';
 
-// 重新导出 RouteMatchConfig 以保持向后兼容
-export type { RouteMatchConfig } from '../utils/routeMatcher';
-
-export interface EarlyError {
-  type: 'error' | 'resource' | 'unhandledrejection' | 'compatibility';
-  message: string;
-  stack: string | null;
+interface EarlyErrorExtended extends Error {
+  type?: string;
   filename?: string;
   lineno?: number;
   colno?: number;
   source?: string;
-  timestamp: number;
-  device: {
-    ua: string;
-    lang: string;
-    screen: string;
-    url: string;
-    time: number;
-  };
+  earlyError?: boolean;
+  captureTimestamp?: number;
+  device?: unknown;
 }
+
+// 重新导出 RouteMatchConfig 以保持向后兼容
+export type { RouteMatchConfig } from '../utils/routeMatcher';
+
+export type { EarlyError } from '../platform/types';
 
 export interface EarlyErrorCaptureOptions {
   enabled?: boolean;
@@ -48,7 +42,7 @@ export interface EarlyErrorCaptureOptions {
 
 export class EarlyErrorCapturePlugin implements AemeathPlugin {
   public name = 'EarlyErrorCapture';
-  public version = '1.1.2';
+  public version = '2.0.0';
   public description = 'Capture errors before React mounts';
 
   private options: Omit<Required<EarlyErrorCaptureOptions>, 'routeMatch'>;
@@ -79,7 +73,7 @@ export class EarlyErrorCapturePlugin implements AemeathPlugin {
     }
 
     this.logger = logger;
-    this.platform = logger.platform ?? detectPlatform();
+    this.platform = logger.platform;
     this.flushEarlyErrors();
   }
 
@@ -90,19 +84,11 @@ export class EarlyErrorCapturePlugin implements AemeathPlugin {
   private flushEarlyErrors(): void {
     // 🎯 检查路由匹配（使用共享的路由匹配器）
     if (!this.routeMatcher.shouldCapture(this.platform.getCurrentPath())) {
-      console.debug(
-        '[EarlyErrorCapture] 当前路由不在监控范围内，跳过早期错误上报:',
-        this.platform.getCurrentPath(),
-      );
-      // 清空早期错误，避免后续路由切换时重复上报
       this.platform.earlyCapture.flush(() => {});
       return;
     }
 
     if (!this.platform.earlyCapture.hasEarlyErrors()) {
-      console.warn(
-        '[EarlyErrorCapture] Early error capture script not found. Make sure to use the build plugin.',
-      );
       return;
     }
 
@@ -111,19 +97,17 @@ export class EarlyErrorCapturePlugin implements AemeathPlugin {
         return;
       }
 
-      console.debug(`[EarlyErrorCapture] Flushed ${errors.length} early errors`);
-
       errors.forEach((earlyError) => {
-        const err = new Error(earlyError.message || 'Early error');
-        (err as any).type = earlyError.type;
-        (err as any).stack = earlyError.stack;
-        (err as any).filename = earlyError.filename;
-        (err as any).lineno = earlyError.lineno;
-        (err as any).colno = earlyError.colno;
-        (err as any).source = earlyError.source;
-        (err as any).earlyError = true;
-        (err as any).captureTimestamp = earlyError.timestamp;
-        (err as any).device = earlyError.device;
+        const err = new Error(earlyError.message || 'Early error') as EarlyErrorExtended;
+        err.type = earlyError.type;
+        err.stack = earlyError.stack ?? undefined;
+        err.filename = earlyError.filename;
+        err.lineno = earlyError.lineno;
+        err.colno = earlyError.colno;
+        err.source = earlyError.source;
+        err.earlyError = true;
+        err.captureTimestamp = earlyError.timestamp;
+        err.device = earlyError.device;
 
         this.logger!.error(`Early ${earlyError.type} error`, { error: err });
       });
@@ -221,7 +205,7 @@ export function generateEarlyErrorScript(
     } else if (typeof reason === 'string') {
       message = reason;
     } else if (reason) {
-      message = JSON.stringify(reason);
+      try { message = JSON.stringify(reason); } catch (e) { message = String(reason); }
     }
     
     addError({

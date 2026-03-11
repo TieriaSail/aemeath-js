@@ -26,15 +26,8 @@ describe('detectPlatform', () => {
     expect(adapter.type).toBe('unknown');
   });
 
-  it('连续调用应返回同一实例（缓存）', () => {
+  it('连续调用应返回新实例（无缓存）', () => {
     const a = detectPlatform();
-    const b = detectPlatform();
-    expect(a).toBe(b);
-  });
-
-  it('resetPlatform 后应重新检测', () => {
-    const a = detectPlatform();
-    resetPlatform();
     const b = detectPlatform();
     expect(a).not.toBe(b);
     expect(a.type).toBe(b.type);
@@ -83,7 +76,7 @@ describe('detectPlatform', () => {
   it('支付宝小程序全局变量存在时应检测为 miniapp', () => {
     vi.stubGlobal('my', {
       getSystemInfoSync: vi.fn(),
-      getStorageSync: vi.fn().mockReturnValue(''),
+      getStorageSync: vi.fn().mockReturnValue({ data: '' }),
       setStorageSync: vi.fn(),
       removeStorageSync: vi.fn(),
     });
@@ -122,20 +115,10 @@ describe('detectPlatform', () => {
     expect(adapter.vendor).toBe('baidu');
   });
 
-  it('detectPlatform(true) 应跳过缓存重新检测', () => {
-    const a = detectPlatform();
-    // fresh=true 应返回新实例
-    const b = detectPlatform(true);
-    expect(a).not.toBe(b);
-    expect(b.type).toBe('unknown');
-  });
-
-  it('detectPlatform(true) 环境变更后应反映新平台', () => {
-    // 首次检测为 noop
+  it('环境变更后应自动反映新平台', () => {
     const first = detectPlatform();
     expect(first.type).toBe('unknown');
 
-    // 注入微信全局变量
     vi.stubGlobal('wx', {
       getSystemInfoSync: vi.fn(),
       getStorageSync: vi.fn().mockReturnValue(''),
@@ -143,17 +126,12 @@ describe('detectPlatform', () => {
       removeStorageSync: vi.fn(),
     });
 
-    // fresh=false 返回缓存（仍是 noop）
-    const cached = detectPlatform(false);
-    expect(cached.type).toBe('unknown');
-
-    // fresh=true 重新检测（应发现 wx）
-    const fresh = detectPlatform(true);
-    expect(fresh.type).toBe('miniapp');
-    expect(fresh.vendor).toBe('wechat');
+    const next = detectPlatform();
+    expect(next.type).toBe('miniapp');
+    expect(next.vendor).toBe('wechat');
   });
 
-  describe('支付宝 wrapAlipayAPI 存储包装', () => {
+  describe('支付宝 wrapAlipayAPI 存储包装（自动）', () => {
     it('getStorageSync 应使用 {key} 对象参数并提取 data', () => {
       const myMock = {
         getSystemInfoSync: vi.fn(),
@@ -188,10 +166,55 @@ describe('detectPlatform', () => {
       expect(result).toBeNull();
     });
 
+    it('getStorageSync 返回 data 为 number 时应转为字符串', () => {
+      const myMock = {
+        getSystemInfoSync: vi.fn(),
+        getStorageSync: vi.fn().mockReturnValue({ data: 123 }),
+        setStorageSync: vi.fn(),
+        removeStorageSync: vi.fn(),
+      };
+      vi.stubGlobal('my', myMock);
+      resetPlatform();
+
+      const adapter = detectPlatform();
+      const result = adapter.storage.getItem('num-key');
+      expect(result).toBe('123');
+    });
+
+    it('getStorageSync 返回 data 为 null 时应返回 null', () => {
+      const myMock = {
+        getSystemInfoSync: vi.fn(),
+        getStorageSync: vi.fn().mockReturnValue({ data: null }),
+        setStorageSync: vi.fn(),
+        removeStorageSync: vi.fn(),
+      };
+      vi.stubGlobal('my', myMock);
+      resetPlatform();
+
+      const adapter = detectPlatform();
+      const result = adapter.storage.getItem('null-key');
+      expect(result).toBeNull();
+    });
+
+    it('getStorageSync 返回 null 时应返回 null', () => {
+      const myMock = {
+        getSystemInfoSync: vi.fn(),
+        getStorageSync: vi.fn().mockReturnValue(null),
+        setStorageSync: vi.fn(),
+        removeStorageSync: vi.fn(),
+      };
+      vi.stubGlobal('my', myMock);
+      resetPlatform();
+
+      const adapter = detectPlatform();
+      const result = adapter.storage.getItem('null-res-key');
+      expect(result).toBeNull();
+    });
+
     it('setStorageSync 应使用 {key, data} 对象参数', () => {
       const myMock = {
         getSystemInfoSync: vi.fn(),
-        getStorageSync: vi.fn().mockReturnValue(''),
+        getStorageSync: vi.fn().mockReturnValue({ data: '' }),
         setStorageSync: vi.fn(),
         removeStorageSync: vi.fn(),
       };
@@ -209,7 +232,7 @@ describe('detectPlatform', () => {
     it('removeStorageSync 应使用 {key} 对象参数', () => {
       const myMock = {
         getSystemInfoSync: vi.fn(),
-        getStorageSync: vi.fn().mockReturnValue(''),
+        getStorageSync: vi.fn().mockReturnValue({ data: '' }),
         setStorageSync: vi.fn(),
         removeStorageSync: vi.fn(),
       };

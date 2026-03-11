@@ -275,14 +275,14 @@ export interface AemeathInterface {
   getContext(): Record<string, unknown>;
   clearContext(keys?: string[]): void;
 
-  // 平台适配器
-  platform?: import('./platform/types').PlatformAdapter;
+  // 平台适配器（构造时自动注入，一定存在）
+  readonly platform: import('./platform/types').PlatformAdapter;
+
+  // 插件扩展属性容器
+  readonly extensions: Record<string, unknown>;
 
   // 生命周期
   destroy(): void;
-
-  // 插件可能添加的动态属性
-  [key: string]: unknown;
 }
 
 /**

@@ -74,15 +74,33 @@ export type {
 // ==================== 平台适配器 ====================
 export { createBrowserAdapter } from './platform/browser';
 export { createMiniAppAdapter } from './platform/miniapp';
+export type { MiniAppAPI } from './platform/miniapp';
 export { createNoopAdapter } from './platform/noop';
 export { detectPlatform, setPlatform, resetPlatform } from './platform/detect';
 export type {
   PlatformAdapter,
   PlatformType,
   MiniAppVendor,
-  NetworkRequestLog,
-  NetworkInterceptOptions,
+  GlobalErrorInfo,
+  UnhandledRejectionInfo,
 } from './platform/types';
+
+// ==================== Instrumentation 层 ====================
+export type {
+  NetworkEvent,
+  InstrumentOptions,
+  NetworkHandler,
+  Unsubscribe as NetworkUnsubscribe,
+} from './instrumentation/types';
+export { instrumentFetch } from './instrumentation/fetch';
+export { instrumentXHR } from './instrumentation/xhr';
+export { instrumentMiniAppRequest } from './instrumentation/miniapp-request';
+export type { MiniAppRequestAPI } from './instrumentation/miniapp-request';
+/**
+ * Symbol marker for synthetic error stacks created by platform adapters.
+ * Exported for custom adapter authors who need to mark errors consistently.
+ */
+export { SYNTHETIC_STACK } from './platform/constants';
 
 // ==================== 构建插件（按需导入）====================
 // 使用方式：

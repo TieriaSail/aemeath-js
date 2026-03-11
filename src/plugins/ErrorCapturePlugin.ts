@@ -4,12 +4,23 @@
 
 import type { AemeathPlugin, AemeathInterface } from '../types';
 import type { PlatformAdapter } from '../platform/types';
-import { detectPlatform } from '../platform/detect';
+import { SYNTHETIC_STACK } from '../platform/constants';
 import { ErrorDeduplicator } from '../utils/errorDeduplicator';
 import {
   RouteMatcher,
   type RouteMatchConfig,
 } from '../utils/routeMatcher';
+
+interface ErrorWithExtras extends Error {
+  source?: string;
+  lineno?: number;
+  colno?: number;
+  type?: string;
+  tagName?: string;
+  src?: string;
+  outerHTML?: string;
+  [SYNTHETIC_STACK]?: boolean;
+}
 
 // 重新导出 RouteMatchConfig 以保持向后兼容
 export type { RouteMatchConfig } from '../utils/routeMatcher';
@@ -35,7 +46,7 @@ export interface ErrorCapturePluginOptions {
 
 export class ErrorCapturePlugin implements AemeathPlugin {
   readonly name = 'error-capture';
-  readonly version = '1.1.2';
+  readonly version = '2.0.0';
   readonly description = '自动错误捕获';
 
   private readonly config: {
@@ -95,7 +106,7 @@ export class ErrorCapturePlugin implements AemeathPlugin {
 
   install(logger: AemeathInterface): void {
     this.logger = logger;
-    this.platform = logger.platform ?? detectPlatform();
+    this.platform = logger.platform;
 
     try {
       this.captureGlobalError();
@@ -120,7 +131,11 @@ export class ErrorCapturePlugin implements AemeathPlugin {
     }
 
     if (this.config.captureConsoleError) {
-      this.captureConsoleError();
+      try {
+        this.captureConsoleError();
+      } catch (e) {
+        this.warn('Failed to set up console error capture:', e);
+      }
     }
 
     this.log('Installed');
@@ -144,6 +159,7 @@ export class ErrorCapturePlugin implements AemeathPlugin {
 
     if (this.originalConsoleError) {
       console.error = this.originalConsoleError;
+      this.originalConsoleError = null;
     }
 
     this.deduplicator.stop();
@@ -154,18 +170,25 @@ export class ErrorCapturePlugin implements AemeathPlugin {
   private captureGlobalError(): void {
     this.unregisterGlobalError = this.platform.errorCapture.onGlobalError(
       (info) => {
-        const err = info.error || new Error(String(info.message));
+        const msgStr = typeof info.message === 'string'
+          ? info.message
+          : (typeof Event !== 'undefined' && info.message instanceof Event)
+            ? (info.message.type || 'Unknown error event')
+            : 'Unknown error event';
+        const err = info.error || new Error(msgStr);
 
         if (this.shouldCaptureError(err)) {
-          (err as any).source = info.source;
-          (err as any).lineno = info.lineno;
-          (err as any).colno = info.colno;
-          (err as any).type = 'global';
+          try {
+            const ext = err as ErrorWithExtras;
+            ext.source = info.source;
+            ext.lineno = info.lineno;
+            ext.colno = info.colno;
+            ext.type = 'global';
+          } catch {
+            // err may be frozen or non-extensible
+          }
 
-          // If the Error was synthetically created (e.g. miniapp App.onError
-          // only provides a message string), its stack points to adapter
-          // internals and has no diagnostic value — exclude it.
-          const hasMeaningfulStack = err.stack && !(err as any)._syntheticStack;
+          const hasMeaningfulStack = err.stack && !(err as ErrorWithExtras)[SYNTHETIC_STACK];
 
           const errorInfo = {
             message: err.message,
@@ -205,7 +228,7 @@ export class ErrorCapturePlugin implements AemeathPlugin {
         }
 
         if (this.shouldCaptureError(error)) {
-          (error as any).type = 'unhandledrejection';
+          (error as ErrorWithExtras).type = 'unhandledrejection';
 
           const errorInfo = {
             message: error.message,
@@ -222,10 +245,11 @@ export class ErrorCapturePlugin implements AemeathPlugin {
   }
 
   private captureResourceError(): void {
-    const onResourceError = this.platform.errorCapture.onResourceError;
+    const { onResourceError } = this.platform.errorCapture;
     if (!onResourceError) return;
 
-    this.unregisterResourceError = onResourceError((event: Event) => {
+    const boundOnResourceError = onResourceError.bind(this.platform.errorCapture);
+    this.unregisterResourceError = boundOnResourceError((event: Event) => {
       if (
         typeof HTMLElement !== 'undefined' &&
         event.target !== window &&
@@ -249,11 +273,11 @@ export class ErrorCapturePlugin implements AemeathPlugin {
           return;
         }
 
-        const error = new Error(`Failed to load ${tagName}: ${src}`);
-        (error as any).type = 'resource';
-        (error as any).tagName = tagName;
-        (error as any).src = src;
-        (error as any).outerHTML = target.outerHTML?.substring(0, 200);
+        const error = new Error(`Failed to load ${tagName}: ${src}`) as ErrorWithExtras;
+        error.type = 'resource';
+        error.tagName = tagName;
+        error.src = src;
+        error.outerHTML = target.outerHTML?.substring(0, 200);
 
         this.logger?.error('Resource load error', { error });
       }

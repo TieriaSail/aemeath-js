@@ -9,8 +9,6 @@ export type {
   PlatformAdapter,
   GlobalErrorInfo,
   UnhandledRejectionInfo,
-  NetworkRequestLog,
-  NetworkInterceptOptions,
   EarlyError,
 } from './types';
 

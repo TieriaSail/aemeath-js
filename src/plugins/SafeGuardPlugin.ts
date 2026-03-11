@@ -21,9 +21,9 @@ import type {
   BeforeLogResult,
   LogLevel,
   LogOptions,
+  ErrorInfo,
 } from '../types';
 import type { PlatformAdapter } from '../platform/types';
-import { detectPlatform } from '../platform/detect';
 
 // ==================== 类型定义 ====================
 
@@ -95,7 +95,7 @@ export interface SafeGuardHealth {
 
 export class SafeGuardPlugin implements AemeathPlugin {
   readonly name = 'safe-guard';
-  readonly version = '1.1.2';
+  readonly version = '2.0.0';
   readonly description = '智能日志保护';
 
   private readonly config: SafeGuardConfig;
@@ -139,15 +139,18 @@ export class SafeGuardPlugin implements AemeathPlugin {
   private platform!: PlatformAdapter;
 
   constructor(options: SafeGuardPluginOptions = {}) {
+    const clamp = (v: number | undefined, fallback: number, min: number) =>
+      v != null && Number.isFinite(v) && v >= min ? v : fallback;
+
     this.config = {
       mode: options.mode ?? 'standard',
-      rateLimit: options.rateLimit ?? 100,
-      maxErrors: options.maxErrors ?? 100,
-      cooldownPeriod: options.cooldownPeriod ?? 30000,
-      mergeWindow: options.mergeWindow ?? 2000,
+      rateLimit: clamp(options.rateLimit, 100, 1),
+      maxErrors: clamp(options.maxErrors, 100, 1),
+      cooldownPeriod: clamp(options.cooldownPeriod, 30000, 1000),
+      mergeWindow: clamp(options.mergeWindow, 2000, 0),
       enableRecursionGuard: options.enableRecursionGuard ?? true,
-      parkingLotSize: options.parkingLotSize ?? 200,
-      parkingLotTTL: options.parkingLotTTL ?? 5 * 60 * 1000,
+      parkingLotSize: clamp(options.parkingLotSize, 200, 1),
+      parkingLotTTL: clamp(options.parkingLotTTL, 5 * 60 * 1000, 1000),
       storageKey: options.storageKey ?? '__aemeath_safeguard_parking__',
     };
   }
@@ -156,7 +159,7 @@ export class SafeGuardPlugin implements AemeathPlugin {
 
   install(logger: AemeathInterface): void {
     this.logger = logger;
-    this.platform = logger.platform ?? detectPlatform();
+    this.platform = logger.platform;
 
     this.boundHandleError = this.handleError.bind(this);
     logger.on('error', this.boundHandleError);
@@ -168,16 +171,21 @@ export class SafeGuardPlugin implements AemeathPlugin {
     if (this.config.mode === 'strict') {
       try {
         this.restoreFromStorage();
+      } catch {
+        // storage unavailable on this platform
+      }
+
+      try {
         this.boundBeforeUnload = this.persistToStorage.bind(this);
         this.unregisterBeforeExit = this.platform.onBeforeExit(this.boundBeforeUnload);
       } catch {
-        // storage or lifecycle API unavailable on this platform
+        this.boundBeforeUnload = null;
       }
     }
 
-    (logger as any).getHealth = this.getHealth.bind(this);
-    (logger as any).pause = this.manualPause.bind(this);
-    (logger as any).resume = this.manualResume.bind(this);
+    logger.extensions.getHealth = this.getHealth.bind(this);
+    logger.extensions.pause = this.manualPause.bind(this);
+    logger.extensions.resume = this.manualResume.bind(this);
   }
 
   uninstall(logger: AemeathInterface): void {
@@ -211,9 +219,9 @@ export class SafeGuardPlugin implements AemeathPlugin {
     }
     this.boundBeforeUnload = null;
 
-    delete (logger as any).getHealth;
-    delete (logger as any).pause;
-    delete (logger as any).resume;
+    delete logger.extensions.getHealth;
+    delete logger.extensions.pause;
+    delete logger.extensions.resume;
 
     this.logger = null;
   }
@@ -380,7 +388,8 @@ export class SafeGuardPlugin implements AemeathPlugin {
           if (firstFrame) parts.push(firstFrame);
         }
       } else {
-        parts.push((err as any).type ?? '', (err as any).value ?? '');
+        const info = err as ErrorInfo;
+        parts.push(info.type ?? '', info.value ?? '');
       }
     }
 
@@ -567,12 +576,24 @@ export class SafeGuardPlugin implements AemeathPlugin {
       const raw = this.platform.storage.getItem(this.config.storageKey);
       if (!raw) return;
 
-      const data = JSON.parse(raw) as ParkedLog[];
+      const data = JSON.parse(raw, (key, value) => {
+        if (key === '__proto__' || key === 'constructor' || key === 'prototype') return undefined;
+        return value;
+      });
+      if (!Array.isArray(data)) return;
       const now = Date.now();
       const ttl = this.config.parkingLotTTL;
 
       this.parkingLot = data
-        .filter((item) => now - item.timestamp < ttl)
+        .filter(
+          (item: unknown): item is ParkedLog =>
+            item != null &&
+            typeof item === 'object' &&
+            'level' in item &&
+            'message' in item &&
+            'timestamp' in item &&
+            now - (item as ParkedLog).timestamp < ttl,
+        )
         .slice(0, this.config.parkingLotSize);
 
       this.removeStorage();
@@ -640,11 +661,11 @@ export class SafeGuardPlugin implements AemeathPlugin {
   }
 }
 
-// 扩展 Logger 接口（用于 TypeScript 类型提示）
-declare module '../types' {
-  interface AemeathInterface {
-    getHealth?(): SafeGuardHealth;
-    pause?(): void;
-    resume?(): void;
-  }
-}
+/**
+ * SafeGuard exposes getHealth/pause/resume via `logger.extensions`.
+ *
+ * Usage:
+ *   const health = (logger.extensions.getHealth as () => SafeGuardHealth)?.();
+ *   (logger.extensions.pause as () => void)?.();
+ *   (logger.extensions.resume as () => void)?.();
+ */

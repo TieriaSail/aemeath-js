@@ -441,6 +441,8 @@ logger.info('小程序已初始化');
 
 若使用 Taro 或 uni-app，将框架 API 作为第二个参数传入（如 `createMiniAppAdapter('wechat', Taro)` 或 `createMiniAppAdapter('wechat', uni)`）。
 
+> **支付宝小程序**：支付宝的存储 API 签名与其他厂商不同。`createMiniAppAdapter('alipay', my)` 会自动包装这些差异 — 无需手动处理。
+
 ---
 
 ## 📚 更多文档

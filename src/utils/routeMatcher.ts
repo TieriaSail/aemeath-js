@@ -93,7 +93,11 @@ export class RouteMatcher {
    * 获取当前路由路径
    */
   private getCurrentPath(): string {
-    return typeof window !== 'undefined' ? window.location.pathname : '';
+    try {
+      return typeof window !== 'undefined' ? window.location.pathname : '';
+    } catch {
+      return '';
+    }
   }
 
   /**

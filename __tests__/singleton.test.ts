@@ -59,7 +59,7 @@ describe('Singleton (initAemeath / getAemeath)', () => {
       mod.resetAemeath();
     });
 
-    it('重复调用应返回同一实例并警告', async () => {
+    it('重复调用应返回同一实例（静默）', async () => {
       const mod = await import('../src/singleton/index');
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
@@ -67,9 +67,7 @@ describe('Singleton (initAemeath / getAemeath)', () => {
       const logger2 = mod.initAemeath();
 
       expect(logger1).toBe(logger2);
-      expect(warnSpy).toHaveBeenCalledWith(
-        expect.stringContaining('Already initialized'),
-      );
+      expect(warnSpy).not.toHaveBeenCalled();
 
       warnSpy.mockRestore();
       mod.resetAemeath();
@@ -145,15 +143,13 @@ describe('Singleton (initAemeath / getAemeath)', () => {
   // ==================== getAemeath ====================
 
   describe('getAemeath', () => {
-    it('未初始化时应返回默认实例并警告', async () => {
+    it('未初始化时应返回默认实例（静默创建）', async () => {
       const mod = await import('../src/singleton/index');
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
       const logger = mod.getAemeath();
       expect(logger).toBeDefined();
-      expect(warnSpy).toHaveBeenCalledWith(
-        expect.stringContaining('Not initialized'),
-      );
+      expect(warnSpy).not.toHaveBeenCalled();
 
       warnSpy.mockRestore();
       mod.resetAemeath();
