@@ -17,6 +17,10 @@
 
 ---
 
+> **v2.0 Beta Available** — Multi-platform support (browsers + WeChat / Alipay / Douyin / Baidu mini-programs + Taro / uni-app). Install with `npm install aemeath-js@beta`. [See what's new →](https://github.com/TieriaSail/aemeath-js/tree/dev)
+
+---
+
 ## What it does
 
 Error tracking, log management, and performance monitoring — all handled in the browser. Your backend only needs to receive and store the data.

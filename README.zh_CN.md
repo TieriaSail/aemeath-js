@@ -17,6 +17,10 @@
 
 ---
 
+> **v2.0 Beta 已发布** — 新增多平台支持（浏览器 + 微信 / 支付宝 / 抖音 / 百度小程序 + Taro / uni-app）。安装：`npm install aemeath-js@beta`。[查看更新内容 →](https://github.com/TieriaSail/aemeath-js/tree/dev)
+
+---
+
 ## 它做什么
 
 错误追踪、日志管理、性能监控 —— 全部在浏览器端完成。后端只需接收和存储数据。
