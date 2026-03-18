@@ -280,6 +280,25 @@ describe('UploadPlugin', () => {
     });
   });
 
+  // ==================== track 优先级 ====================
+
+  describe('track 优先级', () => {
+    it('track 日志应与 info 拥有相同的默认优先级', () => {
+      logger.use(plugin);
+
+      const logListener = vi.fn();
+      logger.on('log', logListener);
+
+      logger.info('info msg');
+      logger.track('track msg');
+
+      const infoEntry = logListener.mock.calls[0][0];
+      const trackEntry = logListener.mock.calls[1][0];
+      expect(infoEntry.level).toBe('info');
+      expect(trackEntry.level).toBe('track');
+    });
+  });
+
   // ==================== flush ====================
 
   describe('flush', () => {

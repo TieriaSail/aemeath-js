@@ -204,6 +204,76 @@ describe('Singleton (initAemeath / getAemeath)', () => {
     });
   });
 
+  // ==================== errorCapture 联合类型 ====================
+
+  describe('errorCapture 联合类型', () => {
+    it('errorCapture: false 应禁用错误捕获', async () => {
+      const mod = await import('../src/singleton/index');
+      const logger = mod.initAemeath({ errorCapture: false });
+      expect(logger.hasPlugin('error-capture')).toBe(false);
+      mod.resetAemeath();
+    });
+
+    it('errorCapture: true 应启用错误捕获', async () => {
+      const mod = await import('../src/singleton/index');
+      const logger = mod.initAemeath({ errorCapture: true });
+      expect(logger.hasPlugin('error-capture')).toBe(true);
+      mod.resetAemeath();
+    });
+
+    it('errorCapture: { enabled: false } 应禁用错误捕获', async () => {
+      const mod = await import('../src/singleton/index');
+      const logger = mod.initAemeath({ errorCapture: { enabled: false } });
+      expect(logger.hasPlugin('error-capture')).toBe(false);
+      mod.resetAemeath();
+    });
+
+    it('errorCapture: { routeMatch: {...} } 应启用错误捕获', async () => {
+      const mod = await import('../src/singleton/index');
+      const logger = mod.initAemeath({
+        errorCapture: {
+          routeMatch: { excludeRoutes: ['/debug'] },
+        },
+      });
+      expect(logger.hasPlugin('error-capture')).toBe(true);
+      mod.resetAemeath();
+    });
+
+    it('errorCapture: { enabled: true, routeMatch: {...} } 应启用错误捕获', async () => {
+      const mod = await import('../src/singleton/index');
+      const logger = mod.initAemeath({
+        errorCapture: {
+          enabled: true,
+          routeMatch: { includeRoutes: ['/app'] },
+        },
+      });
+      expect(logger.hasPlugin('error-capture')).toBe(true);
+      mod.resetAemeath();
+    });
+
+    it('默认（undefined）应启用错误捕获', async () => {
+      const mod = await import('../src/singleton/index');
+      const logger = mod.initAemeath({});
+      expect(logger.hasPlugin('error-capture')).toBe(true);
+      mod.resetAemeath();
+    });
+  });
+
+  // ==================== 全局 routeMatch ====================
+
+  describe('全局 routeMatch', () => {
+    it('应传递 routeMatch 到 logger', async () => {
+      const mod = await import('../src/singleton/index');
+      const logger = mod.initAemeath({
+        routeMatch: { excludeRoutes: ['/debug'] },
+      });
+      expect(logger.routeMatcher).toBeDefined();
+      expect(logger.routeMatcher.shouldCapturePath('/home')).toBe(true);
+      expect(logger.routeMatcher.shouldCapturePath('/debug')).toBe(false);
+      mod.resetAemeath();
+    });
+  });
+
   // ==================== errorFilter ====================
 
   describe('errorFilter', () => {

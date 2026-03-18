@@ -126,6 +126,74 @@ describe('RouteMatcher', () => {
     });
   });
 
+  // ==================== compose / parent 链 ====================
+
+  describe('compose - parent 链式过滤', () => {
+    it('无 childConfig 时应直接返回 parent', () => {
+      const parent = new RouteMatcher({ config: { includeRoutes: ['/home'] } });
+      const result = RouteMatcher.compose(parent, undefined);
+      expect(result).toBe(parent);
+    });
+
+    it('有 childConfig 时应创建新的子 matcher', () => {
+      const parent = new RouteMatcher();
+      const result = RouteMatcher.compose(parent, { includeRoutes: ['/app'] });
+      expect(result).not.toBe(parent);
+      expect(result).toBeInstanceOf(RouteMatcher);
+    });
+
+    it('parent 拒绝时子 matcher 也应拒绝', () => {
+      const parent = new RouteMatcher({
+        config: { includeRoutes: ['/allowed'] },
+      });
+      const child = RouteMatcher.compose(parent, { includeRoutes: ['/allowed', '/other'] });
+      expect(child.shouldCapturePath('/allowed')).toBe(true);
+      expect(child.shouldCapturePath('/other')).toBe(false);
+    });
+
+    it('parent 允许但子规则拒绝时应最终拒绝', () => {
+      const parent = new RouteMatcher();
+      const child = RouteMatcher.compose(parent, { excludeRoutes: ['/secret'] });
+      expect(child.shouldCapturePath('/home')).toBe(true);
+      expect(child.shouldCapturePath('/secret')).toBe(false);
+    });
+
+    it('parent 和 child 都允许时应最终允许', () => {
+      const parent = new RouteMatcher({
+        config: { includeRoutes: ['/app', '/dashboard'] },
+      });
+      const child = RouteMatcher.compose(parent, { includeRoutes: ['/app'] });
+      expect(child.shouldCapturePath('/app')).toBe(true);
+      expect(child.shouldCapturePath('/dashboard')).toBe(false);
+    });
+
+    it('多层 parent 链应正确过滤', () => {
+      const global = new RouteMatcher({
+        config: { excludeRoutes: ['/debug'] },
+      });
+      const plugin = RouteMatcher.compose(global, { includeRoutes: ['/app', '/debug'] });
+      expect(plugin.shouldCapturePath('/app')).toBe(true);
+      expect(plugin.shouldCapturePath('/debug')).toBe(false);
+      expect(plugin.shouldCapturePath('/other')).toBe(false);
+    });
+
+    it('shouldCapture(path) 也应遵循 parent 链', () => {
+      const parent = new RouteMatcher({
+        config: { excludeRoutes: ['/blocked'] },
+      });
+      const child = RouteMatcher.compose(parent, undefined);
+      expect(child.shouldCapture('/home')).toBe(true);
+      expect(child.shouldCapture('/blocked')).toBe(false);
+    });
+
+    it('compose 传递 debug 选项不应影响匹配结果', () => {
+      const parent = new RouteMatcher();
+      const child = RouteMatcher.compose(parent, { includeRoutes: ['/a'] }, { debug: true, debugPrefix: '[Test]' });
+      expect(child.shouldCapturePath('/a')).toBe(true);
+      expect(child.shouldCapturePath('/b')).toBe(false);
+    });
+  });
+
   // ==================== createRouteMatcher 工厂函数 ====================
 
   describe('createRouteMatcher', () => {

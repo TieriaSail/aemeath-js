@@ -327,6 +327,44 @@ describe('NetworkPlugin', () => {
 
   // ==================== 业务码提取 ====================
 
+  // ==================== routeMatch ====================
+
+  describe('routeMatch', () => {
+    it('当路由不在全局白名单时不应记录网络请求', async () => {
+      const logListener = vi.fn();
+      const routeLogger = new AemeathLogger({
+        routeMatch: { includeRoutes: ['/allowed'] },
+      });
+      routeLogger.on('log', logListener);
+
+      const mockResponse = new Response('ok', { status: 200 });
+      window.fetch = vi.fn().mockResolvedValue(mockResponse);
+
+      const plugin = new NetworkPlugin();
+      routeLogger.use(plugin);
+
+      await window.fetch('/api/data');
+      expect(logListener).not.toHaveBeenCalled();
+    });
+
+    it('插件级 routeMatch 应在全局基础上进一步限定', async () => {
+      const logListener = vi.fn();
+      const routeLogger = new AemeathLogger();
+      routeLogger.on('log', logListener);
+
+      const mockResponse = new Response('ok', { status: 200 });
+      window.fetch = vi.fn().mockResolvedValue(mockResponse);
+
+      const plugin = new NetworkPlugin({
+        routeMatch: { includeRoutes: ['/special'] },
+      });
+      routeLogger.use(plugin);
+
+      await window.fetch('/api/data');
+      expect(logListener).not.toHaveBeenCalled();
+    });
+  });
+
   describe('业务码提取', () => {
     it('应从响应中提取 code 和 message', async () => {
       const logListener = vi.fn();

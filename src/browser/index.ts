@@ -87,7 +87,8 @@ function init(options: BrowserLoggerOptions = {}): AemeathLogger {
   const minOrder = LOG_LEVEL_ORDER[minLevel] ?? 1;
 
   if (minOrder > 0) logger.debug = noop;
-  if (minOrder > 1) { logger.info = noop; logger.track = noop; }
+  if (minOrder > 1) logger.info = noop;
+  if (minOrder > 1) logger.track = noop;
   if (minOrder > 2) logger.warn = noop;
   // error 永远不过滤
 

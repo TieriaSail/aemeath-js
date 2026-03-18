@@ -572,6 +572,67 @@ describe('AemeathLogger Core', () => {
     });
   });
 
+  // ==================== track 方法 ====================
+
+  describe('track', () => {
+    it('track() 应使用 TRACK level', () => {
+      const listener = vi.fn();
+      logger.on('log', listener);
+      logger.track('business event');
+
+      expect(listener).toHaveBeenCalledTimes(1);
+      const entry: LogEntry = listener.mock.calls[0][0];
+      expect(entry.level).toBe('track');
+      expect(entry.message).toBe('business event');
+    });
+
+    it('track() 应支持 tags 和 context', () => {
+      const listener = vi.fn();
+      logger.on('log', listener);
+      logger.track('purchase', {
+        tags: { action: 'buy' },
+        context: { productId: '123' },
+      });
+
+      const entry: LogEntry = listener.mock.calls[0][0];
+      expect(entry.tags?.action).toBe('buy');
+      expect(entry.context?.productId).toBe('123');
+    });
+
+    it('track() 应与 info() 行为一致（使用 console.info）', () => {
+      const consoleSpy = vi.spyOn(console, 'info').mockImplementation(() => {});
+      const trackLogger = new AemeathLogger({ enableConsole: true });
+      trackLogger.track('test track');
+      expect(consoleSpy).toHaveBeenCalled();
+      consoleSpy.mockRestore();
+    });
+
+    it('destroy 后调用 track() 不应抛异常', () => {
+      logger.destroy();
+      expect(() => logger.track('safe')).not.toThrow();
+    });
+  });
+
+  // ==================== routeMatcher getter ====================
+
+  describe('routeMatcher', () => {
+    it('应暴露 routeMatcher getter', () => {
+      expect(logger.routeMatcher).toBeDefined();
+    });
+
+    it('无 routeMatch 配置时 shouldCapture 应返回 true', () => {
+      expect(logger.routeMatcher.shouldCapturePath('/anything')).toBe(true);
+    });
+
+    it('有 routeMatch 配置时应按规则过滤', () => {
+      const filtered = new AemeathLogger({
+        routeMatch: { excludeRoutes: ['/debug'] },
+      });
+      expect(filtered.routeMatcher.shouldCapturePath('/home')).toBe(true);
+      expect(filtered.routeMatcher.shouldCapturePath('/debug')).toBe(false);
+    });
+  });
+
   // ==================== destroy ====================
 
   describe('destroy', () => {

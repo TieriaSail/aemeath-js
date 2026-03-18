@@ -687,4 +687,36 @@ describe('PerformancePlugin', () => {
       expect(registeredCallbacks.has('longtask')).toBe(true);
     });
   });
+
+  // ==================== routeMatch ====================
+
+  describe('routeMatch', () => {
+    it('应接受 routeMatch 选项', () => {
+      const plugin = new PerformancePlugin({
+        routeMatch: { excludeRoutes: ['/debug'] },
+      });
+      expect(plugin).toBeDefined();
+    });
+
+    it('全局 routeMatch 排除当前路由时不应上报指标', () => {
+      const routeLogger = new AemeathLogger({
+        routeMatch: { includeRoutes: ['/monitored'] },
+      });
+      const logListener = vi.fn();
+      routeLogger.on('log', logListener);
+
+      routeLogger.use(new PerformancePlugin({
+        monitorWebVitals: true,
+      }));
+
+      const lcpCallback = registeredCallbacks.get('largest-contentful-paint');
+      if (lcpCallback) {
+        lcpCallback({
+          getEntries: () => [{ startTime: 2500 }],
+        } as any);
+      }
+
+      expect(logListener).not.toHaveBeenCalled();
+    });
+  });
 });

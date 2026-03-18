@@ -172,6 +172,53 @@ describe('Browser IIFE 入口', () => {
     });
   });
 
+  // ==================== track 级别过滤 ====================
+
+  describe('track 级别过滤', () => {
+    it("level='warn' 时 track 应被替换为 noop", async () => {
+      const mod = await import('../src/browser/index');
+      const logger = mod.init({
+        level: 'warn',
+        errorCapture: false,
+        safeGuard: false,
+      });
+
+      expect(logger.track).toBeDefined();
+      const logListener = vi.fn();
+      logger.on('log', logListener);
+      logger.track('should be noop');
+      expect(logListener).not.toHaveBeenCalled();
+    });
+
+    it("level='info' 时 track 应生效", async () => {
+      const mod = await import('../src/browser/index');
+      const logger = mod.init({
+        level: 'info',
+        errorCapture: false,
+        safeGuard: false,
+      });
+
+      const logListener = vi.fn();
+      logger.on('log', logListener);
+      logger.track('should work');
+      expect(logListener).toHaveBeenCalledTimes(1);
+    });
+
+    it("level='debug' 时 track 应生效", async () => {
+      const mod = await import('../src/browser/index');
+      const logger = mod.init({
+        level: 'debug',
+        errorCapture: false,
+        safeGuard: false,
+      });
+
+      const logListener = vi.fn();
+      logger.on('log', logListener);
+      logger.track('should work');
+      expect(logListener).toHaveBeenCalledTimes(1);
+    });
+  });
+
   // ==================== 早期错误刷新 ====================
 
   describe('早期错误刷新', () => {
