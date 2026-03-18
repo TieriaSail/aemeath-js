@@ -163,7 +163,7 @@ Failure → Downgrade priority (-10), re-queue for retry
 - Default priorities:
   - `error`: 100
   - `warn`: 50
-  - `info`: 10
+  - `info` / `track`: 10
   - `debug`: 1
 
 ### Retry Mechanism

@@ -33,7 +33,7 @@ export interface ErrorCapturePluginOptions {
 
 export class ErrorCapturePlugin implements AemeathPlugin {
   readonly name = 'error-capture';
-  readonly version = '1.1.2';
+  readonly version = '1.2.0';
   readonly description = '自动错误捕获';
 
   private readonly config: {
@@ -44,7 +44,8 @@ export class ErrorCapturePlugin implements AemeathPlugin {
     errorFilter?: (error: Error) => boolean;
   };
   private readonly deduplicator: ErrorDeduplicator;
-  private readonly routeMatcher: RouteMatcher;
+  private routeMatcher!: RouteMatcher;
+  private readonly pluginRouteMatch: RouteMatchConfig | undefined;
   private readonly debugEnabled: boolean;
   private logger: AemeathInterface | null = null;
   private originalErrorHandler: OnErrorEventHandler | null = null;
@@ -70,12 +71,7 @@ export class ErrorCapturePlugin implements AemeathPlugin {
       maxCacheSize: 100,
     });
 
-    // 使用共享的路由匹配器
-    this.routeMatcher = new RouteMatcher({
-      config: options.routeMatch,
-      debug: options.debug,
-      debugPrefix: '[ErrorCapture]',
-    });
+    this.pluginRouteMatch = options.routeMatch;
   }
 
   /** 调试日志 */
@@ -94,6 +90,12 @@ export class ErrorCapturePlugin implements AemeathPlugin {
 
   install(logger: AemeathInterface): void {
     this.logger = logger;
+
+    this.routeMatcher = RouteMatcher.compose(
+      logger.routeMatcher,
+      this.pluginRouteMatch,
+      { debug: this.debugEnabled, debugPrefix: '[ErrorCapture]' },
+    );
 
     this.captureGlobalError();
 

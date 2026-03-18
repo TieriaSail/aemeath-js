@@ -163,8 +163,13 @@ interface EarlyErrorCaptureOptions {
 
   /** Fallback timeout (default: 30000ms) */
   fallbackTimeout?: number;
+
+  /** Plugin-level route matching (narrows the global routeMatch scope) */
+  routeMatch?: RouteMatchConfig;
 }
 ```
+
+> **routeMatch rules**: The build-time script captures all errors regardless of route. Route filtering only applies when the SDK flushes early errors at runtime. `excludeRoutes` takes precedence over `includeRoutes`. The global `routeMatch` set via `initAemeath` is automatically composed with this plugin-level setting.
 
 ---
 

@@ -12,6 +12,7 @@
  */
 
 import type { AemeathPlugin, AemeathInterface } from '../types';
+import { RouteMatcher, type RouteMatchConfig } from '../utils/routeMatcher';
 
 /**
  * 网络请求日志
@@ -122,12 +123,18 @@ export interface NetworkPluginOptions {
    * @default false
    */
   debug?: boolean;
+
+  /**
+   * 插件级路由匹配配置
+   * 在全局 routeMatch 基础上进一步限定网络监控的路由范围
+   */
+  routeMatch?: RouteMatchConfig;
 }
 
 type NetworkPluginConfig = Required<
   Omit<
     NetworkPluginOptions,
-    'urlFilter' | 'logTypes' | 'slowRequestExcludePatterns'
+    'urlFilter' | 'logTypes' | 'slowRequestExcludePatterns' | 'routeMatch'
   >
 > &
   Pick<NetworkPluginOptions, 'urlFilter'> & {
@@ -137,10 +144,12 @@ type NetworkPluginConfig = Required<
 
 export class NetworkPlugin implements AemeathPlugin {
   readonly name = 'network';
-  readonly version = '1.1.2';
+  readonly version = '1.2.0';
   readonly description = '网络请求监控';
 
   private readonly config: NetworkPluginConfig;
+  private readonly pluginRouteMatch: RouteMatchConfig | undefined;
+  private routeMatcher!: RouteMatcher;
   private logger: AemeathInterface | null = null;
 
   // 保存原始方法，用于卸载时恢复
@@ -198,6 +207,7 @@ export class NetworkPlugin implements AemeathPlugin {
         options.slowRequestExcludePatterns ?? defaultSlowExcludePatterns,
       debug: options.debug ?? false,
     };
+    this.pluginRouteMatch = options.routeMatch;
   }
 
   /** 调试日志 */
@@ -209,6 +219,12 @@ export class NetworkPlugin implements AemeathPlugin {
 
   install(logger: AemeathInterface): void {
     this.logger = logger;
+
+    this.routeMatcher = RouteMatcher.compose(
+      logger.routeMatcher,
+      this.pluginRouteMatch,
+      { debug: this.config.debug, debugPrefix: '[NetworkPlugin]' },
+    );
 
     if (this.config.interceptFetch) {
       this.interceptFetch();
@@ -326,6 +342,10 @@ export class NetworkPlugin implements AemeathPlugin {
    */
   private recordRequest(log: NetworkLog): void {
     if (!this.logger) return;
+
+    if (!this.routeMatcher.shouldCapture()) {
+      return;
+    }
 
     const isSlowExcluded = this.config.slowRequestExcludePatterns.some(
       (pattern) => log.url.toLowerCase().includes(pattern.toLowerCase()),

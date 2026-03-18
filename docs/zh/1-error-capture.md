@@ -48,11 +48,28 @@ interface ErrorCapturePluginOptions {
   captureConsoleError?: boolean;
   /** 自定义错误过滤函数（返回 false 跳过该错误） */
   errorFilter?: (error: Error) => boolean;
-  /** 路由匹配配置 */
+  /** 插件级路由匹配（在全局 routeMatch 基础上进一步缩小范围） */
   routeMatch?: RouteMatchConfig;
   /** 调试模式 @default false */
   debug?: boolean;
 }
+```
+
+> **routeMatch 规则**：`excludeRoutes` 优先级高于 `includeRoutes`。当通过 `initAemeath` 设置了全局 `routeMatch` 时，此插件级 `routeMatch` 会进一步缩小范围（两者需同时匹配）。
+
+通过 `initAemeath` 使用时，`errorCapture` 接受布尔值或对象：
+
+```typescript
+// 布尔值（默认 true）
+initAemeath({ errorCapture: true });
+
+// 对象配置 + 插件级 routeMatch
+initAemeath({
+  errorCapture: {
+    enabled: true,
+    routeMatch: { excludeRoutes: ['/debug'] },
+  },
+});
 ```
 
 ---

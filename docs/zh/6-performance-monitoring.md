@@ -110,8 +110,13 @@ interface PerformancePluginOptions {
 
   /** 自动采集的采样率（0-1，默认：1），不影响手动 mark/measure */
   sampleRate?: number;
+
+  /** 插件级路由匹配（在全局 routeMatch 基础上进一步缩小范围） */
+  routeMatch?: RouteMatchConfig;
 }
 ```
+
+> **routeMatch 规则**：`excludeRoutes` 优先级高于 `includeRoutes`。当通过 `initAemeath` 设置了全局 `routeMatch` 时，此插件级 `routeMatch` 会进一步缩小范围（两者需同时匹配）。
 
 **细粒度 Web Vitals 配置示例：**
 

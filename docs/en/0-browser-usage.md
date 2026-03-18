@@ -60,7 +60,7 @@ AemeathJs.init({
   enableConsole: true,
   
   // Log level (default: 'info')
-  level: 'debug' | 'info' | 'warn' | 'error'
+  level: 'debug' | 'info' | 'track' | 'warn' | 'error'
 });
 ```
 
@@ -72,6 +72,7 @@ var logger = AemeathJs.getAemeath();
 // Log levels
 logger.debug('Debug message');
 logger.info('Info message');
+logger.track('Business event');   // same priority as info, for analytics
 logger.warn('Warning message');
 logger.error('Error message');
 

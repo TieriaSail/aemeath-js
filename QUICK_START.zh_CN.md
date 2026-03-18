@@ -62,7 +62,7 @@ AemeathJs.init({
   errorCapture: true,                    // 自动捕获错误（默认 true）
   safeGuard: true,                       // 安全保护（默认 true）
   enableConsole: true,                   // 控制台输出（默认 true）
-  level: 'info'                          // 日志级别：debug/info/warn/error
+  level: 'info'                          // 日志级别：debug/info/track/warn/error
 });
 
 // 获取 Logger 实例
@@ -71,6 +71,7 @@ var logger = AemeathJs.getAemeath();
 // 记录日志
 logger.debug('调试信息');
 logger.info('普通信息');
+logger.track('业务埋点');
 logger.warn('警告信息');
 logger.error('错误信息');
 ```
@@ -125,6 +126,24 @@ logger.info('Hello World'); // context 自动附加
 // 动态更新上下文
 logger.updateContext('userId', '67890');
 ```
+
+> `logger.track()` 是专门用于业务埋点/追踪的级别。它与 `info` 共享相同的优先级和过滤行为，但方便你在上报或查询时区分业务事件与普通日志。
+
+#### 路由作用域 (Route Scope，可选)
+
+通过全局配置限定日志采集的路由范围，各插件可进一步缩小范围。
+
+```typescript
+initAemeath({
+  upload: async (log) => { return { success: true }; },
+  routeMatch: {
+    includeRoutes: ['/app', /^\/dashboard/],
+    excludeRoutes: ['/app/debug'],
+  },
+});
+```
+
+> `excludeRoutes` 优先级高于 `includeRoutes`。`errorCapture`、`network`、`PerformancePlugin` 等插件可在文档中各自配置 `routeMatch` 进一步限定全局范围，详见各插件文档。
 
 **默认已启用哪些插件？** `initAemeath()` 会自动启用以下插件：
 

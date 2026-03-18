@@ -18,6 +18,7 @@ import type {
   ContextValue,
 } from '../types';
 import { LogLevel as LogLevelEnum, ErrorCategory } from '../types';
+import { RouteMatcher, type RouteMatchConfig } from '../utils/routeMatcher';
 
 interface AemeathOptions {
   /** 是否启用控制台输出 @default true */
@@ -27,6 +28,8 @@ interface AemeathOptions {
   release?: string;
   /** 是否启用调试模式（输出 AemeathJs 内部日志） */
   debug?: boolean;
+  /** 全局路由匹配配置（对所有插件生效） */
+  routeMatch?: RouteMatchConfig;
 }
 
 export class AemeathLogger implements AemeathInterface {
@@ -40,6 +43,11 @@ export class AemeathLogger implements AemeathInterface {
   private readonly environment?: string;
   private readonly release?: string;
   private readonly debugEnabled: boolean;
+  private readonly _routeMatcher: RouteMatcher;
+
+  get routeMatcher(): RouteMatcher {
+    return this._routeMatcher;
+  }
 
   [key: string]: unknown;
 
@@ -48,6 +56,11 @@ export class AemeathLogger implements AemeathInterface {
     this.environment = options?.environment;
     this.release = options?.release;
     this.debugEnabled = options?.debug ?? false;
+    this._routeMatcher = new RouteMatcher({
+      config: options?.routeMatch,
+      debug: options?.debug,
+      debugPrefix: '[Aemeath:Global]',
+    });
     if (options?.context) {
       this.setContext(options.context);
     }
@@ -310,6 +323,7 @@ export class AemeathLogger implements AemeathInterface {
     const consoleMethod = ({
       [LogLevelEnum.DEBUG]: console.debug,
       [LogLevelEnum.INFO]: console.info,
+      [LogLevelEnum.TRACK]: console.info,
       [LogLevelEnum.WARN]: console.warn,
       [LogLevelEnum.ERROR]: console.error,
     } as Record<string, typeof console.log>)[entry.level] ?? console.log;
@@ -331,6 +345,10 @@ export class AemeathLogger implements AemeathInterface {
 
   public info(message: string, options?: LogOptions): void {
     this.log(LogLevelEnum.INFO, message, options);
+  }
+
+  public track(message: string, options?: LogOptions): void {
+    this.log(LogLevelEnum.TRACK, message, options);
   }
 
   public warn(message: string, options?: LogOptions): void {

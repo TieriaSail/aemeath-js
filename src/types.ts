@@ -8,6 +8,8 @@
 export enum LogLevel {
   DEBUG = 'debug',
   INFO = 'info',
+  /** 埋点追踪（逻辑等同 info，用于业务层面区分） */
+  TRACK = 'track',
   WARN = 'warn',
   ERROR = 'error',
 }
@@ -252,8 +254,11 @@ export interface AemeathInterface {
   // 基础日志方法
   debug(message: string, options?: LogOptions): void;
   info(message: string, options?: LogOptions): void;
+  track(message: string, options?: LogOptions): void;
   warn(message: string, options?: LogOptions): void;
   error(message: string, options?: LogOptions): void;
+
+  readonly routeMatcher: import('./utils/routeMatcher').RouteMatcher;
 
   // 事件系统
   on(event: string, listener: (...args: unknown[]) => void): void;

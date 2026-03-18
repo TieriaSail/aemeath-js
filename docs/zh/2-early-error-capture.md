@@ -163,8 +163,13 @@ interface EarlyErrorCaptureOptions {
 
   /** 保底超时（默认：30000ms） */
   fallbackTimeout?: number;
+
+  /** 插件级路由匹配（在全局 routeMatch 基础上进一步缩小范围） */
+  routeMatch?: RouteMatchConfig;
 }
 ```
+
+> **routeMatch 规则**：构建时注入的脚本会捕获所有路由的错误，路由过滤仅在 SDK 运行时刷新早期错误时生效。`excludeRoutes` 优先级高于 `includeRoutes`。通过 `initAemeath` 设置的全局 `routeMatch` 会自动与此插件级配置组合。
 
 ---
 

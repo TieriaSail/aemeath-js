@@ -110,8 +110,13 @@ interface PerformancePluginOptions {
 
   /** Sampling rate for auto-collection (0-1, default: 1). Does not affect manual mark/measure. */
   sampleRate?: number;
+
+  /** Plugin-level route matching (narrows the global routeMatch scope) */
+  routeMatch?: RouteMatchConfig;
 }
 ```
+
+> **routeMatch rules**: `excludeRoutes` takes precedence over `includeRoutes`. When a global `routeMatch` is set via `initAemeath`, this plugin-level `routeMatch` further narrows the scope (both must match).
 
 **Fine-grained Web Vitals configuration:**
 

@@ -48,11 +48,28 @@ interface ErrorCapturePluginOptions {
   captureConsoleError?: boolean;
   /** Custom error filter (return false to skip) */
   errorFilter?: (error: Error) => boolean;
-  /** Route matching configuration */
+  /** Plugin-level route matching (narrows the global routeMatch scope) */
   routeMatch?: RouteMatchConfig;
   /** Debug mode @default false */
   debug?: boolean;
 }
+```
+
+> **routeMatch rules**: `excludeRoutes` takes precedence over `includeRoutes`. When a global `routeMatch` is set via `initAemeath`, this plugin-level `routeMatch` further narrows the scope (both must match).
+
+When using `initAemeath`, `errorCapture` accepts a boolean or an object:
+
+```typescript
+// Boolean (default: true)
+initAemeath({ errorCapture: true });
+
+// Object with plugin-level routeMatch
+initAemeath({
+  errorCapture: {
+    enabled: true,
+    routeMatch: { excludeRoutes: ['/debug'] },
+  },
+});
 ```
 
 ---

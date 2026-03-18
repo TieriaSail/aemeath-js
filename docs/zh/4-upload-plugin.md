@@ -205,7 +205,7 @@ logger.use(
 - 默认优先级：
   - `error`: 100
   - `warn`: 50
-  - `info`: 10
+  - `info` / `track`: 10
   - `debug`: 1
 
 ### 重试机制

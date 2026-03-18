@@ -51,6 +51,9 @@ logger.use(
 logger.info('Application started', {
   tags: { action: 'app-start' },
 });
+logger.track('User clicked buy button', {
+  tags: { action: 'purchase', productId: 'SKU-001' },
+});
 logger.error('Something went wrong', {
   error: new Error('Test error'),
   tags: { severity: 'high' },

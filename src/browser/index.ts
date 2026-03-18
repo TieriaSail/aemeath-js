@@ -27,6 +27,7 @@ let globalLogger: AemeathLogger | null = null;
 const LOG_LEVEL_ORDER: Record<string, number> = {
   debug: 0,
   info: 1,
+  track: 1,
   warn: 2,
   error: 3,
 };
@@ -59,7 +60,7 @@ export interface BrowserLoggerOptions {
    * 最低日志级别（低于此级别的日志不会被记录和上报）
    * @default 'info'
    */
-  level?: 'debug' | 'info' | 'warn' | 'error';
+  level?: 'debug' | 'info' | 'track' | 'warn' | 'error';
 }
 
 // ==================== 无操作函数 ====================
@@ -86,7 +87,7 @@ function init(options: BrowserLoggerOptions = {}): AemeathLogger {
   const minOrder = LOG_LEVEL_ORDER[minLevel] ?? 1;
 
   if (minOrder > 0) logger.debug = noop;
-  if (minOrder > 1) logger.info = noop;
+  if (minOrder > 1) { logger.info = noop; logger.track = noop; }
   if (minOrder > 2) logger.warn = noop;
   // error 永远不过滤
 

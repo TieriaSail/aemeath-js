@@ -93,7 +93,7 @@ export interface SafeGuardHealth {
 
 export class SafeGuardPlugin implements AemeathPlugin {
   readonly name = 'safe-guard';
-  readonly version = '1.1.2';
+  readonly version = '1.2.0';
   readonly description = '智能日志保护';
 
   private readonly config: SafeGuardConfig;
@@ -433,6 +433,7 @@ export class SafeGuardPlugin implements AemeathPlugin {
     switch (level) {
       case 'debug': return this.logger.debug.bind(this.logger);
       case 'info': return this.logger.info.bind(this.logger);
+      case 'track': return this.logger.track.bind(this.logger);
       case 'warn': return this.logger.warn.bind(this.logger);
       case 'error': return this.logger.error.bind(this.logger);
       default: return this.logger.info.bind(this.logger);

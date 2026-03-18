@@ -61,7 +61,7 @@ AemeathJs.init({
   errorCapture: true,                    // Auto capture errors (default: true)
   safeGuard: true,                       // Safety guard (default: true)
   enableConsole: true,                   // Console output (default: true)
-  level: 'info'                          // Log level: debug/info/warn/error
+  level: 'info'                          // Log level: debug/info/track/warn/error
 });
 
 // Get logger instance
@@ -70,6 +70,7 @@ var logger = AemeathJs.getAemeath();
 // Log messages
 logger.debug('Debug message');
 logger.info('Info message');
+logger.track('Business event');
 logger.warn('Warning message');
 logger.error('Error message');
 ```
@@ -124,6 +125,24 @@ logger.info('Hello World'); // context is automatically attached
 // Update context dynamically
 logger.updateContext('userId', '67890');
 ```
+
+> `logger.track()` is a dedicated level for business tracking / analytics. It shares the same priority and filtering behavior as `info`, but lets you distinguish business events from general logs when uploading or querying.
+
+#### Route Scope (Optional)
+
+Restrict logging to specific routes globally. Each plugin can further narrow the scope.
+
+```typescript
+initAemeath({
+  upload: async (log) => { return { success: true }; },
+  routeMatch: {
+    includeRoutes: ['/app', /^\/dashboard/],
+    excludeRoutes: ['/app/debug'],
+  },
+});
+```
+
+> `excludeRoutes` takes precedence over `includeRoutes`. Plugins like `errorCapture`, `network`, and `PerformancePlugin` can define their own `routeMatch` to further limit the global scope. See each plugin's documentation for details.
 
 **What's included by default?** `initAemeath()` automatically enables these plugins:
 

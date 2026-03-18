@@ -193,6 +193,12 @@ const logger = createLogger();
 logger.info('App started', {
   tags: { action: 'app-start' },
 });
+logger.track('User registered', {
+  tags: { action: 'register', channel: 'organic' },
+});
+logger.track('Purchase completed', {
+  tags: { action: 'purchase', amount: '99.9' },
+});
 logger.error('Something went wrong', {
   error: new Error('Test error'),
   tags: { action: 'test', severity: 'high' },

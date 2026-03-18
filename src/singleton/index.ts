@@ -14,29 +14,14 @@ import { UploadPlugin, type UploadResult } from '../plugins/UploadPlugin';
 import { SafeGuardPlugin, type SafeGuardMode } from '../plugins/SafeGuardPlugin';
 import { NetworkPlugin, type NetworkLogType } from '../plugins/NetworkPlugin';
 import type { LogEntry } from '../types';
+import type { RouteMatchConfig } from '../utils/routeMatcher';
+
+export type { RouteMatchConfig };
 
 /**
  * 全局 AemeathJs 实例
  */
 let globalAemeath: AemeathLogger | null = null;
-
-// ==================== 配置类型 ====================
-
-/**
- * 路由匹配配置
- */
-export interface RouteMatchConfig {
-  /**
-   * 路由白名单：只监控这些路由
-   * 支持字符串精确匹配、正则表达式、函数匹配
-   */
-  includeRoutes?: Array<string | RegExp | ((path: string) => boolean)>;
-  /**
-   * 路由黑名单：排除这些路由
-   * 优先级高于白名单
-   */
-  excludeRoutes?: Array<string | RegExp | ((path: string) => boolean)>;
-}
 
 /**
  * AemeathJs 初始化配置
@@ -66,17 +51,21 @@ export interface RouteMatchConfig {
  */
 export interface AemeathInitOptions {
   /**
-   * 是否启用错误捕获
+   * 错误捕获配置
    *
-   * 捕获全局错误、Promise 错误、资源加载失败
+   * - `true`（默认）：启用错误捕获
+   * - `false`：禁用错误捕获
+   * - `{ enabled?, routeMatch? }`：启用并配置插件级路由匹配
    *
    * @default true
    */
-  errorCapture?: boolean;
+  errorCapture?: boolean | {
+    enabled?: boolean;
+    routeMatch?: RouteMatchConfig;
+  };
 
   /**
-   * 路由匹配配置
-   * 控制在哪些路由下启用错误监控
+   * 全局路由匹配配置（对所有插件生效）
    *
    * @example
    * ```javascript
@@ -261,6 +250,8 @@ export interface AemeathInitOptions {
   network?: {
     /** 是否启用网络监控 @default true */
     enabled?: boolean;
+    /** 插件级路由匹配配置，在全局 routeMatch 基础上进一步缩小范围 */
+    routeMatch?: RouteMatchConfig;
     /**
      * 要记录的请求类型
      * - 'success': 成功的请求
@@ -344,13 +335,17 @@ export function initAemeath(options: AemeathInitOptions = {}): AemeathLogger {
     context,
     environment: options.environment,
     release: options.release,
+    routeMatch: options.routeMatch,
   });
 
   // 1. 错误捕获（默认启用）
-  if (options.errorCapture !== false) {
+  const ecOpt = options.errorCapture;
+  const ecEnabled = ecOpt === undefined || ecOpt === true || (typeof ecOpt === 'object' && ecOpt.enabled !== false);
+  if (ecEnabled) {
+    const ecRouteMatch = typeof ecOpt === 'object' ? ecOpt.routeMatch : undefined;
     logger.use(
       new ErrorCapturePlugin({
-        routeMatch: options.routeMatch,
+        routeMatch: ecRouteMatch,
         errorFilter: options.errorFilter,
       }),
     );
@@ -358,11 +353,7 @@ export function initAemeath(options: AemeathInitOptions = {}): AemeathLogger {
 
   // 2. 早期错误捕获（如果构建时启用了）
   if (typeof window !== 'undefined' && (window as any).__EARLY_ERRORS__) {
-    logger.use(
-      new EarlyErrorCapturePlugin({
-        routeMatch: options.routeMatch,
-      }),
-    );
+    logger.use(new EarlyErrorCapturePlugin());
   }
 
   // 3. 安全保护
@@ -394,6 +385,7 @@ export function initAemeath(options: AemeathInitOptions = {}): AemeathLogger {
   if (options.network?.enabled !== false) {
     logger.use(
       new NetworkPlugin({
+        routeMatch: options.network?.routeMatch,
         logTypes: options.network?.logTypes,
         captureRequestBody: options.network?.captureRequestBody ?? true,
         captureResponseBody: options.network?.captureResponseBody ?? true,

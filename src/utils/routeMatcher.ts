@@ -60,15 +60,32 @@ export class RouteMatcher {
   private readonly config: RouteMatchConfig | undefined;
   private readonly debugEnabled: boolean;
   private readonly debugPrefix: string;
+  private readonly parent: RouteMatcher | null;
 
   constructor(options?: {
     config?: RouteMatchConfig;
     debug?: boolean;
     debugPrefix?: string;
+    parent?: RouteMatcher | null;
   }) {
     this.config = options?.config;
     this.debugEnabled = options?.debug ?? false;
     this.debugPrefix = options?.debugPrefix ?? '[RouteMatcher]';
+    this.parent = options?.parent ?? null;
+  }
+
+  static compose(
+    parent: RouteMatcher,
+    childConfig?: RouteMatchConfig,
+    options?: { debug?: boolean; debugPrefix?: string },
+  ): RouteMatcher {
+    if (!childConfig) return parent;
+    return new RouteMatcher({
+      config: childConfig,
+      debug: options?.debug,
+      debugPrefix: options?.debugPrefix,
+      parent,
+    });
   }
 
   /**
@@ -101,13 +118,16 @@ export class RouteMatcher {
    *
    * @returns true 表示应该监控当前路由，false 表示不监控
    */
-  public shouldCapture(): boolean {
-    // 如果没有配置路由过滤，默认监控所有路由
+  public shouldCapture(path?: string): boolean {
+    const currentPath = path ?? this.getCurrentPath();
+
+    if (this.parent && !this.parent.shouldCapture(currentPath)) {
+      return false;
+    }
+
     if (!this.config) {
       return true;
     }
-
-    const currentPath = this.getCurrentPath();
     const { excludeRoutes, includeRoutes } = this.config;
 
     // 1. 检查黑名单（优先级更高）
@@ -143,7 +163,10 @@ export class RouteMatcher {
    * @returns true 表示应该监控该路由，false 表示不监控
    */
   public shouldCapturePath(path: string): boolean {
-    // 如果没有配置路由过滤，默认监控所有路由
+    if (this.parent && !this.parent.shouldCapturePath(path)) {
+      return false;
+    }
+
     if (!this.config) {
       return true;
     }
