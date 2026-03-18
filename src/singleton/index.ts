@@ -16,29 +16,14 @@ import { NetworkPlugin, type NetworkLogType } from '../plugins/NetworkPlugin';
 import type { LogEntry } from '../types';
 import type { PlatformAdapter } from '../platform/types';
 import { detectPlatform } from '../platform/detect';
+import type { RouteMatchConfig } from '../utils/routeMatcher';
+
+export type { RouteMatchConfig };
 
 /**
  * 全局 AemeathJs 实例
  */
 let globalAemeath: AemeathLogger | null = null;
-
-// ==================== 配置类型 ====================
-
-/**
- * 路由匹配配置
- */
-export interface RouteMatchConfig {
-  /**
-   * 路由白名单：只监控这些路由
-   * 支持字符串精确匹配、正则表达式、函数匹配
-   */
-  includeRoutes?: Array<string | RegExp | ((path: string) => boolean)>;
-  /**
-   * 路由黑名单：排除这些路由
-   * 优先级高于白名单
-   */
-  excludeRoutes?: Array<string | RegExp | ((path: string) => boolean)>;
-}
 
 /**
  * AemeathJs 初始化配置
@@ -78,17 +63,24 @@ export interface AemeathInitOptions {
   platform?: PlatformAdapter;
 
   /**
-   * 是否启用错误捕获
+   * 错误捕获配置
    *
-   * 捕获全局错误、Promise 错误、资源加载失败
+   * - `true` / `undefined`：启用（默认）
+   * - `false`：禁用
+   * - `{ enabled?, routeMatch? }`：启用并配置插件级路由规则
    *
    * @default true
    */
-  errorCapture?: boolean;
+  errorCapture?: boolean | {
+    enabled?: boolean;
+    routeMatch?: RouteMatchConfig;
+  };
 
   /**
-   * 路由匹配配置
-   * 控制在哪些路由下启用错误监控
+   * 全局路由匹配配置
+   *
+   * 控制在哪些路由下启用所有监控能力（错误捕获、网络监控、性能监控等）。
+   * excludeRoutes 优先级高于 includeRoutes。
    *
    * @example
    * ```javascript
@@ -274,6 +266,11 @@ export interface AemeathInitOptions {
     /** 是否启用网络监控 @default true */
     enabled?: boolean;
     /**
+     * 插件级路由匹配配置
+     * 在全局 routeMatch 基础上进一步限定网络监控的路由范围
+     */
+    routeMatch?: RouteMatchConfig;
+    /**
      * 要记录的请求类型
      * - 'success': 成功的请求
      * - 'error': 失败的请求（状态码 >= 400 或网络错误）
@@ -358,13 +355,17 @@ export function initAemeath(options: AemeathInitOptions = {}): AemeathLogger {
     environment: options.environment,
     release: options.release,
     platform,
+    routeMatch: options.routeMatch,
   });
 
   // 1. 错误捕获（默认启用）
-  if (options.errorCapture !== false) {
+  const ecOpt = options.errorCapture;
+  const ecEnabled = ecOpt === undefined || ecOpt === true || (typeof ecOpt === 'object' && ecOpt.enabled !== false);
+  if (ecEnabled) {
+    const ecRouteMatch = typeof ecOpt === 'object' ? ecOpt.routeMatch : undefined;
     logger.use(
       new ErrorCapturePlugin({
-        routeMatch: options.routeMatch,
+        routeMatch: ecRouteMatch,
         errorFilter: options.errorFilter,
       }),
     );
@@ -373,9 +374,7 @@ export function initAemeath(options: AemeathInitOptions = {}): AemeathLogger {
   // 2. 早期错误捕获（如果构建时启用了）
   if (platform.earlyCapture.hasEarlyErrors()) {
     logger.use(
-      new EarlyErrorCapturePlugin({
-        routeMatch: options.routeMatch,
-      }),
+      new EarlyErrorCapturePlugin(),
     );
   }
 
@@ -421,6 +420,7 @@ export function initAemeath(options: AemeathInitOptions = {}): AemeathLogger {
                 url.includes(pattern),
               )
           : undefined,
+        routeMatch: options.network?.routeMatch,
       }),
     );
   }

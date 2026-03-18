@@ -46,7 +46,8 @@ export class EarlyErrorCapturePlugin implements AemeathPlugin {
   public description = 'Capture errors before React mounts';
 
   private options: Omit<Required<EarlyErrorCaptureOptions>, 'routeMatch'>;
-  private readonly routeMatcher: RouteMatcher;
+  private routeMatcher!: RouteMatcher;
+  private readonly pluginRouteMatch: RouteMatchConfig | undefined;
   private logger: AemeathInterface | null = null;
   private platform!: PlatformAdapter;
 
@@ -60,11 +61,7 @@ export class EarlyErrorCapturePlugin implements AemeathPlugin {
       checkCompatibility: options.checkCompatibility !== false,
     };
 
-    // 使用共享的路由匹配器
-    this.routeMatcher = new RouteMatcher({
-      config: options.routeMatch,
-      debugPrefix: '[EarlyErrorCapture]',
-    });
+    this.pluginRouteMatch = options.routeMatch;
   }
 
   public install(logger: AemeathInterface): void {
@@ -74,6 +71,14 @@ export class EarlyErrorCapturePlugin implements AemeathPlugin {
 
     this.logger = logger;
     this.platform = logger.platform;
+
+    // Compose global matcher with plugin-level routeMatch
+    this.routeMatcher = RouteMatcher.compose(
+      logger.routeMatcher,
+      this.pluginRouteMatch,
+      { debugPrefix: '[EarlyErrorCapture]' },
+    );
+
     this.flushEarlyErrors();
   }
 

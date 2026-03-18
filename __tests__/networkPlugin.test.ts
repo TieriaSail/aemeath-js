@@ -358,4 +358,67 @@ describe('NetworkPlugin', () => {
       expect(entry.context?.responseMessage).toBe('参数错误');
     });
   });
+
+  // ==================== 路由匹配过滤 ====================
+
+  describe('路由匹配过滤', () => {
+    it('全局 routeMatch 排除的路由不应产生网络日志', async () => {
+      const mockResponse = new Response('ok', { status: 200 });
+      window.fetch = vi.fn().mockResolvedValue(mockResponse);
+
+      // jsdom 默认 pathname = '/'
+      const l = new AemeathLogger({
+        enableConsole: false,
+        routeMatch: { excludeRoutes: ['/'] },
+      });
+      logger = l;
+      const logListener = vi.fn();
+      l.on('log', logListener);
+
+      const plugin = new NetworkPlugin();
+      l.use(plugin);
+
+      await window.fetch('/api/data');
+      expect(logListener).not.toHaveBeenCalled();
+    });
+
+    it('全局 routeMatch 允许的路由应正常产生网络日志', async () => {
+      const mockResponse = new Response('ok', { status: 200 });
+      window.fetch = vi.fn().mockResolvedValue(mockResponse);
+
+      const l = new AemeathLogger({
+        enableConsole: false,
+        routeMatch: { includeRoutes: ['/'] },
+      });
+      logger = l;
+      const logListener = vi.fn();
+      l.on('log', logListener);
+
+      const plugin = new NetworkPlugin();
+      l.use(plugin);
+
+      await window.fetch('/api/data');
+      expect(logListener).toHaveBeenCalled();
+    });
+
+    it('插件级 routeMatch 应在全局基础上进一步过滤', async () => {
+      const mockResponse = new Response('ok', { status: 200 });
+      window.fetch = vi.fn().mockResolvedValue(mockResponse);
+
+      // 全局允许 '/'，但插件级排除 '/'
+      const l = new AemeathLogger({
+        enableConsole: false,
+        routeMatch: { includeRoutes: ['/'] },
+      });
+      logger = l;
+      const logListener = vi.fn();
+      l.on('log', logListener);
+
+      const plugin = new NetworkPlugin({ routeMatch: { excludeRoutes: ['/'] } });
+      l.use(plugin);
+
+      await window.fetch('/api/data');
+      expect(logListener).not.toHaveBeenCalled();
+    });
+  });
 });

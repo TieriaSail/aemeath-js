@@ -60,7 +60,7 @@ AemeathJs.init({
   enableConsole: true,
   
   // 日志级别（默认 'info'）
-  level: 'debug' | 'info' | 'warn' | 'error'
+  level: 'debug' | 'info' | 'track' | 'warn' | 'error'
 });
 ```
 
@@ -72,6 +72,7 @@ var logger = AemeathJs.getAemeath();
 // 日志级别
 logger.debug('调试信息');
 logger.info('普通信息');
+logger.track('按钮点击', { tags: { page: '/home', action: 'click' } });
 logger.warn('警告信息');
 logger.error('错误信息');
 

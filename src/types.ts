@@ -8,6 +8,8 @@
 export enum LogLevel {
   DEBUG = 'debug',
   INFO = 'info',
+  /** 埋点追踪（逻辑等同 info，用于业务层面区分） */
+  TRACK = 'track',
   WARN = 'warn',
   ERROR = 'error',
 }
@@ -252,6 +254,7 @@ export interface AemeathInterface {
   // 基础日志方法
   debug(message: string, options?: LogOptions): void;
   info(message: string, options?: LogOptions): void;
+  track(message: string, options?: LogOptions): void;
   warn(message: string, options?: LogOptions): void;
   error(message: string, options?: LogOptions): void;
 
@@ -277,6 +280,9 @@ export interface AemeathInterface {
 
   // 平台适配器（构造时自动注入，一定存在）
   readonly platform: import('./platform/types').PlatformAdapter;
+
+  // 全局路由匹配器（供插件获取以组合自身路由规则）
+  readonly routeMatcher: import('./utils/routeMatcher').RouteMatcher;
 
   // 插件扩展属性容器
   readonly extensions: Record<string, unknown>;

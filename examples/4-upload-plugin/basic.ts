@@ -51,9 +51,13 @@ logger.use(
 logger.info('Application started', {
   tags: { action: 'app-start' },
 });
+logger.track('page_view', {
+  tags: { page: '/home' },
+});
 logger.error('Something went wrong', {
   error: new Error('Test error'),
   tags: { severity: 'high' },
 });
 
 // 日志会自动进入队列，并串行上传
+// track 和 info 同优先级，但后端可通过 level=track 独立筛选埋点数据

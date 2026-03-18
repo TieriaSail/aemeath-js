@@ -189,6 +189,7 @@ const defaultGetPriority: PriorityCallback = (log: LogEntry) => {
     case 'warn':
       return 50;
     case 'info':
+    case 'track':
       return 10;
     case 'debug':
       return 1;

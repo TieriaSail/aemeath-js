@@ -163,8 +163,24 @@ interface EarlyErrorCaptureOptions {
 
   /** 保底超时（默认：30000ms） */
   fallbackTimeout?: number;
+
+  /** 插件级路由匹配（在全局 routeMatch 基础上进一步缩小范围） */
+  routeMatch?: RouteMatchConfig;
 }
 ```
+
+### 路由匹配
+
+EarlyErrorCapturePlugin 会继承 `initAemeath()` 中的全局 `routeMatch` 配置。你也可以设置插件级 `routeMatch` 来进一步缩小范围。
+
+**规则：**
+- `excludeRoutes` 优先级高于 `includeRoutes`。
+- 路由支持三种匹配模式：精确字符串、正则表达式、函数 `(path: string) => boolean`。
+- 如果只设置了 `excludeRoutes`，则排除的路由之外都会被监控。
+- 如果只设置了 `includeRoutes`，则只监控这些路由。
+- 小程序路由使用不同格式（例如 `pages/index/index` 而非 `/index`）。
+
+> **注意**：构建时注入的早期错误脚本会捕获**所有**错误，不区分路由。路由过滤仅在运行时将缓存的错误 flush 到 logger 时生效。
 
 ---
 

@@ -15,9 +15,10 @@ describe('AemeathLogger Core', () => {
   // ==================== 基础日志方法 ====================
 
   describe('基础日志方法', () => {
-    it('应该能调用 debug/info/warn/error 方法', () => {
+    it('应该能调用 debug/info/track/warn/error 方法', () => {
       expect(() => logger.debug('debug msg')).not.toThrow();
       expect(() => logger.info('info msg')).not.toThrow();
+      expect(() => logger.track('track msg')).not.toThrow();
       expect(() => logger.warn('warn msg')).not.toThrow();
       expect(() => logger.error('error msg')).not.toThrow();
     });
@@ -41,14 +42,16 @@ describe('AemeathLogger Core', () => {
 
       logger.debug('d');
       logger.info('i');
+      logger.track('t');
       logger.warn('w');
       logger.error('e');
 
-      expect(listener).toHaveBeenCalledTimes(4);
+      expect(listener).toHaveBeenCalledTimes(5);
       expect(listener.mock.calls[0][0].level).toBe('debug');
       expect(listener.mock.calls[1][0].level).toBe('info');
-      expect(listener.mock.calls[2][0].level).toBe('warn');
-      expect(listener.mock.calls[3][0].level).toBe('error');
+      expect(listener.mock.calls[2][0].level).toBe('track');
+      expect(listener.mock.calls[3][0].level).toBe('warn');
+      expect(listener.mock.calls[4][0].level).toBe('error');
     });
 
     it('应该能传递 tags', () => {
@@ -569,6 +572,43 @@ describe('AemeathLogger Core', () => {
       const entry: LogEntry = listener.mock.calls[0][0];
       expect(entry.environment).toBe('production');
       expect(entry.release).toBe('1.0.0');
+    });
+  });
+
+  // ==================== track 级别 ====================
+
+  describe('track 级别', () => {
+    it('track() 应生成 level=track 的日志条目', () => {
+      const listener = vi.fn();
+      logger.on('log', listener);
+
+      logger.track('page_view', { tags: { page: '/home' } });
+
+      expect(listener).toHaveBeenCalledTimes(1);
+      const entry: LogEntry = listener.mock.calls[0][0];
+      expect(entry.level).toBe('track');
+      expect(entry.message).toBe('page_view');
+      expect(entry.tags?.page).toBe('/home');
+    });
+
+    it('track 与 info 行为一致但 level 不同', () => {
+      const listener = vi.fn();
+      logger.on('log', listener);
+
+      logger.info('info_msg');
+      logger.track('track_msg');
+
+      const infoEntry: LogEntry = listener.mock.calls[0][0];
+      const trackEntry: LogEntry = listener.mock.calls[1][0];
+      expect(infoEntry.level).toBe('info');
+      expect(trackEntry.level).toBe('track');
+      expect(infoEntry.timestamp).toBeTypeOf('number');
+      expect(trackEntry.timestamp).toBeTypeOf('number');
+    });
+
+    it('destroy 后 track() 不应抛异常', () => {
+      logger.destroy();
+      expect(() => logger.track('after destroy')).not.toThrow();
     });
   });
 

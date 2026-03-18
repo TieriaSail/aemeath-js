@@ -38,6 +38,39 @@ Provides `startMark`, `endMark`, `measure` APIs to measure custom code segments
 
 Supports sampling rate configuration to reduce data volume in production
 
+### 6. Route-Based Filtering
+
+Performance monitoring supports route-based filtering via the global `routeMatch` config in `initAemeath()` and/or the plugin-level `routeMatch` option.
+
+```typescript
+initAemeath({
+  upload: async (log) => { /* ... */ return { success: true }; },
+
+  // Global routeMatch — applies to ALL plugins including PerformancePlugin
+  routeMatch: {
+    includeRoutes: ['/home', '/product', /^\/user\/.+/],
+    excludeRoutes: ['/debug'],
+  },
+});
+
+// Plugin-level routeMatch — further narrows scope for performance only
+getAemeath().use(
+  new PerformancePlugin({
+    monitorWebVitals: true,
+    routeMatch: {
+      includeRoutes: ['/home'],
+    },
+  }),
+);
+```
+
+**Rules:**
+- `excludeRoutes` takes priority over `includeRoutes`.
+- Routes support three matching patterns: exact string, RegExp, and function `(path: string) => boolean`.
+- If only `excludeRoutes` is set, all routes except excluded ones are monitored.
+- If only `includeRoutes` is set, only those routes are monitored.
+- MiniApp routes use a different format (e.g. `pages/index/index` instead of `/index`).
+
 ---
 
 ## 🚀 Quick Start
@@ -112,6 +145,9 @@ interface PerformancePluginOptions {
 
   /** Sampling rate for auto-collection (0-1, default: 1). Does not affect manual mark/measure. */
   sampleRate?: number;
+
+  /** Plugin-level route matching (narrows the global routeMatch scope) */
+  routeMatch?: RouteMatchConfig;
 }
 ```
 

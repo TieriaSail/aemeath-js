@@ -38,6 +38,39 @@
 
 支持采样率配置，减少生产环境数据量
 
+### 6. 路由过滤
+
+性能监控支持通过 `initAemeath()` 中的全局 `routeMatch` 配置和/或插件级 `routeMatch` 选项进行路由过滤。
+
+```typescript
+initAemeath({
+  upload: async (log) => { /* ... */ return { success: true }; },
+
+  // 全局 routeMatch — 对所有插件生效，包括 PerformancePlugin
+  routeMatch: {
+    includeRoutes: ['/home', '/product', /^\/user\/.+/],
+    excludeRoutes: ['/debug'],
+  },
+});
+
+// 插件级 routeMatch — 仅对性能监控进一步缩小范围
+getAemeath().use(
+  new PerformancePlugin({
+    monitorWebVitals: true,
+    routeMatch: {
+      includeRoutes: ['/home'],
+    },
+  }),
+);
+```
+
+**规则：**
+- `excludeRoutes` 优先级高于 `includeRoutes`。
+- 路由支持三种匹配模式：精确字符串、正则表达式、函数 `(path: string) => boolean`。
+- 如果只设置了 `excludeRoutes`，则排除的路由之外都会被监控。
+- 如果只设置了 `includeRoutes`，则只监控这些路由。
+- 小程序路由使用不同格式（例如 `pages/index/index` 而非 `/index`）。
+
 ---
 
 ## 🚀 快速开始
@@ -112,6 +145,9 @@ interface PerformancePluginOptions {
 
   /** 自动采集的采样率（0-1，默认：1），不影响手动 mark/measure */
   sampleRate?: number;
+
+  /** 插件级路由匹配（在全局 routeMatch 基础上进一步缩小范围） */
+  routeMatch?: RouteMatchConfig;
 }
 ```
 

@@ -20,6 +20,7 @@ import type {
 import type { PlatformAdapter } from '../platform/types';
 import { detectPlatform } from '../platform/detect';
 import { LogLevel as LogLevelEnum, ErrorCategory } from '../types';
+import { RouteMatcher, type RouteMatchConfig } from '../utils/routeMatcher';
 
 interface AemeathOptions {
   /** 是否启用控制台输出 @default true */
@@ -31,6 +32,8 @@ interface AemeathOptions {
   debug?: boolean;
   /** 平台适配器（不传则自动检测） */
   platform?: PlatformAdapter;
+  /** 全局路由匹配配置（对所有插件生效） */
+  routeMatch?: RouteMatchConfig;
 }
 
 export class AemeathLogger implements AemeathInterface {
@@ -50,12 +53,24 @@ export class AemeathLogger implements AemeathInterface {
 
   public readonly extensions: Record<string, unknown> = {};
 
+  private readonly _routeMatcher: RouteMatcher;
+
+  /** Global route matcher shared by all plugins */
+  get routeMatcher(): RouteMatcher {
+    return this._routeMatcher;
+  }
+
   constructor(options?: AemeathOptions) {
     this.enableConsole = options?.enableConsole ?? true;
     this.environment = options?.environment;
     this.release = options?.release;
     this.debugEnabled = options?.debug ?? false;
     this.platform = options?.platform ?? detectPlatform();
+    this._routeMatcher = new RouteMatcher({
+      config: options?.routeMatch,
+      debug: options?.debug,
+      debugPrefix: '[Aemeath:Global]',
+    });
     if (options?.context) {
       this.setContext(options.context);
     }
@@ -323,6 +338,7 @@ export class AemeathLogger implements AemeathInterface {
     const consoleMethod = ({
       [LogLevelEnum.DEBUG]: console.debug,
       [LogLevelEnum.INFO]: console.info,
+      [LogLevelEnum.TRACK]: console.info,
       [LogLevelEnum.WARN]: console.warn,
       [LogLevelEnum.ERROR]: console.error,
     } as Record<string, typeof console.log>)[entry.level] ?? console.log;
@@ -344,6 +360,10 @@ export class AemeathLogger implements AemeathInterface {
 
   public info(message: string, options?: LogOptions): void {
     this.log(LogLevelEnum.INFO, message, options);
+  }
+
+  public track(message: string, options?: LogOptions): void {
+    this.log(LogLevelEnum.TRACK, message, options);
   }
 
   public warn(message: string, options?: LogOptions): void {

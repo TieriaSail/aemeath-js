@@ -123,19 +123,18 @@ describe('Browser IIFE 入口', () => {
   // ==================== 日志级别过滤 ====================
 
   describe('日志级别过滤', () => {
-    it("level='warn' 时 debug 和 info 应被替换为 noop", async () => {
+    it("level='warn' 时 debug/info/track 应被替换为 noop", async () => {
       const mod = await import('../src/browser/index');
       const logger = mod.init({ level: 'warn', errorCapture: false, safeGuard: false });
 
       const logListener = vi.fn();
       logger.on('log', logListener);
 
-      // debug 和 info 被替换为 noop，不应触发
       logger.debug('d');
       logger.info('i');
+      logger.track('t');
       expect(logListener).not.toHaveBeenCalled();
 
-      // warn 和 error 应正常
       logger.warn('w');
       expect(logListener).toHaveBeenCalledTimes(1);
     });
@@ -149,6 +148,7 @@ describe('Browser IIFE 入口', () => {
 
       logger.debug('d');
       logger.info('i');
+      logger.track('t');
       logger.warn('w');
       expect(logListener).not.toHaveBeenCalled();
 
@@ -165,10 +165,26 @@ describe('Browser IIFE 入口', () => {
 
       logger.debug('d');
       logger.info('i');
+      logger.track('t');
       logger.warn('w');
       logger.error('e');
 
-      expect(logListener).toHaveBeenCalledTimes(4);
+      expect(logListener).toHaveBeenCalledTimes(5);
+    });
+
+    it("level='info' 时 track 也应生效（track 与 info 同级）", async () => {
+      const mod = await import('../src/browser/index');
+      const logger = mod.init({ level: 'info', errorCapture: false, safeGuard: false });
+
+      const logListener = vi.fn();
+      logger.on('log', logListener);
+
+      logger.debug('d');
+      expect(logListener).not.toHaveBeenCalled();
+
+      logger.track('t');
+      expect(logListener).toHaveBeenCalledTimes(1);
+      expect(logListener.mock.calls[0][0].level).toBe('track');
     });
   });
 

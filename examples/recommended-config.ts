@@ -193,6 +193,12 @@ const logger = createLogger();
 logger.info('App started', {
   tags: { action: 'app-start' },
 });
+logger.track('page_view', {
+  tags: { page: '/dashboard', referrer: '/home' },
+});
+logger.track('button_click', {
+  tags: { buttonId: 'submit-form', page: '/settings' },
+});
 logger.error('Something went wrong', {
   error: new Error('Test error'),
   tags: { action: 'test', severity: 'high' },

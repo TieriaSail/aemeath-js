@@ -109,6 +109,23 @@ describe('UploadPlugin', () => {
       expect(status.items[status.items.length - 1].level).toBe('debug');
     });
 
+    it('track 的默认优先级与 info 相同', () => {
+      const customPlugin = new UploadPlugin({
+        onUpload: uploadFn,
+        queue: { deduplicationDelay: 10 },
+        cache: { enabled: false },
+        saveOnUnload: false,
+      });
+
+      logger.use(customPlugin);
+
+      logger.track('t');
+      logger.info('i');
+
+      const status = customPlugin.getQueueStatus();
+      expect(status.items[0].priority).toBe(status.items[1].priority);
+    });
+
     it('自定义优先级回调应生效', async () => {
       const customPlugin = new UploadPlugin({
         onUpload: uploadFn,

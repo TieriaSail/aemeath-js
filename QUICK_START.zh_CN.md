@@ -62,7 +62,7 @@ AemeathJs.init({
   errorCapture: true,                    // 自动捕获错误（默认 true）
   safeGuard: true,                       // 安全保护（默认 true）
   enableConsole: true,                   // 控制台输出（默认 true）
-  level: 'info'                          // 日志级别：debug/info/warn/error
+  level: 'info'                          // 日志级别：debug/info/track/warn/error
 });
 
 // 获取 Logger 实例
@@ -71,9 +71,12 @@ var logger = AemeathJs.getAemeath();
 // 记录日志
 logger.debug('调试信息');
 logger.info('普通信息');
+logger.track('按钮点击', { tags: { page: '/home', action: 'click' } });
 logger.warn('警告信息');
 logger.error('错误信息');
 ```
+
+> `track()` 与 `info()` 同优先级，用于简易业务埋点（如页面浏览、按钮点击）。它将埋点数据与一般信息日志分离，方便后端按 `level=track` 独立分析。
 
 **CDN 地址：**
 
@@ -312,6 +315,57 @@ initAemeath({
 initAemeath({
   network: {
     monitorAllSlowRequests: true,
+  },
+});
+```
+
+### 路由作用域（可选）
+
+并非所有页面都需要监控。使用 `routeMatch` 控制哪些路由开启监控——对**所有**能力生效（错误捕获、网络监控、性能监控）。
+
+```typescript
+initAemeath({
+  routeMatch: {
+    excludeRoutes: ['/admin', '/debug', '/logger-viewer'],
+  },
+  upload: async (log) => { /* ... */ return { success: true }; },
+});
+```
+
+`excludeRoutes` 优先级高于 `includeRoutes`。例如：监控 `/app/*` 但排除 `/app/debug`：
+
+```typescript
+initAemeath({
+  routeMatch: {
+    includeRoutes: [/^\/app/],
+    excludeRoutes: ['/app/debug'],
+  },
+});
+```
+
+**进阶：插件级路由覆盖** —— 各插件（`errorCapture`、`network`、`performance`）均支持独立的 `routeMatch` 子配置，在全局规则基础上进一步缩小监控范围。详见各模块文档。
+
+```typescript
+initAemeath({
+  routeMatch: {
+    includeRoutes: [/^\/app/],
+  },
+  network: {
+    routeMatch: { excludeRoutes: ['/app/internal'] },
+  },
+  errorCapture: {
+    routeMatch: { excludeRoutes: ['/app/test'] },
+  },
+});
+```
+
+**小程序路由** 格式不同（如 `pages/index/index` 而非 `/index`）：
+
+```typescript
+initAemeath({
+  platform: createMiniAppAdapter('wechat', wx),
+  routeMatch: {
+    excludeRoutes: ['pages/admin/index', 'pages/debug/index'],
   },
 });
 ```

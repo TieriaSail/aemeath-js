@@ -148,5 +148,49 @@ describe('RouteMatcher', () => {
       expect(matcher.shouldCapturePath('/test')).toBe(false);
     });
   });
+
+  // ==================== compose 组合匹配 ====================
+
+  describe('compose', () => {
+    it('child 无配置时应返回 parent 本身', () => {
+      const parent = new RouteMatcher({ config: { excludeRoutes: ['/debug'] } });
+      const composed = RouteMatcher.compose(parent, undefined);
+      expect(composed).toBe(parent);
+    });
+
+    it('parent 拒绝时，组合后也应拒绝', () => {
+      const parent = new RouteMatcher({ config: { excludeRoutes: ['/debug'] } });
+      const composed = RouteMatcher.compose(parent, { includeRoutes: ['/debug'] });
+      expect(composed.shouldCapture('/debug')).toBe(false);
+    });
+
+    it('parent 通过但 child 拒绝时，组合后应拒绝', () => {
+      const parent = new RouteMatcher({ config: { includeRoutes: [/^\/app/] } });
+      const composed = RouteMatcher.compose(parent, { excludeRoutes: ['/app/internal'] });
+      expect(composed.shouldCapture('/app/dashboard')).toBe(true);
+      expect(composed.shouldCapture('/app/internal')).toBe(false);
+    });
+
+    it('parent 和 child 都通过时，组合后应通过', () => {
+      const parent = new RouteMatcher({ config: { includeRoutes: [/^\/app/] } });
+      const composed = RouteMatcher.compose(parent, { includeRoutes: ['/app/checkout'] });
+      expect(composed.shouldCapture('/app/checkout')).toBe(true);
+      expect(composed.shouldCapture('/app/dashboard')).toBe(false);
+    });
+
+    it('parent 无配置（全通过）+ child 有配置应仅受 child 控制', () => {
+      const parent = new RouteMatcher();
+      const composed = RouteMatcher.compose(parent, { excludeRoutes: ['/admin'] });
+      expect(composed.shouldCapture('/home')).toBe(true);
+      expect(composed.shouldCapture('/admin')).toBe(false);
+    });
+
+    it('parent 不匹配的路由，child 无法覆盖', () => {
+      const parent = new RouteMatcher({ config: { includeRoutes: ['/app'] } });
+      const composed = RouteMatcher.compose(parent, { includeRoutes: ['/other'] });
+      expect(composed.shouldCapture('/other')).toBe(false);
+      expect(composed.shouldCapture('/app')).toBe(false); // child 限制了只要 /other
+    });
+  });
 });
 

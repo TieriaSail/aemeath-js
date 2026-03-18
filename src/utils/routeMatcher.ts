@@ -60,15 +60,37 @@ export class RouteMatcher {
   private readonly config: RouteMatchConfig | undefined;
   private readonly debugEnabled: boolean;
   private readonly debugPrefix: string;
+  private readonly parent: RouteMatcher | null;
 
   constructor(options?: {
     config?: RouteMatchConfig;
     debug?: boolean;
     debugPrefix?: string;
+    parent?: RouteMatcher;
   }) {
     this.config = options?.config;
     this.debugEnabled = options?.debug ?? false;
     this.debugPrefix = options?.debugPrefix ?? '[RouteMatcher]';
+    this.parent = options?.parent ?? null;
+  }
+
+  /**
+   * Compose a parent matcher with a child config.
+   * The composed matcher returns true only when both parent AND child allow capture.
+   * If childConfig is undefined, returns parent as-is (no extra overhead).
+   */
+  static compose(
+    parent: RouteMatcher,
+    childConfig?: RouteMatchConfig,
+    options?: { debug?: boolean; debugPrefix?: string },
+  ): RouteMatcher {
+    if (!childConfig) return parent;
+    return new RouteMatcher({
+      config: childConfig,
+      debug: options?.debug,
+      debugPrefix: options?.debugPrefix,
+      parent,
+    });
   }
 
   /**
@@ -107,12 +129,18 @@ export class RouteMatcher {
    * @returns true 表示应该监控当前路由，false 表示不监控
    */
   public shouldCapture(path?: string): boolean {
+    const currentPath = path ?? this.getCurrentPath();
+
+    // If composed, parent must allow first
+    if (this.parent && !this.parent.shouldCapture(currentPath)) {
+      return false;
+    }
+
     // 如果没有配置路由过滤，默认监控所有路由
     if (!this.config) {
       return true;
     }
 
-    const currentPath = path ?? this.getCurrentPath();
     const { excludeRoutes, includeRoutes } = this.config;
 
     // 1. 检查黑名单（优先级更高）
@@ -148,7 +176,10 @@ export class RouteMatcher {
    * @returns true 表示应该监控该路由，false 表示不监控
    */
   public shouldCapturePath(path: string): boolean {
-    // 如果没有配置路由过滤，默认监控所有路由
+    if (this.parent && !this.parent.shouldCapturePath(path)) {
+      return false;
+    }
+
     if (!this.config) {
       return true;
     }

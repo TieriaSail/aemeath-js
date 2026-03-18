@@ -57,7 +57,8 @@ export class ErrorCapturePlugin implements AemeathPlugin {
     errorFilter?: (error: Error) => boolean;
   };
   private readonly deduplicator: ErrorDeduplicator;
-  private readonly routeMatcher: RouteMatcher;
+  private routeMatcher!: RouteMatcher;
+  private readonly pluginRouteMatch: RouteMatchConfig | undefined;
   private readonly debugEnabled: boolean;
   private logger: AemeathInterface | null = null;
   private originalConsoleError: typeof console.error | null = null;
@@ -82,12 +83,7 @@ export class ErrorCapturePlugin implements AemeathPlugin {
       maxCacheSize: 100,
     });
 
-    // 使用共享的路由匹配器
-    this.routeMatcher = new RouteMatcher({
-      config: options.routeMatch,
-      debug: options.debug,
-      debugPrefix: '[ErrorCapture]',
-    });
+    this.pluginRouteMatch = options.routeMatch;
   }
 
   /** 调试日志 */
@@ -107,6 +103,13 @@ export class ErrorCapturePlugin implements AemeathPlugin {
   install(logger: AemeathInterface): void {
     this.logger = logger;
     this.platform = logger.platform;
+
+    // Compose global matcher with plugin-level routeMatch
+    this.routeMatcher = RouteMatcher.compose(
+      logger.routeMatcher,
+      this.pluginRouteMatch,
+      { debug: this.debugEnabled, debugPrefix: '[ErrorCapture]' },
+    );
 
     try {
       this.captureGlobalError();

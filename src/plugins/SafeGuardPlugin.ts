@@ -450,6 +450,7 @@ export class SafeGuardPlugin implements AemeathPlugin {
     switch (level) {
       case 'debug': return this.logger.debug.bind(this.logger);
       case 'info': return this.logger.info.bind(this.logger);
+      case 'track': return this.logger.track.bind(this.logger);
       case 'warn': return this.logger.warn.bind(this.logger);
       case 'error': return this.logger.error.bind(this.logger);
       default: return this.logger.info.bind(this.logger);

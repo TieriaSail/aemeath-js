@@ -25,6 +25,7 @@ let globalLogger: AemeathLogger | null = null;
 const LOG_LEVEL_ORDER: Record<string, number> = {
   debug: 0,
   info: 1,
+  track: 1,
   warn: 2,
   error: 3,
 };
@@ -39,7 +40,7 @@ export interface BrowserLoggerOptions {
   /** 是否启用控制台输出 @default true */
   enableConsole?: boolean;
   /** 最低日志级别 @default 'info' */
-  level?: 'debug' | 'info' | 'warn' | 'error';
+  level?: 'debug' | 'info' | 'track' | 'warn' | 'error';
 }
 
 /**

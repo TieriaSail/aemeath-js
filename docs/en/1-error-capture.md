@@ -38,6 +38,38 @@ logger.use(new ErrorCapturePlugin());
 
 ## 📚 API
 
+### Route-Based Filtering (routeMatch)
+
+`routeMatch` is a **global** config in `initAemeath()` that controls all plugins (error capture, network, performance). Each plugin can also have its own `routeMatch` to further narrow the scope.
+
+```typescript
+initAemeath({
+  upload: async (log) => { /* ... */ return { success: true }; },
+
+  // Global routeMatch — applies to ALL plugins
+  routeMatch: {
+    includeRoutes: ['/home', '/product', /^\/user\/.+/],
+    excludeRoutes: ['/debug'],
+  },
+
+  // Plugin-level routeMatch — narrows scope for error capture only
+  errorCapture: {
+    routeMatch: {
+      includeRoutes: ['/checkout'],
+    },
+  },
+});
+```
+
+**Rules:**
+- `excludeRoutes` takes priority over `includeRoutes`.
+- Routes support three matching patterns: exact string, RegExp, and function `(path: string) => boolean`.
+- If only `excludeRoutes` is set, all routes except excluded ones are monitored.
+- If only `includeRoutes` is set, only those routes are monitored.
+- MiniApp routes use a different format (e.g. `pages/index/index` instead of `/index`).
+
+### ErrorCapturePluginOptions
+
 ```typescript
 interface ErrorCapturePluginOptions {
   /** Capture unhandled Promise rejections @default true */
@@ -48,11 +80,32 @@ interface ErrorCapturePluginOptions {
   captureConsoleError?: boolean;
   /** Custom error filter (return false to skip) */
   errorFilter?: (error: Error) => boolean;
-  /** Route matching configuration */
+  /** Plugin-level route matching (narrows the global routeMatch scope) */
   routeMatch?: RouteMatchConfig;
   /** Debug mode @default false */
   debug?: boolean;
 }
+```
+
+### Singleton Pattern — errorCapture option
+
+When using `initAemeath()`, `errorCapture` accepts a union type:
+
+```typescript
+// Option 1: boolean (default: true)
+initAemeath({
+  errorCapture: true,
+});
+
+// Option 2: object with plugin-level routeMatch
+initAemeath({
+  errorCapture: {
+    enabled: true,
+    routeMatch: {
+      includeRoutes: ['/checkout', '/payment'],
+    },
+  },
+});
 ```
 
 ---

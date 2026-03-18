@@ -215,5 +215,67 @@ describe('Singleton (initAemeath / getAemeath)', () => {
       mod.resetAemeath();
     });
   });
+
+  // ==================== errorCapture union type ====================
+
+  describe('errorCapture 扩展类型', () => {
+    it('errorCapture: true 应安装 ErrorCapturePlugin', async () => {
+      const mod = await import('../src/singleton/index');
+      const logger = mod.initAemeath({ errorCapture: true });
+      expect(logger.hasPlugin('error-capture')).toBe(true);
+      mod.resetAemeath();
+    });
+
+    it('errorCapture: {} 应安装 ErrorCapturePlugin（enabled 默认 true）', async () => {
+      const mod = await import('../src/singleton/index');
+      const logger = mod.initAemeath({ errorCapture: {} });
+      expect(logger.hasPlugin('error-capture')).toBe(true);
+      mod.resetAemeath();
+    });
+
+    it('errorCapture: { enabled: false } 不应安装 ErrorCapturePlugin', async () => {
+      const mod = await import('../src/singleton/index');
+      const logger = mod.initAemeath({ errorCapture: { enabled: false } });
+      expect(logger.hasPlugin('error-capture')).toBe(false);
+      mod.resetAemeath();
+    });
+
+    it('errorCapture: { routeMatch } 应安装带路由配置的 ErrorCapturePlugin', async () => {
+      const mod = await import('../src/singleton/index');
+      const logger = mod.initAemeath({
+        errorCapture: {
+          routeMatch: { excludeRoutes: ['/internal'] },
+        },
+      });
+      expect(logger.hasPlugin('error-capture')).toBe(true);
+      mod.resetAemeath();
+    });
+  });
+
+  // ==================== 全局 routeMatch ====================
+
+  describe('全局 routeMatch', () => {
+    it('应将 routeMatch 传递到 Logger 的 routeMatcher', async () => {
+      const mod = await import('../src/singleton/index');
+      const logger = mod.initAemeath({
+        routeMatch: { excludeRoutes: ['/debug'] },
+      });
+
+      expect(logger.routeMatcher).toBeDefined();
+      expect(logger.routeMatcher.shouldCapture('/home')).toBe(true);
+      expect(logger.routeMatcher.shouldCapture('/debug')).toBe(false);
+
+      mod.resetAemeath();
+    });
+
+    it('不配置 routeMatch 时全局 matcher 应允许所有路由', async () => {
+      const mod = await import('../src/singleton/index');
+      const logger = mod.initAemeath();
+
+      expect(logger.routeMatcher.shouldCapture('/any')).toBe(true);
+
+      mod.resetAemeath();
+    });
+  });
 });
 

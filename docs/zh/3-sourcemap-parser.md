@@ -209,6 +209,171 @@ Error: Cannot read property 'price' of undefined
 
 ---
 
+## 代码混淆
+
+使用代码混淆（如 `javascript-obfuscator` / `webpack-obfuscator`）时，SourceMap 链路需要额外配置。
+
+**压缩 vs. 混淆**
+
+| | 压缩（Minification） | 混淆（Obfuscation） |
+|---|---|---|
+| 目的 | 减小体积 | 保护代码逻辑 |
+| 手段 | 缩短变量名、去空格 | 控制流扁平化、死代码注入 |
+| 工具 | Terser / SWC / esbuild | javascript-obfuscator / webpack-obfuscator |
+| SourceMap | 构建工具自动生成 | 需要额外配置以合并上游 SourceMap |
+
+aemeath-js 的 SourceMap 解析器同时支持两种场景——只要最终产物有正确的 SourceMap，就能还原到原始源码。
+
+### 多层 SourceMap 合并
+
+同时使用压缩 + 混淆时：
+
+```
+TypeScript 源码
+    ↓ [tsc / SWC / Babel]
+JavaScript
+    ↓ [Terser / SWC 压缩]       → SourceMap A
+压缩后的代码
+    ↓ [javascript-obfuscator]   → SourceMap B（合并 A）
+最终产物 + 最终 SourceMap
+```
+
+混淆器必须正确合并上游 SourceMap，否则最终的 `.map` 文件无法映射回原始源码。
+
+### 构建配置
+
+#### Rsbuild + webpack-obfuscator
+
+```typescript
+// rsbuild.config.ts
+import WebpackObfuscator from 'webpack-obfuscator';
+
+// 在 tools.rspack 回调中（仅生产环境）：
+config.plugins?.push(
+  new WebpackObfuscator(
+    {
+      rotateStringArray: true,
+      stringArray: true,
+      stringArrayThreshold: 0.75,
+      controlFlowFlattening: true,
+      controlFlowFlatteningThreshold: 0.3,
+      deadCodeInjection: true,
+      deadCodeInjectionThreshold: 0.1,
+      identifierNamesGenerator: 'hexadecimal',
+      sourceMap: true,           // 必须开启
+      sourceMapMode: 'separate', // 必须开启
+    },
+    ['**/lib-logger*'],          // 排除 aemeath-js chunk
+  ),
+);
+```
+
+#### Webpack + webpack-obfuscator
+
+```javascript
+// webpack.config.js
+new WebpackObfuscator(
+  {
+    rotateStringArray: true,
+    stringArray: true,
+    controlFlowFlattening: true,
+    deadCodeInjection: true,
+    identifierNamesGenerator: 'hexadecimal',
+    sourceMap: true,
+    sourceMapMode: 'separate',
+  },
+  ['**/lib-logger*'],
+);
+```
+
+#### Vite + rollup-obfuscator
+
+```typescript
+// vite.config.ts
+import obfuscatorPlugin from 'rollup-obfuscator';
+
+export default defineConfig({
+  build: { sourcemap: 'hidden' },
+  plugins: [
+    obfuscatorPlugin({
+      rotateStringArray: true,
+      stringArray: true,
+      controlFlowFlattening: true,
+      deadCodeInjection: true,
+      identifierNamesGenerator: 'hexadecimal',
+      sourceMap: true,
+      sourceMapMode: 'separate',
+    }),
+  ],
+});
+```
+
+### 排除 aemeath-js 不被混淆
+
+aemeath-js 不应被混淆——混淆会破坏其基于正则的堆栈解析和插件系统。将其打包为独立 chunk 并排除：
+
+```typescript
+// splitChunks 配置
+optimization: {
+  splitChunks: {
+    cacheGroups: {
+      logger: {
+        test: /[\\/](node_modules[\\/]aemeath-js[\\/]|src[\\/]utils[\\/](logger-config|sourcemap-helper|logger\.ts))/,
+        name: 'lib-logger',
+        chunks: 'all',
+        priority: 30,
+      },
+    },
+  },
+}
+
+// 然后在混淆器中排除
+new WebpackObfuscator({ /* ... */ }, ['**/lib-logger*']);
+```
+
+### 混淆强度与性能平衡
+
+| 配置 | 体积增幅 | 性能影响 |
+|---|---|---|
+| 仅标识符重命名 | ~5% | 几乎无 |
+| + 字符串数组 | ~15-20% | 轻微 |
+| + 控制流扁平化（0.3） | ~30-40% | 中等 |
+| + 死代码注入（0.1） | ~10-15% | 轻微 |
+| 全部开满 | ~80-100% | 显著 |
+
+### 构建后验证 SourceMap
+
+```bash
+# 检查 .map 文件是否存在
+ls dist/static/js/*.map
+
+# 验证 sources 字段
+cat dist/static/js/main.*.js.map | python3 -m json.tool | head -20
+# 应包含类似 "src/utils/cart.ts" 的路径
+```
+
+或使用解析器编程验证：
+
+```typescript
+import { createParser } from 'aemeath-js/parser';
+
+const parser = createParser({
+  sourceMapBaseUrl: 'http://localhost:8080/sourcemaps/dist/1.0.0',
+  debug: true,
+});
+
+const result = await parser.parse(capturedErrorStack);
+result.frames.forEach((frame) => {
+  if (frame.resolved && frame.original) {
+    console.log(`✅ ${frame.original.fileName}:${frame.original.line}`);
+  } else {
+    console.log(`❌ 解析失败: ${frame.raw}`);
+  }
+});
+```
+
+---
+
 ## 📖 更多
 
 - [错误捕获](./1-error-capture.md)

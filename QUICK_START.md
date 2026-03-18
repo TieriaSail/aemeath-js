@@ -61,7 +61,7 @@ AemeathJs.init({
   errorCapture: true,                    // Auto capture errors (default: true)
   safeGuard: true,                       // Safety guard (default: true)
   enableConsole: true,                   // Console output (default: true)
-  level: 'info'                          // Log level: debug/info/warn/error
+  level: 'info'                          // Log level: debug/info/track/warn/error
 });
 
 // Get logger instance
@@ -70,9 +70,12 @@ var logger = AemeathJs.getAemeath();
 // Log messages
 logger.debug('Debug message');
 logger.info('Info message');
+logger.track('Button clicked', { tags: { page: '/home', action: 'click' } });
 logger.warn('Warning message');
 logger.error('Error message');
 ```
+
+> `track()` shares the same priority as `info()` and is designed for simple business tracking (e.g. page views, button clicks). It keeps tracking data separate from general informational logs.
 
 **CDN URLs:**
 
@@ -311,6 +314,57 @@ initAemeath({
 initAemeath({
   network: {
     monitorAllSlowRequests: true,
+  },
+});
+```
+
+### Route Scope (Optional)
+
+Not every page needs monitoring. Use `routeMatch` to control which routes are monitored — applies to **all** capabilities (error capture, network monitoring, performance monitoring).
+
+```typescript
+initAemeath({
+  routeMatch: {
+    excludeRoutes: ['/admin', '/debug', '/logger-viewer'],
+  },
+  upload: async (log) => { /* ... */ return { success: true }; },
+});
+```
+
+`excludeRoutes` takes priority over `includeRoutes`. Example: monitor `/app/*` except `/app/debug`:
+
+```typescript
+initAemeath({
+  routeMatch: {
+    includeRoutes: [/^\/app/],
+    excludeRoutes: ['/app/debug'],
+  },
+});
+```
+
+**Advanced: per-plugin route override** — each plugin (`errorCapture`, `network`, `performance`) supports its own `routeMatch` to further narrow scope within the global rules. See the corresponding module documentation for details.
+
+```typescript
+initAemeath({
+  routeMatch: {
+    includeRoutes: [/^\/app/],
+  },
+  network: {
+    routeMatch: { excludeRoutes: ['/app/internal'] },
+  },
+  errorCapture: {
+    routeMatch: { excludeRoutes: ['/app/test'] },
+  },
+});
+```
+
+**MiniApp routes** use a different format (e.g. `pages/index/index` instead of `/index`):
+
+```typescript
+initAemeath({
+  platform: createMiniAppAdapter('wechat', wx),
+  routeMatch: {
+    excludeRoutes: ['pages/admin/index', 'pages/debug/index'],
   },
 });
 ```

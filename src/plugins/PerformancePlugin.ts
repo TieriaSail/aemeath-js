@@ -13,6 +13,7 @@
  */
 
 import type { AemeathPlugin, AemeathInterface } from '../types';
+import { RouteMatcher, type RouteMatchConfig } from '../utils/routeMatcher';
 
 export interface WebVitalsOptions {
   /** Monitor LCP @default true */
@@ -50,6 +51,12 @@ export interface PerformancePluginOptions {
 
   /** Sampling rate for auto-collection (0-1), does not affect manual mark/measure @default 1 */
   sampleRate?: number;
+
+  /**
+   * 插件级路由匹配配置
+   * 在全局 routeMatch 基础上进一步限定性能监控的路由范围
+   */
+  routeMatch?: RouteMatchConfig;
 }
 
 interface PerformanceMetric {
@@ -74,6 +81,8 @@ export class PerformancePlugin implements AemeathPlugin {
   readonly description = 'Performance monitoring';
 
   private readonly config: ResolvedConfig;
+  private readonly pluginRouteMatch: RouteMatchConfig | undefined;
+  private routeMatcher!: RouteMatcher;
   private logger: AemeathInterface | null = null;
   private observers: PerformanceObserver[] = [];
   private readonly marks: Map<string, number> = new Map();
@@ -118,10 +127,17 @@ export class PerformancePlugin implements AemeathPlugin {
       slowResourceThreshold: options.slowResourceThreshold ?? 1000,
       sampleRate: options.sampleRate ?? 1,
     };
+    this.pluginRouteMatch = options.routeMatch;
   }
 
   install(logger: AemeathInterface): void {
     this.logger = logger;
+
+    this.routeMatcher = RouteMatcher.compose(
+      logger.routeMatcher,
+      this.pluginRouteMatch,
+      { debugPrefix: '[PerformancePlugin]' },
+    );
 
     // 手动 mark/measure API 始终可用，不受采样率限制
     logger.extensions.startMark = this.startMark.bind(this);
@@ -365,7 +381,7 @@ export class PerformancePlugin implements AemeathPlugin {
     }
 
     this.observeMetric('resource', (entry: any) => {
-      if (entry.duration > this.config.slowResourceThreshold) {
+      if (entry.duration > this.config.slowResourceThreshold && this.routeMatcher.shouldCapture()) {
         this.logger?.warn('[performance] slow-resource', {
           tags: { category: 'performance', type: 'slow-resource' },
           context: {
@@ -387,7 +403,7 @@ export class PerformancePlugin implements AemeathPlugin {
     }
 
     this.observeMetric('longtask', (entry: any) => {
-      if (entry.duration > this.config.longTaskThreshold) {
+      if (entry.duration > this.config.longTaskThreshold && this.routeMatcher.shouldCapture()) {
         this.logger?.warn('[performance] long-task', {
           tags: { category: 'performance', type: 'long-task' },
           context: {
@@ -421,6 +437,10 @@ export class PerformancePlugin implements AemeathPlugin {
   }
 
   private reportMetric(metric: PerformanceMetric): void {
+    if (!this.routeMatcher.shouldCapture()) {
+      return;
+    }
+
     try {
       this.logger?.info('[performance] web-vital', {
         tags: {

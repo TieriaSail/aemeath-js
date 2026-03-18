@@ -15,6 +15,7 @@ import type { NetworkEvent, InstrumentOptions, Unsubscribe } from '../instrument
 import { instrumentFetch } from '../instrumentation/fetch';
 import { instrumentXHR } from '../instrumentation/xhr';
 import { instrumentMiniAppRequest } from '../instrumentation/miniapp-request';
+import { RouteMatcher, type RouteMatchConfig } from '../utils/routeMatcher';
 
 export interface NetworkLog {
   type: 'fetch' | 'xhr' | 'request';
@@ -45,6 +46,11 @@ export interface NetworkPluginOptions {
   slowRequestExcludePatterns?: string[];
   debug?: boolean;
   /**
+   * 插件级路由匹配配置
+   * 在全局 routeMatch 基础上进一步限定网络监控的路由范围
+   */
+  routeMatch?: RouteMatchConfig;
+  /**
    * MiniApp raw API object — when platform is miniapp,
    * the caller must provide the API handle (e.g. `wx`, `my`) for request instrumentation.
    * If omitted, the plugin will try to auto-detect from well-known globals.
@@ -55,7 +61,7 @@ export interface NetworkPluginOptions {
 type NetworkPluginConfig = Required<
   Omit<
     NetworkPluginOptions,
-    'urlFilter' | 'logTypes' | 'slowRequestExcludePatterns' | 'miniAppAPI'
+    'urlFilter' | 'logTypes' | 'slowRequestExcludePatterns' | 'miniAppAPI' | 'routeMatch'
   >
 > &
   Pick<NetworkPluginOptions, 'urlFilter' | 'miniAppAPI'> & {
@@ -69,6 +75,8 @@ export class NetworkPlugin implements AemeathPlugin {
   readonly description = '网络请求监控';
 
   private readonly config: NetworkPluginConfig;
+  private readonly pluginRouteMatch: RouteMatchConfig | undefined;
+  private routeMatcher!: RouteMatcher;
   private logger: AemeathInterface | null = null;
   private platform!: PlatformAdapter;
   private readonly unsubscribers: Unsubscribe[] = [];
@@ -97,6 +105,7 @@ export class NetworkPlugin implements AemeathPlugin {
       debug: options.debug ?? false,
       miniAppAPI: options.miniAppAPI,
     };
+    this.pluginRouteMatch = options.routeMatch;
   }
 
   private log(...args: unknown[]): void {
@@ -114,6 +123,12 @@ export class NetworkPlugin implements AemeathPlugin {
   install(logger: AemeathInterface): void {
     this.logger = logger;
     this.platform = logger.platform;
+
+    this.routeMatcher = RouteMatcher.compose(
+      logger.routeMatcher,
+      this.pluginRouteMatch,
+      { debug: this.config.debug, debugPrefix: '[NetworkPlugin]' },
+    );
 
     try {
       this.setupIntercept();
@@ -134,6 +149,10 @@ export class NetworkPlugin implements AemeathPlugin {
   }
 
   private handleNetworkEvent = (event: NetworkEvent): void => {
+    if (!this.routeMatcher.shouldCapture(this.platform.getCurrentPath())) {
+      return;
+    }
+
     this.recordRequest({
       type: event.type,
       url: event.url,

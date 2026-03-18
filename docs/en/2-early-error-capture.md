@@ -163,8 +163,24 @@ interface EarlyErrorCaptureOptions {
 
   /** Fallback timeout (default: 30000ms) */
   fallbackTimeout?: number;
+
+  /** Plugin-level route matching (narrows the global routeMatch scope) */
+  routeMatch?: RouteMatchConfig;
 }
 ```
+
+### Route Matching
+
+EarlyErrorCapturePlugin inherits the global `routeMatch` config from `initAemeath()`. You can also set a plugin-level `routeMatch` to further narrow the scope.
+
+**Rules:**
+- `excludeRoutes` takes priority over `includeRoutes`.
+- Routes support three matching patterns: exact string, RegExp, and function `(path: string) => boolean`.
+- If only `excludeRoutes` is set, all routes except excluded ones are monitored.
+- If only `includeRoutes` is set, only those routes are monitored.
+- MiniApp routes use a different format (e.g. `pages/index/index` instead of `/index`).
+
+> **Note**: The build-time early error script captures ALL errors regardless of route. Route filtering only applies at runtime when the cached errors are flushed to the logger.
 
 ---
 
