@@ -268,6 +268,25 @@ config.plugins?.push(
 );
 ```
 
+> **Rspack SourceMap Chain Issue**: Rspack's native `SourceMapDevToolPlugin` may overwrite the merged SourceMap produced by `webpack-obfuscator`, causing SourceMap resolution to fail completely. If you encounter this (error positions return `null`), install [obfuscator-sourcemap-rspack-plugin](https://github.com/TieriaSail/obfuscator-sourcemap-rspack-plugin):
+>
+> ```bash
+> npm install obfuscator-sourcemap-rspack-plugin --save-dev
+> ```
+>
+> Then add it **after** `webpack-obfuscator`:
+>
+> ```typescript
+> import { ObfuscatorSourceMapRspackPlugin } from 'obfuscator-sourcemap-rspack-plugin';
+>
+> config.plugins?.push(
+>   new WebpackObfuscator({ sourceMap: true, sourceMapMode: 'separate', /* ... */ }, excludes),
+>   new ObfuscatorSourceMapRspackPlugin(),
+> );
+> ```
+>
+> This issue does **not** affect traditional webpack or Vite — only Rspack/Rsbuild.
+
 #### Webpack + webpack-obfuscator
 
 ```javascript

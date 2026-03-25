@@ -268,6 +268,25 @@ config.plugins?.push(
 );
 ```
 
+> **Rspack SourceMap Chain 断裂问题**：Rspack 的 native `SourceMapDevToolPlugin` 可能会覆盖 `webpack-obfuscator` 合并后的 SourceMap，导致 SourceMap 解析完全失效。如果你遇到此问题（错误位置返回 `null`），请安装 [obfuscator-sourcemap-rspack-plugin](https://github.com/TieriaSail/obfuscator-sourcemap-rspack-plugin)：
+>
+> ```bash
+> npm install obfuscator-sourcemap-rspack-plugin --save-dev
+> ```
+>
+> 在 `webpack-obfuscator` **之后**添加：
+>
+> ```typescript
+> import { ObfuscatorSourceMapRspackPlugin } from 'obfuscator-sourcemap-rspack-plugin';
+>
+> config.plugins?.push(
+>   new WebpackObfuscator({ sourceMap: true, sourceMapMode: 'separate', /* ... */ }, excludes),
+>   new ObfuscatorSourceMapRspackPlugin(),
+> );
+> ```
+>
+> 此问题**不影响**传统 webpack 或 Vite，仅在 Rspack/Rsbuild 中出现。
+
 #### Webpack + webpack-obfuscator
 
 ```javascript

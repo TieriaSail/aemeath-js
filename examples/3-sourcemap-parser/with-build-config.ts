@@ -239,8 +239,17 @@ if (isProd) {
       // 排除 aemeath-js chunk 不被混淆
       ['**/lib-logger*'],
     ),
+
+    // Rspack SourceMap chain 修复插件
+    // Rspack native SourceMapDevToolPlugin 会覆盖 obfuscator 合并后的 SourceMap
+    // 此插件在 obfuscator 之后捕获合并 map，在 Rspack 生成 .map 后替换回去
+    new ObfuscatorSourceMapRspackPlugin(),
   );
 }
+
+// 需要额外安装：npm install obfuscator-sourcemap-rspack-plugin --save-dev
+// import { ObfuscatorSourceMapRspackPlugin } from 'obfuscator-sourcemap-rspack-plugin';
+// 仅 Rspack/Rsbuild 需要此插件，传统 webpack 和 Vite 不需要
 */
 
 /*
