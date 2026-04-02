@@ -21,7 +21,29 @@ logger.use(new ErrorCapturePlugin());
 
 ---
 
-### 2. [with-react.tsx](./with-react.tsx) - React ErrorBoundary
+### 2. [with-webview-enhanced.ts](./with-webview-enhanced.ts) - WebView 增强捕获
+
+**解决 "Script error." 问题**
+
+```typescript
+import { initAemeath } from 'aemeath-js';
+
+initAemeath({
+  upload: async (log) => { /* ... */ return { success: true }; },
+  // browserApiErrors 默认启用
+});
+```
+
+**覆盖场景**：
+
+- ✅ addEventListener 回调中的错误
+- ✅ setTimeout / setInterval 回调中的错误
+- ✅ requestAnimationFrame 回调中的错误
+- ✅ XMLHttpRequest 回调中的错误
+
+---
+
+### 3. [with-react.tsx](./with-react.tsx) - React ErrorBoundary
 
 **在 React 中捕获组件错误**
 

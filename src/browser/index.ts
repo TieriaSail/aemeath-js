@@ -14,6 +14,7 @@
 
 import { AemeathLogger } from '../core/Logger';
 import { ErrorCapturePlugin } from '../plugins/ErrorCapturePlugin';
+import { BrowserApiErrorsPlugin } from '../plugins/BrowserApiErrorsPlugin';
 import { UploadPlugin } from '../plugins/UploadPlugin';
 import { SafeGuardPlugin } from '../plugins/SafeGuardPlugin';
 import { detectPlatform } from '../platform/detect';
@@ -35,6 +36,8 @@ export interface BrowserLoggerOptions {
   upload?: (log: LogEntry) => void | Promise<void>;
   /** 是否启用错误捕获 @default true */
   errorCapture?: boolean;
+  /** 是否启用浏览器 API 回调增强捕获 @default true */
+  browserApiErrors?: boolean;
   /** 是否启用安全保护 @default true */
   safeGuard?: boolean;
   /** 是否启用控制台输出 @default true */
@@ -69,6 +72,11 @@ function init(options: BrowserLoggerOptions = {}): AemeathLogger {
         return undefined;
       },
     });
+  }
+
+  // Browser API callback wrapping (before error capture)
+  if (options.browserApiErrors !== false) {
+    logger.use(new BrowserApiErrorsPlugin());
   }
 
   // 错误捕获
@@ -160,4 +168,4 @@ function destroy(): void {
   }
 }
 
-export { init, getAemeath, destroy, AemeathLogger, ErrorCapturePlugin, UploadPlugin, SafeGuardPlugin };
+export { init, getAemeath, destroy, AemeathLogger, ErrorCapturePlugin, BrowserApiErrorsPlugin, UploadPlugin, SafeGuardPlugin };

@@ -6,6 +6,7 @@ import type { AemeathPlugin, AemeathInterface } from '../types';
 import type { PlatformAdapter } from '../platform/types';
 import { SYNTHETIC_STACK } from '../platform/constants';
 import { ErrorDeduplicator } from '../utils/errorDeduplicator';
+import { shouldIgnoreOnError } from '../utils/wrap';
 import {
   RouteMatcher,
   type RouteMatchConfig,
@@ -173,6 +174,12 @@ export class ErrorCapturePlugin implements AemeathPlugin {
   private captureGlobalError(): void {
     this.unregisterGlobalError = this.platform.errorCapture.onGlobalError(
       (info) => {
+        // Skip if the error was already captured by a wrapped callback
+        if (shouldIgnoreOnError()) {
+          this.log('Skipped duplicate (already captured by wrapped callback)');
+          return;
+        }
+
         const msgStr = typeof info.message === 'string'
           ? info.message
           : (typeof Event !== 'undefined' && info.message instanceof Event)
@@ -340,6 +347,7 @@ export class ErrorCapturePlugin implements AemeathPlugin {
         '[EarlyErrorCapture]',
         '[Performance]',
         '[NetworkPlugin]',
+        '[BrowserApiErrors]',
         '[AemeathJs]',
       ];
 

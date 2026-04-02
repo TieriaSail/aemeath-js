@@ -60,6 +60,7 @@
 AemeathJs.init({
   upload: function(log) { /* ... */ },  // 上报函数
   errorCapture: true,                    // 自动捕获错误（默认 true）
+  browserApiErrors: true,                // WebView 增强捕获（默认 true）
   safeGuard: true,                       // 安全保护（默认 true）
   enableConsole: true,                   // 控制台输出（默认 true）
   level: 'info'                          // 日志级别：debug/info/track/warn/error
@@ -133,6 +134,7 @@ logger.updateContext('userId', '67890');
 
 | 插件 | 默认状态 | 如何关闭 |
 |------|---------|---------|
+| `BrowserApiErrorsPlugin` | ✅ 默认启用 | `browserApiErrors: false` |
 | `ErrorCapturePlugin` | ✅ 默认启用 | `errorCapture: false` |
 | `SafeGuardPlugin` | ✅ 默认启用 | `safeGuard: { enabled: false }` |
 | `NetworkPlugin` | ✅ 默认启用 | `network: { enabled: false }` |
@@ -147,6 +149,7 @@ logger.updateContext('userId', '67890');
 
 | 插件 | 说明 | 体积 | 是否必需 |
 |------|------|------|----------|
+| **BrowserApiErrorsPlugin** | WebView/跨域环境增强错误捕获 | ~2KB | 推荐 |
 | **ErrorCapturePlugin** | 捕获全局错误 | ~3KB | 推荐 |
 | **EarlyErrorCapturePlugin** | React/Vue 挂载前的错误 | +3KB | 可选 |
 | **UploadPlugin** | 发送到服务器 | +5KB | 可选 |

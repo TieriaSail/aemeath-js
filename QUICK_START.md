@@ -59,6 +59,7 @@
 AemeathJs.init({
   upload: function(log) { /* ... */ },  // Upload function
   errorCapture: true,                    // Auto capture errors (default: true)
+  browserApiErrors: true,                // Enhanced capture in WebView (default: true)
   safeGuard: true,                       // Safety guard (default: true)
   enableConsole: true,                   // Console output (default: true)
   level: 'info'                          // Log level: debug/info/track/warn/error
@@ -132,6 +133,7 @@ logger.updateContext('userId', '67890');
 
 | Plugin | Default | How to disable |
 |--------|---------|----------------|
+| `BrowserApiErrorsPlugin` | ✅ Enabled | `browserApiErrors: false` |
 | `ErrorCapturePlugin` | ✅ Enabled | `errorCapture: false` |
 | `SafeGuardPlugin` | ✅ Enabled | `safeGuard: { enabled: false }` |
 | `NetworkPlugin` | ✅ Enabled | `network: { enabled: false }` |
@@ -146,6 +148,7 @@ logger.updateContext('userId', '67890');
 
 | Plugin | Description | Size | Required? |
 |--------|-------------|------|-----------|
+| **BrowserApiErrorsPlugin** | Enhanced error capture in WebView / cross-origin | ~2KB | Recommended |
 | **ErrorCapturePlugin** | Capture global errors | ~3KB | Recommended |
 | **EarlyErrorCapturePlugin** | Errors before React/Vue mount | +3KB | Optional |
 | **UploadPlugin** | Upload to server | +5KB | Optional |

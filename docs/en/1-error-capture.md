@@ -33,6 +33,7 @@ logger.use(new ErrorCapturePlugin());
 - Global JS errors
 - Unhandled promise rejections
 - Resource loading failures
+- **Errors inside callbacks** (enhanced capture via `BrowserApiErrorsPlugin`, solving "Script error." in WebView)
 
 ---
 
@@ -163,6 +164,76 @@ try {
   });
 }
 ```
+
+---
+
+## 🛡️ Browser API Enhanced Capture (BrowserApiErrorsPlugin)
+
+### What problem does it solve?
+
+In restricted cross-origin environments such as iOS WKWebView and Android WebView, `window.onerror` only returns `"Script error."` without any useful stack trace. `BrowserApiErrorsPlugin` wraps browser API callbacks with try-catch to capture full error details at the point of origin.
+
+### Default Behavior
+
+`initAemeath()` enables this plugin by default — no extra setup needed:
+
+```typescript
+initAemeath({
+  upload: async (log) => { /* ... */ return { success: true }; },
+});
+// BrowserApiErrorsPlugin is enabled automatically
+```
+
+### Covered Browser APIs
+
+| API | Description |
+|-----|-------------|
+| `EventTarget.addEventListener` | Wraps event callbacks with try-catch |
+| `EventTarget.removeEventListener` | Recognizes wrapped listeners automatically |
+| `setTimeout` / `setInterval` | Wraps timer callbacks with try-catch |
+| `requestAnimationFrame` | Wraps animation callbacks with try-catch |
+| `XMLHttpRequest.send` | Wraps onload / onerror / onreadystatechange callbacks |
+
+### Configuration
+
+```typescript
+initAemeath({
+  upload: async (log) => { /* ... */ return { success: true }; },
+
+  // Option 1: disable
+  browserApiErrors: false,
+
+  // Option 2: custom config
+  browserApiErrors: {
+    eventTarget: true,           // Patch addEventListener @default true
+    timer: true,                 // Patch setTimeout/setInterval @default true
+    requestAnimationFrame: true, // Patch requestAnimationFrame @default true
+    xhr: true,                   // Patch XMLHttpRequest.send @default true
+  },
+});
+```
+
+### Manual Assembly
+
+```typescript
+import { AemeathLogger, BrowserApiErrorsPlugin, ErrorCapturePlugin } from 'aemeath-js';
+
+const logger = new AemeathLogger();
+
+// ⚠️ BrowserApiErrorsPlugin MUST be installed BEFORE ErrorCapturePlugin
+logger.use(new BrowserApiErrorsPlugin());
+logger.use(new ErrorCapturePlugin());
+```
+
+### Deduplication
+
+When try-catch captures an error, the error is still re-thrown (preserving original behavior). `window.onerror` will also receive the same error. The plugin coordinates internally to ensure each error is reported only once.
+
+### Notes
+
+- This plugin only works in browser environments; it is automatically skipped in MiniApp environments
+- Does not affect `fetch` errors (those are captured via Promise rejection, already covered by `ErrorCapturePlugin`)
+- Uninstalling the plugin restores all APIs to their original implementations
 
 ---
 

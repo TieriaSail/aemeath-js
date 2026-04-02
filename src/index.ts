@@ -35,6 +35,9 @@ export type {
 export { LogLevel as LogLevelEnum, ErrorCategory } from './types';
 
 // ==================== Level 1 插件 ====================
+export { BrowserApiErrorsPlugin } from './plugins/BrowserApiErrorsPlugin';
+export type { BrowserApiErrorsPluginOptions } from './plugins/BrowserApiErrorsPlugin';
+
 export { ErrorCapturePlugin } from './plugins/ErrorCapturePlugin';
 export type { ErrorCapturePluginOptions } from './plugins/ErrorCapturePlugin';
 

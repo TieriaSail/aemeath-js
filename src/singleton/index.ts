@@ -9,6 +9,7 @@
 
 import { AemeathLogger } from '../core/Logger';
 import { ErrorCapturePlugin } from '../plugins/ErrorCapturePlugin';
+import { BrowserApiErrorsPlugin, type BrowserApiErrorsPluginOptions } from '../plugins/BrowserApiErrorsPlugin';
 import { EarlyErrorCapturePlugin } from '../plugins/EarlyErrorCapturePlugin';
 import { UploadPlugin, type UploadResult } from '../plugins/UploadPlugin';
 import { SafeGuardPlugin, type SafeGuardMode } from '../plugins/SafeGuardPlugin';
@@ -75,6 +76,21 @@ export interface AemeathInitOptions {
     enabled?: boolean;
     routeMatch?: RouteMatchConfig;
   };
+
+  /**
+   * 浏览器 API 回调增强捕获
+   *
+   * 通过 monkey-patch 浏览器 API（addEventListener / setTimeout / setInterval /
+   * requestAnimationFrame / XMLHttpRequest.send），为回调函数注入 try-catch，
+   * 解决 WebView 等跨域环境下 "Script error." 无法获取完整错误信息的问题。
+   *
+   * - `true` / `undefined`：启用（默认）
+   * - `false`：禁用
+   * - `object`：启用并自定义选项
+   *
+   * @default true
+   */
+  browserApiErrors?: boolean | BrowserApiErrorsPluginOptions;
 
   /**
    * 全局路由匹配配置
@@ -357,6 +373,17 @@ export function initAemeath(options: AemeathInitOptions = {}): AemeathLogger {
     platform,
     routeMatch: options.routeMatch,
   });
+
+  // 0. Browser API callback wrapping (must be installed BEFORE ErrorCapturePlugin
+  //    so that wrapped callbacks report via try-catch first, and the global
+  //    handler can skip duplicates via shouldIgnoreOnError())
+  const baeOpt = options.browserApiErrors;
+  const baeEnabled = baeOpt === undefined || baeOpt === true || (typeof baeOpt === 'object');
+  if (baeEnabled) {
+    const baeConfig: BrowserApiErrorsPluginOptions =
+      typeof baeOpt === 'object' ? baeOpt : {};
+    logger.use(new BrowserApiErrorsPlugin(baeConfig));
+  }
 
   // 1. 错误捕获（默认启用）
   const ecOpt = options.errorCapture;
