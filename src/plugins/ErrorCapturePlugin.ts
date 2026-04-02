@@ -4,6 +4,7 @@
 
 import type { AemeathPlugin, AemeathInterface } from '../types';
 import { ErrorDeduplicator } from '../utils/errorDeduplicator';
+import { shouldIgnoreOnError } from '../utils/wrap';
 import {
   RouteMatcher,
   type RouteMatchConfig,
@@ -33,7 +34,7 @@ export interface ErrorCapturePluginOptions {
 
 export class ErrorCapturePlugin implements AemeathPlugin {
   readonly name = 'error-capture';
-  readonly version = '1.2.0';
+  readonly version = '1.3.0';
   readonly description = '自动错误捕获';
 
   private readonly config: {
@@ -151,6 +152,11 @@ export class ErrorCapturePlugin implements AemeathPlugin {
           colno,
           error,
         );
+      }
+
+      if (shouldIgnoreOnError()) {
+        this.log('Skipped duplicate (already captured by wrapped callback)');
+        return true;
       }
 
       const err = error || new Error(String(message));
@@ -306,6 +312,7 @@ export class ErrorCapturePlugin implements AemeathPlugin {
         '[EarlyErrorCapture]',
         '[Performance]',
         '[NetworkPlugin]',
+        '[BrowserApiErrors]',
         '[AemeathJs]',
       ];
 

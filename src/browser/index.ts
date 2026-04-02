@@ -13,6 +13,7 @@
  */
 
 import { AemeathLogger } from '../core/Logger';
+import { BrowserApiErrorsPlugin } from '../plugins/BrowserApiErrorsPlugin';
 import { ErrorCapturePlugin } from '../plugins/ErrorCapturePlugin';
 import { UploadPlugin } from '../plugins/UploadPlugin';
 import { SafeGuardPlugin } from '../plugins/SafeGuardPlugin';
@@ -37,6 +38,12 @@ export interface BrowserLoggerOptions {
    * 上报函数
    */
   upload?: (log: LogEntry) => void | Promise<void>;
+
+  /**
+   * 是否启用浏览器 API 回调增强捕获
+   * @default true
+   */
+  browserApiErrors?: boolean;
 
   /**
    * 是否启用错误捕获
@@ -91,6 +98,11 @@ function init(options: BrowserLoggerOptions = {}): AemeathLogger {
   if (minOrder > 1) logger.track = noop;
   if (minOrder > 2) logger.warn = noop;
   // error 永远不过滤
+
+  // 浏览器 API 回调增强捕获（必须在 ErrorCapturePlugin 之前）
+  if (options.browserApiErrors !== false) {
+    logger.use(new BrowserApiErrorsPlugin());
+  }
 
   // 错误捕获
   if (options.errorCapture !== false) {
@@ -175,4 +187,4 @@ function flushEarlyErrors(logger: AemeathLogger): void {
 }
 
 // 导出 API（仅使用 named export，避免 IIFE 构建警告）
-export { init, getAemeath, AemeathLogger, ErrorCapturePlugin, UploadPlugin, SafeGuardPlugin };
+export { init, getAemeath, AemeathLogger, BrowserApiErrorsPlugin, ErrorCapturePlugin, UploadPlugin, SafeGuardPlugin };

@@ -59,6 +59,7 @@
 AemeathJs.init({
   upload: function(log) { /* ... */ },  // Upload function
   errorCapture: true,                    // Auto capture errors (default: true)
+  browserApiErrors: true,                // Enhanced capture in WebView (default: true)
   safeGuard: true,                       // Safety guard (default: true)
   enableConsole: true,                   // Console output (default: true)
   level: 'info'                          // Log level: debug/info/track/warn/error
@@ -70,10 +71,12 @@ var logger = AemeathJs.getAemeath();
 // Log messages
 logger.debug('Debug message');
 logger.info('Info message');
-logger.track('Business event');
+logger.track('Button clicked', { tags: { page: '/home', action: 'click' } });
 logger.warn('Warning message');
 logger.error('Error message');
 ```
+
+> `track()` shares the same priority as `info()` and is designed for simple business tracking (e.g. page views, button clicks). It keeps tracking data separate from general informational logs.
 
 **CDN URLs:**
 
@@ -126,28 +129,11 @@ logger.info('Hello World'); // context is automatically attached
 logger.updateContext('userId', '67890');
 ```
 
-> `logger.track()` is a dedicated level for business tracking / analytics. It shares the same priority and filtering behavior as `info`, but lets you distinguish business events from general logs when uploading or querying.
-
-#### Route Scope (Optional)
-
-Restrict logging to specific routes globally. Each plugin can further narrow the scope.
-
-```typescript
-initAemeath({
-  upload: async (log) => { return { success: true }; },
-  routeMatch: {
-    includeRoutes: ['/app', /^\/dashboard/],
-    excludeRoutes: ['/app/debug'],
-  },
-});
-```
-
-> `excludeRoutes` takes precedence over `includeRoutes`. Plugins like `errorCapture`, `network`, and `PerformancePlugin` can define their own `routeMatch` to further limit the global scope. See each plugin's documentation for details.
-
 **What's included by default?** `initAemeath()` automatically enables these plugins:
 
 | Plugin | Default | How to disable |
 |--------|---------|----------------|
+| `BrowserApiErrorsPlugin` | ✅ Enabled | `browserApiErrors: false` |
 | `ErrorCapturePlugin` | ✅ Enabled | `errorCapture: false` |
 | `SafeGuardPlugin` | ✅ Enabled | `safeGuard: { enabled: false }` |
 | `NetworkPlugin` | ✅ Enabled | `network: { enabled: false }` |
@@ -162,11 +148,12 @@ initAemeath({
 
 | Plugin | Description | Size | Required? |
 |--------|-------------|------|-----------|
+| **BrowserApiErrorsPlugin** | Enhanced error capture in WebView / cross-origin | ~2KB | Recommended |
 | **ErrorCapturePlugin** | Capture global errors | ~3KB | Recommended |
 | **EarlyErrorCapturePlugin** | Errors before React/Vue mount | +3KB | Optional |
 | **UploadPlugin** | Upload to server | +5KB | Optional |
 | **SourceMap Parser** | Parse obfuscated stacks | +6KB | Optional |
-| **PerformancePlugin** | 🧪 Web Vitals monitoring (experimental, [learn more](./docs/en/6-performance-monitoring.md)) | +4KB | Optional |
+| **PerformancePlugin** | 🌐🧪 Web Vitals monitoring — **browser only**, experimental ([learn more](./docs/en/6-performance-monitoring.md)) | +4KB | Optional |
 | **SafeGuardPlugin** | Prevent logger crashes | +3KB | Recommended for production |
 
 **On-demand loading examples:**
@@ -334,6 +321,57 @@ initAemeath({
 });
 ```
 
+### Route Scope (Optional)
+
+Not every page needs monitoring. Use `routeMatch` to control which routes are monitored — applies to **all** capabilities (error capture, network monitoring, performance monitoring).
+
+```typescript
+initAemeath({
+  routeMatch: {
+    excludeRoutes: ['/admin', '/debug', '/logger-viewer'],
+  },
+  upload: async (log) => { /* ... */ return { success: true }; },
+});
+```
+
+`excludeRoutes` takes priority over `includeRoutes`. Example: monitor `/app/*` except `/app/debug`:
+
+```typescript
+initAemeath({
+  routeMatch: {
+    includeRoutes: [/^\/app/],
+    excludeRoutes: ['/app/debug'],
+  },
+});
+```
+
+**Advanced: per-plugin route override** — each plugin (`errorCapture`, `network`, `performance`) supports its own `routeMatch` to further narrow scope within the global rules. See the corresponding module documentation for details.
+
+```typescript
+initAemeath({
+  routeMatch: {
+    includeRoutes: [/^\/app/],
+  },
+  network: {
+    routeMatch: { excludeRoutes: ['/app/internal'] },
+  },
+  errorCapture: {
+    routeMatch: { excludeRoutes: ['/app/test'] },
+  },
+});
+```
+
+**MiniApp routes** use a different format (e.g. `pages/index/index` instead of `/index`):
+
+```typescript
+initAemeath({
+  platform: createMiniAppAdapter('wechat', wx),
+  routeMatch: {
+    excludeRoutes: ['pages/admin/index', 'pages/debug/index'],
+  },
+});
+```
+
 ---
 
 ## 🌐 Framework Integrations (Optional)
@@ -437,6 +475,32 @@ initAemeath({
 
 ---
 
+## MiniApp
+
+For WeChat, Alipay, Douyin, Baidu miniapps, or cross-platform frameworks (Taro, uni-app), pass a `PlatformAdapter` to `initAemeath`:
+
+```typescript
+import { initAemeath, createMiniAppAdapter, getAemeath } from 'aemeath-js';
+
+// WeChat miniapp
+initAemeath({
+  platform: createMiniAppAdapter('wechat', wx),
+  upload: async (log) => {
+    // Use your backend API to receive logs
+    return { success: true };
+  },
+});
+
+const logger = getAemeath();
+logger.info('MiniApp initialized');
+```
+
+For Taro or uni-app, pass the framework API as the second argument (e.g. `createMiniAppAdapter('wechat', Taro)` or `createMiniAppAdapter('wechat', uni)`).
+
+> **Alipay MiniApp**: Alipay's storage API signatures differ from other vendors. `createMiniAppAdapter('alipay', my)` automatically wraps these differences — no manual handling needed.
+
+---
+
 ## 📚 More Documentation
 
 - [Full API Reference](./README.md)
@@ -444,5 +508,5 @@ initAemeath({
 - [Early Error Capture](./docs/en/2-early-error-capture.md)
 - [SourceMap Parser](./docs/en/3-sourcemap-parser.md)
 - [Upload Plugin](./docs/en/4-upload-plugin.md)
-- [Performance Monitoring](./docs/en/6-performance-monitoring.md) (🧪 experimental)
+- [Performance Monitoring](./docs/en/6-performance-monitoring.md) (🌐🧪 browser only, experimental)
 - [Examples](./examples/)

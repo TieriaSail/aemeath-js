@@ -60,6 +60,7 @@
 AemeathJs.init({
   upload: function(log) { /* ... */ },  // 上报函数
   errorCapture: true,                    // 自动捕获错误（默认 true）
+  browserApiErrors: true,                // WebView 增强捕获（默认 true）
   safeGuard: true,                       // 安全保护（默认 true）
   enableConsole: true,                   // 控制台输出（默认 true）
   level: 'info'                          // 日志级别：debug/info/track/warn/error
@@ -71,10 +72,12 @@ var logger = AemeathJs.getAemeath();
 // 记录日志
 logger.debug('调试信息');
 logger.info('普通信息');
-logger.track('业务埋点');
+logger.track('按钮点击', { tags: { page: '/home', action: 'click' } });
 logger.warn('警告信息');
 logger.error('错误信息');
 ```
+
+> `track()` 与 `info()` 同优先级，用于简易业务埋点（如页面浏览、按钮点击）。它将埋点数据与一般信息日志分离，方便后端按 `level=track` 独立分析。
 
 **CDN 地址：**
 
@@ -127,28 +130,11 @@ logger.info('Hello World'); // context 自动附加
 logger.updateContext('userId', '67890');
 ```
 
-> `logger.track()` 是专门用于业务埋点/追踪的级别。它与 `info` 共享相同的优先级和过滤行为，但方便你在上报或查询时区分业务事件与普通日志。
-
-#### 路由作用域 (Route Scope，可选)
-
-通过全局配置限定日志采集的路由范围，各插件可进一步缩小范围。
-
-```typescript
-initAemeath({
-  upload: async (log) => { return { success: true }; },
-  routeMatch: {
-    includeRoutes: ['/app', /^\/dashboard/],
-    excludeRoutes: ['/app/debug'],
-  },
-});
-```
-
-> `excludeRoutes` 优先级高于 `includeRoutes`。`errorCapture`、`network`、`PerformancePlugin` 等插件可在文档中各自配置 `routeMatch` 进一步限定全局范围，详见各插件文档。
-
 **默认已启用哪些插件？** `initAemeath()` 会自动启用以下插件：
 
 | 插件 | 默认状态 | 如何关闭 |
 |------|---------|---------|
+| `BrowserApiErrorsPlugin` | ✅ 默认启用 | `browserApiErrors: false` |
 | `ErrorCapturePlugin` | ✅ 默认启用 | `errorCapture: false` |
 | `SafeGuardPlugin` | ✅ 默认启用 | `safeGuard: { enabled: false }` |
 | `NetworkPlugin` | ✅ 默认启用 | `network: { enabled: false }` |
@@ -163,11 +149,12 @@ initAemeath({
 
 | 插件 | 说明 | 体积 | 是否必需 |
 |------|------|------|----------|
+| **BrowserApiErrorsPlugin** | WebView/跨域环境增强错误捕获 | ~2KB | 推荐 |
 | **ErrorCapturePlugin** | 捕获全局错误 | ~3KB | 推荐 |
 | **EarlyErrorCapturePlugin** | React/Vue 挂载前的错误 | +3KB | 可选 |
 | **UploadPlugin** | 发送到服务器 | +5KB | 可选 |
 | **SourceMap Parser** | 解析混淆堆栈 | +6KB | 可选 |
-| **PerformancePlugin** | 🧪 Web Vitals 监控（实验性，[了解更多](./docs/zh/6-performance-monitoring.md)） | +4KB | 可选 |
+| **PerformancePlugin** | 🌐🧪 Web Vitals 监控 — **仅浏览器可用**，实验性（[了解更多](./docs/zh/6-performance-monitoring.md)） | +4KB | 可选 |
 | **SafeGuardPlugin** | 防止 Logger 崩溃 | +3KB | 生产推荐 |
 
 **按需加载示例：**
@@ -335,6 +322,57 @@ initAemeath({
 });
 ```
 
+### 路由作用域（可选）
+
+并非所有页面都需要监控。使用 `routeMatch` 控制哪些路由开启监控——对**所有**能力生效（错误捕获、网络监控、性能监控）。
+
+```typescript
+initAemeath({
+  routeMatch: {
+    excludeRoutes: ['/admin', '/debug', '/logger-viewer'],
+  },
+  upload: async (log) => { /* ... */ return { success: true }; },
+});
+```
+
+`excludeRoutes` 优先级高于 `includeRoutes`。例如：监控 `/app/*` 但排除 `/app/debug`：
+
+```typescript
+initAemeath({
+  routeMatch: {
+    includeRoutes: [/^\/app/],
+    excludeRoutes: ['/app/debug'],
+  },
+});
+```
+
+**进阶：插件级路由覆盖** —— 各插件（`errorCapture`、`network`、`performance`）均支持独立的 `routeMatch` 子配置，在全局规则基础上进一步缩小监控范围。详见各模块文档。
+
+```typescript
+initAemeath({
+  routeMatch: {
+    includeRoutes: [/^\/app/],
+  },
+  network: {
+    routeMatch: { excludeRoutes: ['/app/internal'] },
+  },
+  errorCapture: {
+    routeMatch: { excludeRoutes: ['/app/test'] },
+  },
+});
+```
+
+**小程序路由** 格式不同（如 `pages/index/index` 而非 `/index`）：
+
+```typescript
+initAemeath({
+  platform: createMiniAppAdapter('wechat', wx),
+  routeMatch: {
+    excludeRoutes: ['pages/admin/index', 'pages/debug/index'],
+  },
+});
+```
+
 ---
 
 ## 🌐 框架集成（可选）
@@ -438,6 +476,32 @@ initAemeath({
 
 ---
 
+## 小程序
+
+适用于微信、支付宝、抖音、百度小程序，或跨平台框架（Taro、uni-app）。通过 `initAemeath` 传入 `PlatformAdapter`：
+
+```typescript
+import { initAemeath, createMiniAppAdapter, getAemeath } from 'aemeath-js';
+
+// 微信小程序
+initAemeath({
+  platform: createMiniAppAdapter('wechat', wx),
+  upload: async (log) => {
+    // 使用你的后端 API 接收日志
+    return { success: true };
+  },
+});
+
+const logger = getAemeath();
+logger.info('小程序已初始化');
+```
+
+若使用 Taro 或 uni-app，将框架 API 作为第二个参数传入（如 `createMiniAppAdapter('wechat', Taro)` 或 `createMiniAppAdapter('wechat', uni)`）。
+
+> **支付宝小程序**：支付宝的存储 API 签名与其他厂商不同。`createMiniAppAdapter('alipay', my)` 会自动包装这些差异 — 无需手动处理。
+
+---
+
 ## 📚 更多文档
 
 - [完整 API 文档](./README.zh_CN.md)
@@ -445,6 +509,6 @@ initAemeath({
 - [早期错误捕获](./docs/zh/2-early-error-capture.md)
 - [SourceMap 解析](./docs/zh/3-sourcemap-parser.md)
 - [上报插件](./docs/zh/4-upload-plugin.md)
-- [性能监控](./docs/zh/6-performance-monitoring.md)（🧪 实验性）
+- [性能监控](./docs/zh/6-performance-monitoring.md)（🌐🧪 仅浏览器可用，实验性）
 - [示例代码](./examples/)
 

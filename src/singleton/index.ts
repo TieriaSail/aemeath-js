@@ -8,6 +8,7 @@
  */
 
 import { AemeathLogger } from '../core/Logger';
+import { BrowserApiErrorsPlugin, type BrowserApiErrorsPluginOptions } from '../plugins/BrowserApiErrorsPlugin';
 import { ErrorCapturePlugin } from '../plugins/ErrorCapturePlugin';
 import { EarlyErrorCapturePlugin } from '../plugins/EarlyErrorCapturePlugin';
 import { UploadPlugin, type UploadResult } from '../plugins/UploadPlugin';
@@ -50,6 +51,20 @@ let globalAemeath: AemeathLogger | null = null;
  * ```
  */
 export interface AemeathInitOptions {
+  /**
+   * 浏览器 API 回调增强捕获
+   *
+   * Monkey-patch addEventListener/setTimeout/setInterval/rAF/XHR.send
+   * 以在 WebView 等环境中获取完整错误信息（而非 "Script error."）
+   *
+   * - `true`（默认）：启用
+   * - `false`：禁用
+   * - `{ ... }`：启用并自定义配置
+   *
+   * @default true
+   */
+  browserApiErrors?: boolean | BrowserApiErrorsPluginOptions;
+
   /**
    * 错误捕获配置
    *
@@ -337,6 +352,14 @@ export function initAemeath(options: AemeathInitOptions = {}): AemeathLogger {
     release: options.release,
     routeMatch: options.routeMatch,
   });
+
+  // 0. 浏览器 API 回调增强捕获（默认启用，必须在 ErrorCapturePlugin 之前）
+  const baeOpt = options.browserApiErrors;
+  const baeEnabled = baeOpt === undefined || baeOpt === true || (typeof baeOpt === 'object');
+  if (baeEnabled) {
+    const baeConfig: BrowserApiErrorsPluginOptions = typeof baeOpt === 'object' ? baeOpt : {};
+    logger.use(new BrowserApiErrorsPlugin(baeConfig));
+  }
 
   // 1. 错误捕获（默认启用）
   const ecOpt = options.errorCapture;
