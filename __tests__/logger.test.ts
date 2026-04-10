@@ -79,6 +79,51 @@ describe('AemeathLogger Core', () => {
     });
   });
 
+  // ==================== logId 自动生成 ====================
+
+  describe('logId 自动生成', () => {
+    it('每条日志应自动包含 logId', () => {
+      const listener = vi.fn();
+      logger.on('log', listener);
+
+      logger.info('test logId');
+
+      const entry: LogEntry = listener.mock.calls[0][0];
+      expect(entry.logId).toBeDefined();
+      expect(typeof entry.logId).toBe('string');
+      expect(entry.logId.length).toBeGreaterThan(0);
+    });
+
+    it('不同日志应有不同的 logId', () => {
+      const listener = vi.fn();
+      logger.on('log', listener);
+
+      logger.info('msg1');
+      logger.info('msg2');
+
+      const logId1 = (listener.mock.calls[0][0] as LogEntry).logId;
+      const logId2 = (listener.mock.calls[1][0] as LogEntry).logId;
+      expect(logId1).not.toBe(logId2);
+    });
+
+    it('所有日志级别都应包含 logId', () => {
+      const listener = vi.fn();
+      logger.on('log', listener);
+
+      logger.debug('d');
+      logger.info('i');
+      logger.track('t');
+      logger.warn('w');
+      logger.error('e');
+
+      for (let i = 0; i < 5; i++) {
+        const entry: LogEntry = listener.mock.calls[i][0];
+        expect(entry.logId).toBeDefined();
+        expect(typeof entry.logId).toBe('string');
+      }
+    });
+  });
+
   // ==================== 控制台输出 ====================
 
   describe('控制台输出', () => {

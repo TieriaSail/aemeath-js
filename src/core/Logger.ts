@@ -21,6 +21,7 @@ import type { PlatformAdapter } from '../platform/types';
 import { detectPlatform } from '../platform/detect';
 import { LogLevel as LogLevelEnum, ErrorCategory } from '../types';
 import { RouteMatcher, type RouteMatchConfig } from '../utils/routeMatcher';
+import { generateId } from '../utils/generateId';
 
 interface AemeathOptions {
   /** 是否启用控制台输出 @default true */
@@ -193,6 +194,7 @@ export class AemeathLogger implements AemeathInterface {
     context: LogContext,
   ): LogEntry {
     const entry: LogEntry = {
+      logId: generateId(),
       level,
       message,
       timestamp,

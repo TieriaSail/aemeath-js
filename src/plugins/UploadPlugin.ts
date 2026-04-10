@@ -11,6 +11,7 @@
 
 import type { AemeathPlugin, LogEntry, AemeathInterface } from '../types';
 import type { PlatformAdapter } from '../platform/types';
+import { generateId } from '../utils/generateId';
 
 /**
  * 队列中的日志项
@@ -420,9 +421,10 @@ export class UploadPlugin implements AemeathPlugin {
         if (!item) break;
 
         try {
+          const logWithRequestId: LogEntry = { ...item.log, requestId: generateId() };
           let timeoutId: ReturnType<typeof setTimeout> | undefined;
           const result = await Promise.race([
-            this.config.onUpload(item.log).finally(() => {
+            this.config.onUpload(logWithRequestId).finally(() => {
               if (timeoutId !== undefined) clearTimeout(timeoutId);
             }),
             new Promise<UploadResult>((_, reject) => {
@@ -725,6 +727,12 @@ export class UploadPlugin implements AemeathPlugin {
             'timestamp' in item &&
             now - (item as QueuedLog).timestamp < 60 * 60 * 1000,
         );
+
+        for (const item of validLogs) {
+          if (!item.log.logId) {
+            item.log.logId = generateId();
+          }
+        }
 
         this.queue = validLogs;
 

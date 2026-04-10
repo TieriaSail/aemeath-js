@@ -113,6 +113,10 @@ export interface LogContext {
  * 日志条目（简化版，统一结构）
  */
 export interface LogEntry {
+  /** 日志唯一标识（Logger 核心自动生成，同一条日志无论上报多少次 logId 不变） */
+  logId: string;
+  /** 上报请求标识（UploadPlugin 每次上报尝试自动生成，用于消费端幂等去重） */
+  requestId?: string;
   /** 日志级别 */
   level: LogLevel;
   /** 日志消息 */

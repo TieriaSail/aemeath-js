@@ -341,6 +341,105 @@ describe('instrumentXHR', () => {
     unsub();
   });
 
+  // === readystatechange defense against WKWebView spurious error ===
+
+  it('should capture via readystatechange when readyState=4 and status>0', () => {
+    const events: NetworkEvent[] = [];
+    const unsub = instrumentXHR((e) => events.push(e), defaultOptions());
+
+    const xhr = new XMLHttpRequest();
+    xhr.open('GET', '/api/data');
+    xhr.send(null);
+
+    // Simulate readyState=4 with valid status
+    Object.defineProperty(xhr, 'readyState', { value: 4, writable: true, configurable: true });
+    Object.defineProperty(xhr, 'status', { value: 200, writable: true, configurable: true });
+    Object.defineProperty(xhr, 'statusText', { value: 'OK', writable: true, configurable: true });
+    Object.defineProperty(xhr, 'responseType', { value: '', writable: true, configurable: true });
+    Object.defineProperty(xhr, 'responseText', { value: '{"ok":true}', writable: true, configurable: true });
+
+    xhr.dispatchEvent(new Event('readystatechange'));
+
+    expect(events).toHaveLength(1);
+    expect(events[0]!.status).toBe(200);
+    expect(events[0]!.responseBody).toEqual({ ok: true });
+
+    unsub();
+  });
+
+  it('should block spurious error event after successful readystatechange capture (WKWebView defense)', () => {
+    const events: NetworkEvent[] = [];
+    const unsub = instrumentXHR((e) => events.push(e), defaultOptions());
+
+    const xhr = new XMLHttpRequest();
+    xhr.open('GET', '/api/data');
+    xhr.send(null);
+
+    // Step 1: readystatechange fires with valid response
+    Object.defineProperty(xhr, 'readyState', { value: 4, writable: true, configurable: true });
+    Object.defineProperty(xhr, 'status', { value: 200, writable: true, configurable: true });
+    Object.defineProperty(xhr, 'statusText', { value: 'OK', writable: true, configurable: true });
+    Object.defineProperty(xhr, 'responseType', { value: '', writable: true, configurable: true });
+    Object.defineProperty(xhr, 'responseText', { value: '{"ok":true}', writable: true, configurable: true });
+    xhr.dispatchEvent(new Event('readystatechange'));
+
+    expect(events).toHaveLength(1);
+
+    // Step 2: WKWebView fires spurious error (status reset to 0)
+    Object.defineProperty(xhr, 'status', { value: 0, writable: true, configurable: true });
+    xhr.dispatchEvent(new Event('error'));
+
+    // Should still be 1 event — the spurious error is blocked
+    expect(events).toHaveLength(1);
+    expect(events[0]!.status).toBe(200);
+    expect(events[0]!.error).toBeUndefined();
+
+    unsub();
+  });
+
+  it('should skip readystatechange when status=0 and let error handler capture', () => {
+    const events: NetworkEvent[] = [];
+    const unsub = instrumentXHR((e) => events.push(e), defaultOptions());
+
+    const xhr = new XMLHttpRequest();
+    xhr.open('GET', '/api/fail');
+    xhr.send(null);
+
+    // readystatechange fires with status=0 (real network error)
+    Object.defineProperty(xhr, 'readyState', { value: 4, writable: true, configurable: true });
+    Object.defineProperty(xhr, 'status', { value: 0, writable: true, configurable: true });
+    Object.defineProperty(xhr, 'statusText', { value: '', writable: true, configurable: true });
+    xhr.dispatchEvent(new Event('readystatechange'));
+
+    // Should not capture yet — status=0 is skipped
+    expect(events).toHaveLength(0);
+
+    // error handler should capture
+    xhr.dispatchEvent(new Event('error'));
+    expect(events).toHaveLength(1);
+    expect(events[0]!.error).toContain('Network Error');
+
+    unsub();
+  });
+
+  it('should ignore readystatechange when readyState < 4', () => {
+    const events: NetworkEvent[] = [];
+    const unsub = instrumentXHR((e) => events.push(e), defaultOptions());
+
+    const xhr = new XMLHttpRequest();
+    xhr.open('GET', '/api/data');
+    xhr.send(null);
+
+    // readyState=2 (HEADERS_RECEIVED) — should be ignored
+    Object.defineProperty(xhr, 'readyState', { value: 2, writable: true, configurable: true });
+    Object.defineProperty(xhr, 'status', { value: 200, writable: true, configurable: true });
+    xhr.dispatchEvent(new Event('readystatechange'));
+
+    expect(events).toHaveLength(0);
+
+    unsub();
+  });
+
   // === Business info extraction ===
 
   it('should extract code and message from response JSON', () => {

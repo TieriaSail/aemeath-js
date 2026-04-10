@@ -121,15 +121,13 @@ function installPatch(): boolean {
     let isRecorded = false;
 
     const cleanup = () => {
+      this.removeEventListener('readystatechange', handleReadyStateChange);
       this.removeEventListener('loadend', handleLoadEnd);
       this.removeEventListener('error', handleError);
       this.removeEventListener('timeout', handleTimeout);
     };
 
-    const handleLoadEnd = () => {
-      if (isRecorded) { cleanup(); return; }
-      isRecorded = true;
-
+    const captureSuccess = () => {
       let responseBody: unknown;
       let responseCode: number | string | undefined;
       let responseMessage: string | undefined;
@@ -167,6 +165,25 @@ function installPatch(): boolean {
         responseCode,
         responseMessage,
       });
+    };
+
+    // Capture early on readyState=4 with a valid HTTP status.
+    // This defends against iOS WKWebView firing a spurious `error` event
+    // after the response has already been delivered via onreadystatechange.
+    const handleReadyStateChange = () => {
+      if (this.readyState !== 4) return;
+      if (isRecorded) return;
+      if (this.status === 0) return;
+
+      isRecorded = true;
+      captureSuccess();
+      cleanup();
+    };
+
+    const handleLoadEnd = () => {
+      if (isRecorded) { cleanup(); return; }
+      isRecorded = true;
+      captureSuccess();
       cleanup();
     };
 
@@ -213,6 +230,7 @@ function installPatch(): boolean {
       cleanup();
     };
 
+    this.addEventListener('readystatechange', handleReadyStateChange);
     this.addEventListener('loadend', handleLoadEnd);
     this.addEventListener('error', handleError);
     this.addEventListener('timeout', handleTimeout);

@@ -12,6 +12,7 @@ function createLog(
   message = 'test',
 ): LogEntry {
   return {
+    logId: `test-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`,
     level,
     message,
     timestamp: Date.now(),
@@ -294,6 +295,98 @@ describe('UploadPlugin', () => {
       expect(status).toHaveProperty('isProcessing');
       expect(status).toHaveProperty('items');
       expect(Array.isArray(status.items)).toBe(true);
+    });
+  });
+
+  // ==================== logId / requestId 双 ID 追踪 ====================
+
+  describe('logId / requestId 双 ID 追踪', () => {
+    it('上传回调收到的日志应包含 logId', async () => {
+      logger.use(plugin);
+      logger.info('has logId');
+
+      await vi.advanceTimersByTimeAsync(200);
+
+      expect(uploadFn).toHaveBeenCalled();
+      const arg = uploadFn.mock.calls[0][0] as LogEntry;
+      expect(arg.logId).toBeDefined();
+      expect(typeof arg.logId).toBe('string');
+      expect(arg.logId.length).toBeGreaterThan(0);
+    });
+
+    it('上传回调收到的日志应包含 requestId', async () => {
+      logger.use(plugin);
+      logger.info('has requestId');
+
+      await vi.advanceTimersByTimeAsync(200);
+
+      expect(uploadFn).toHaveBeenCalled();
+      const arg = uploadFn.mock.calls[0][0] as LogEntry;
+      expect(arg.requestId).toBeDefined();
+      expect(typeof arg.requestId).toBe('string');
+      expect(arg.requestId!.length).toBeGreaterThan(0);
+    });
+
+    it('同一条日志的 logId 在重试时应保持不变', async () => {
+      let callCount = 0;
+      const retryPlugin = new UploadPlugin({
+        onUpload: async (log) => {
+          callCount++;
+          if (callCount <= 1) {
+            return { success: false, shouldRetry: true, error: 'retry' };
+          }
+          return { success: true };
+        },
+        queue: { maxRetries: 3, deduplicationDelay: 10 },
+        cache: { enabled: false },
+        saveOnUnload: false,
+      });
+
+      logger.use(retryPlugin);
+      logger.error('retry logId test');
+
+      await vi.advanceTimersByTimeAsync(2000);
+
+      expect(callCount).toBe(2);
+    });
+
+    it('同一条日志的不同上报尝试应有不同的 requestId', async () => {
+      const receivedRequestIds: string[] = [];
+      let callCount = 0;
+      const retryPlugin = new UploadPlugin({
+        onUpload: async (log) => {
+          callCount++;
+          receivedRequestIds.push(log.requestId!);
+          if (callCount <= 1) {
+            return { success: false, shouldRetry: true, error: 'retry' };
+          }
+          return { success: true };
+        },
+        queue: { maxRetries: 3, deduplicationDelay: 10 },
+        cache: { enabled: false },
+        saveOnUnload: false,
+      });
+
+      logger.use(retryPlugin);
+      logger.error('requestId uniqueness test');
+
+      await vi.advanceTimersByTimeAsync(2000);
+
+      expect(receivedRequestIds.length).toBe(2);
+      expect(receivedRequestIds[0]).not.toBe(receivedRequestIds[1]);
+    });
+
+    it('不同日志应有不同的 logId', async () => {
+      logger.use(plugin);
+      logger.info('msg1');
+      logger.info('msg2');
+
+      await vi.advanceTimersByTimeAsync(500);
+
+      expect(uploadFn).toHaveBeenCalledTimes(2);
+      const logId1 = (uploadFn.mock.calls[0][0] as LogEntry).logId;
+      const logId2 = (uploadFn.mock.calls[1][0] as LogEntry).logId;
+      expect(logId1).not.toBe(logId2);
     });
   });
 
