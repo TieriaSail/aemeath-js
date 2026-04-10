@@ -10,6 +10,7 @@
  */
 
 import type { AemeathPlugin, LogEntry, AemeathInterface } from '../types';
+import { generateId } from '../utils/generateId';
 
 /**
  * 队列中的日志项
@@ -400,8 +401,8 @@ export class UploadPlugin implements AemeathPlugin {
         if (!item) break;
 
         try {
-          // 调用用户的上传回调
-          const result = await this.config.onUpload(item.log);
+          const logWithRequestId: LogEntry = { ...item.log, requestId: generateId() };
+          const result = await this.config.onUpload(logWithRequestId);
 
           // 检查上传结果
           if (result.success) {
@@ -689,6 +690,12 @@ export class UploadPlugin implements AemeathPlugin {
         const validLogs = cacheData.filter(
           (item) => now - item.timestamp < 60 * 60 * 1000,
         );
+
+        for (const item of validLogs) {
+          if (!item.log.logId) {
+            item.log.logId = generateId();
+          }
+        }
 
         this.queue = validLogs;
 

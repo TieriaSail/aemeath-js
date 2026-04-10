@@ -612,23 +612,15 @@ export class NetworkPlugin implements AemeathPlugin {
 
       // 清理所有事件监听器的函数
       const cleanup = () => {
+        this.removeEventListener('readystatechange', handleReadyStateChange);
         this.removeEventListener('loadend', handleLoadEnd);
         this.removeEventListener('error', handleError);
         this.removeEventListener('timeout', handleTimeout);
       };
 
-      // 监听请求完成（无论成功还是失败，都会触发 loadend）
-      const handleLoadEnd = () => {
-        // 如果已经被 error 或 timeout 处理过，跳过
-        if (isRecorded) {
-          cleanup();
-          return;
-        }
-        isRecorded = true;
-
+      const captureXHRSuccess = () => {
         const duration = Date.now() - info.startTime;
 
-        // 捕获响应体
         let responseBody: unknown;
         let responseCode: number | string | undefined;
         let responseMessage: string | undefined;
@@ -636,8 +628,6 @@ export class NetworkPlugin implements AemeathPlugin {
         if (self.config.captureResponseBody) {
           try {
             responseBody = self.safeParseJSON(this.responseText);
-
-            // 提取业务码
             const businessInfo = self.extractBusinessInfo(responseBody);
             responseCode = businessInfo.code;
             responseMessage = businessInfo.message;
@@ -659,7 +649,29 @@ export class NetworkPlugin implements AemeathPlugin {
           responseCode,
           responseMessage,
         });
+      };
 
+      // Capture early on readyState=4 with a valid HTTP status.
+      // This defends against iOS WKWebView firing a spurious `error` event
+      // after the response has already been delivered via onreadystatechange.
+      const handleReadyStateChange = () => {
+        if (this.readyState !== 4) return;
+        if (isRecorded) return;
+        if (this.status === 0) return;
+
+        isRecorded = true;
+        captureXHRSuccess();
+        cleanup();
+      };
+
+      // 监听请求完成（无论成功还是失败，都会触发 loadend）
+      const handleLoadEnd = () => {
+        if (isRecorded) {
+          cleanup();
+          return;
+        }
+        isRecorded = true;
+        captureXHRSuccess();
         cleanup();
       };
 
@@ -735,6 +747,7 @@ export class NetworkPlugin implements AemeathPlugin {
         // 注意：timeout 事件后 loadend 也会触发，cleanup 会在 loadend 中进行
       };
 
+      this.addEventListener('readystatechange', handleReadyStateChange);
       this.addEventListener('loadend', handleLoadEnd);
       this.addEventListener('error', handleError);
       this.addEventListener('timeout', handleTimeout);

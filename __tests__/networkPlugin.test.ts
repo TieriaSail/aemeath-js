@@ -365,6 +365,80 @@ describe('NetworkPlugin', () => {
     });
   });
 
+  // ==================== XHR readystatechange 防御 (WKWebView) ====================
+
+  describe('XHR readystatechange 防御', () => {
+    let originalXHROpen: typeof XMLHttpRequest.prototype.open;
+    let originalXHRSend: typeof XMLHttpRequest.prototype.send;
+
+    beforeEach(() => {
+      originalXHROpen = XMLHttpRequest.prototype.open;
+      originalXHRSend = XMLHttpRequest.prototype.send;
+    });
+
+    afterEach(() => {
+      XMLHttpRequest.prototype.open = originalXHROpen;
+      XMLHttpRequest.prototype.send = originalXHRSend;
+    });
+
+    it('should capture via readystatechange and block spurious error (WKWebView defense)', () => {
+      const logListener = vi.fn();
+      logger.on('log', logListener);
+
+      const plugin = new NetworkPlugin({ interceptXHR: true });
+      logger.use(plugin);
+
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', '/api/test');
+      xhr.send(null);
+
+      // Step 1: readystatechange fires with valid response
+      Object.defineProperty(xhr, 'readyState', { value: 4, writable: true, configurable: true });
+      Object.defineProperty(xhr, 'status', { value: 200, writable: true, configurable: true });
+      Object.defineProperty(xhr, 'statusText', { value: 'OK', writable: true, configurable: true });
+      Object.defineProperty(xhr, 'responseText', { value: '{"code":200}', writable: true, configurable: true });
+      xhr.dispatchEvent(new Event('readystatechange'));
+
+      // Should have captured the successful request
+      expect(logListener).toHaveBeenCalledTimes(1);
+      const entry1 = logListener.mock.calls[0][0];
+      expect(entry1.level).toBe('info');
+      expect(entry1.context?.status).toBe(200);
+
+      // Step 2: WKWebView fires spurious error (status reset to 0)
+      Object.defineProperty(xhr, 'status', { value: 0, writable: true, configurable: true });
+      xhr.dispatchEvent(new Event('error'));
+
+      // Should still be 1 log — the spurious error is blocked
+      expect(logListener).toHaveBeenCalledTimes(1);
+    });
+
+    it('should let real network errors through when status=0', () => {
+      const logListener = vi.fn();
+      logger.on('log', logListener);
+
+      const plugin = new NetworkPlugin({ interceptXHR: true });
+      logger.use(plugin);
+
+      const xhr = new XMLHttpRequest();
+      xhr.open('GET', '/api/fail');
+      xhr.send(null);
+
+      // readystatechange with status=0 — should be skipped
+      Object.defineProperty(xhr, 'readyState', { value: 4, writable: true, configurable: true });
+      Object.defineProperty(xhr, 'status', { value: 0, writable: true, configurable: true });
+      Object.defineProperty(xhr, 'statusText', { value: '', writable: true, configurable: true });
+      xhr.dispatchEvent(new Event('readystatechange'));
+
+      expect(logListener).not.toHaveBeenCalled();
+
+      // error handler should capture
+      xhr.dispatchEvent(new Event('error'));
+      expect(logListener).toHaveBeenCalledTimes(1);
+      expect(logListener.mock.calls[0][0].level).toBe('error');
+    });
+  });
+
   describe('业务码提取', () => {
     it('应从响应中提取 code 和 message', async () => {
       const logListener = vi.fn();
