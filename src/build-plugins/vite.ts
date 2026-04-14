@@ -3,9 +3,9 @@
  */
 
 import type { Plugin } from 'vite';
-import { getEarlyErrorCaptureScript } from './early-error-script';
+import { getEarlyErrorCaptureScript, type EarlyErrorScriptOptions } from './early-error-script';
 
-export interface EarlyErrorCaptureVitePluginOptions {
+export interface EarlyErrorCaptureVitePluginOptions extends EarlyErrorScriptOptions {
   /**
    * 是否启用
    * @default true
@@ -26,11 +26,22 @@ export interface EarlyErrorCaptureVitePluginOptions {
  *   ]
  * };
  * ```
+ *
+ * @example
+ * ```javascript
+ * // 启用 fallback 上报
+ * ameathEarlyErrorPlugin({
+ *   fallbackEndpoint: 'https://example.com/api/logs',
+ *   fallbackTimeout: 10000,
+ *   fallbackTransport: 'xhr',
+ *   fallbackHeaders: { 'X-App-Name': 'my-app' },
+ * })
+ * ```
  */
 export function ameathEarlyErrorPlugin(
   options: EarlyErrorCaptureVitePluginOptions = {},
 ): Plugin {
-  const { enabled = true } = options;
+  const { enabled = true, ...scriptOptions } = options;
 
   return {
     name: 'aemeath-early-error-capture',
@@ -38,7 +49,7 @@ export function ameathEarlyErrorPlugin(
     transformIndexHtml(html) {
       if (!enabled) return html;
 
-      const script = `<script>${getEarlyErrorCaptureScript()}</script>`;
+      const script = `<script>${getEarlyErrorCaptureScript(scriptOptions)}</script>`;
       return html.replace('<head>', `<head>\n${script}`);
     },
   };

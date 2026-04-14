@@ -164,12 +164,48 @@ interface EarlyErrorCaptureOptions {
   /** Fallback timeout (default: 30000ms) */
   fallbackTimeout?: number;
 
+  /**
+   * Transport preference (default: 'auto')
+   * - 'auto': sendBeacon first, fallback to XHR
+   * - 'xhr': XHR only (use when custom headers are needed)
+   * - 'beacon': sendBeacon only
+   */
+  fallbackTransport?: 'auto' | 'xhr' | 'beacon';
+
+  /**
+   * Custom request headers (XHR mode only)
+   * Content-Type defaults to application/json.
+   * WARNING: Values are serialized into inline script, must be literals.
+   */
+  fallbackHeaders?: Record<string, string>;
+
+  /**
+   * Custom payload formatter
+   * - Return a single object → one request (batch endpoint)
+   * - Return an array → one request per element (single-entry endpoint)
+   * WARNING: This function is serialized via .toString() into the inline script.
+   *          It must not reference external variables, closures, or modules.
+   *          The function body must be pure ES5 syntax.
+   */
+  formatPayload?: (errors: unknown[], meta: unknown) => unknown;
+
   /** Plugin-level route matching (narrows the global routeMatch scope) */
   routeMatch?: RouteMatchConfig;
 }
 ```
 
-> **routeMatch rules**: The build-time script captures all errors regardless of route. Route filtering only applies when the SDK flushes early errors at runtime. `excludeRoutes` takes precedence over `includeRoutes`. The global `routeMatch` set via `initAemeath` is automatically composed with this plugin-level setting.
+### Route Matching
+
+EarlyErrorCapturePlugin inherits the global `routeMatch` config from `initAemeath()`. You can also set a plugin-level `routeMatch` to further narrow the scope.
+
+**Rules:**
+- `excludeRoutes` takes priority over `includeRoutes`.
+- Routes support three matching patterns: exact string, RegExp, and function `(path: string) => boolean`.
+- If only `excludeRoutes` is set, all routes except excluded ones are monitored.
+- If only `includeRoutes` is set, only those routes are monitored.
+- MiniApp routes use a different format (e.g. `pages/index/index` instead of `/index`).
+
+> **Note**: The build-time early error script captures ALL errors regardless of route. Route filtering only applies at runtime when the cached errors are flushed to the logger.
 
 ---
 
@@ -251,23 +287,72 @@ new EarlyErrorCapturePlugin({
 });
 ```
 
-### Fallback Upload (Optional)
+### Fallback Upload
 
-If worried about AemeathLogger initialization failure, configure fallback endpoint:
+If worried about AemeathLogger initialization failure (e.g. JS bundle fails to load), configure a fallback endpoint. After timeout, the script will independently send errors to the specified URL.
+
+#### Basic Usage
 
 ```typescript
-// Build config
-rsbuildPlugin({
+// Build config (Vite/Rsbuild/Webpack all supported)
+ameathEarlyErrorPlugin({
   enabled: true,
   fallbackEndpoint: '/api/logs/fallback',
-});
-
-// Runtime config
-new EarlyErrorCapturePlugin({
-  fallbackEndpoint: '/api/logs/fallback',
-  fallbackTimeout: 30000, // Use fallback after 30s
+  fallbackTimeout: 10000, // Use fallback after 10s
 });
 ```
+
+#### Custom Payload Format (adapt to existing backend API)
+
+```typescript
+ameathEarlyErrorPlugin({
+  enabled: true,
+  fallbackEndpoint: 'https://example.com/api/error/log/add',
+  fallbackTimeout: 10000,
+  fallbackTransport: 'xhr',
+  formatPayload: function(errors, meta) {
+    // Return array → send one request per entry
+    return errors.map(function(e) {
+      return {
+        timestamp: e.timestamp,
+        systemName: meta.ua.indexOf('iPhone') !== -1 ? 'IOS' : 'WEB',
+        tip: 'early',
+        content: JSON.stringify({
+          level: 'error',
+          message: e.message,
+          error: e.stack ? { stack: e.stack } : null,
+          tags: { errorType: e.type },
+          context: { device: meta },
+        }),
+      };
+    });
+  },
+});
+```
+
+#### Custom Request Headers
+
+```typescript
+ameathEarlyErrorPlugin({
+  enabled: true,
+  fallbackEndpoint: 'https://example.com/api/logs',
+  fallbackTransport: 'xhr', // Must use xhr for custom headers
+  fallbackHeaders: {
+    'X-App-Name': 'my-app',
+    'X-Log-Source': 'early-error',
+  },
+});
+```
+
+#### Transport Modes
+
+| Mode | Description | Use Case |
+|------|-------------|----------|
+| `'auto'` (default) | sendBeacon first, fallback to XHR | General purpose |
+| `'xhr'` | XHR only | Custom headers or guaranteed Content-Type |
+| `'beacon'` | sendBeacon only | Page unload scenarios |
+
+> **Note**: When `fallbackHeaders` is configured without specifying `fallbackTransport`, it automatically switches to `'xhr'` mode (sendBeacon does not support custom headers).
 
 ---
 

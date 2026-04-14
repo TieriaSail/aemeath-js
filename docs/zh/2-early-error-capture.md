@@ -164,12 +164,47 @@ interface EarlyErrorCaptureOptions {
   /** 保底超时（默认：30000ms） */
   fallbackTimeout?: number;
 
+  /**
+   * 发送方式偏好（默认：'auto'）
+   * - 'auto'：sendBeacon 优先，失败降级到 XHR
+   * - 'xhr'：只用 XHR（需要自定义 header 时使用）
+   * - 'beacon'：只用 sendBeacon
+   */
+  fallbackTransport?: 'auto' | 'xhr' | 'beacon';
+
+  /**
+   * 自定义请求头（仅 XHR 模式生效）
+   * Content-Type 默认为 application/json，可覆盖。
+   * ⚠️ 值会被序列化到内联脚本，必须是字面量。
+   */
+  fallbackHeaders?: Record<string, string>;
+
+  /**
+   * 自定义 payload 格式化函数
+   * - 返回单个对象 → 一次请求发送（批量接口）
+   * - 返回数组 → 每个元素分别发一次请求（单条接口）
+   * ⚠️ 此函数会被 .toString() 序列化注入内联脚本，
+   *    不能引用外部变量、闭包或模块，函数体必须是纯 ES5 语法。
+   */
+  formatPayload?: (errors: unknown[], meta: unknown) => unknown;
+
   /** 插件级路由匹配（在全局 routeMatch 基础上进一步缩小范围） */
   routeMatch?: RouteMatchConfig;
 }
 ```
 
-> **routeMatch 规则**：构建时注入的脚本会捕获所有路由的错误，路由过滤仅在 SDK 运行时刷新早期错误时生效。`excludeRoutes` 优先级高于 `includeRoutes`。通过 `initAemeath` 设置的全局 `routeMatch` 会自动与此插件级配置组合。
+### 路由匹配
+
+EarlyErrorCapturePlugin 会继承 `initAemeath()` 中的全局 `routeMatch` 配置。你也可以设置插件级 `routeMatch` 来进一步缩小范围。
+
+**规则：**
+- `excludeRoutes` 优先级高于 `includeRoutes`。
+- 路由支持三种匹配模式：精确字符串、正则表达式、函数 `(path: string) => boolean`。
+- 如果只设置了 `excludeRoutes`，则排除的路由之外都会被监控。
+- 如果只设置了 `includeRoutes`，则只监控这些路由。
+- 小程序路由使用不同格式（例如 `pages/index/index` 而非 `/index`）。
+
+> **注意**：构建时注入的早期错误脚本会捕获**所有**错误，不区分路由。路由过滤仅在运行时将缓存的错误 flush 到 logger 时生效。
 
 ---
 
@@ -251,23 +286,72 @@ new EarlyErrorCapturePlugin({
 });
 ```
 
-### 保底上报（可选）
+### 保底上报（Fallback）
 
-如果担心 AemeathLogger 初始化失败，可以配置保底端点：
+如果担心 AemeathLogger 初始化失败（如 JS 加载失败），可以配置保底端点。超时后脚本会独立将错误发送到指定 URL。
+
+#### 基础用法
 
 ```typescript
-// 构建配置
-rsbuildPlugin({
+// 构建配置（Vite/Rsbuild/Webpack 均支持）
+ameathEarlyErrorPlugin({
   enabled: true,
   fallbackEndpoint: '/api/logs/fallback',
-});
-
-// 运行时配置
-new EarlyErrorCapturePlugin({
-  fallbackEndpoint: '/api/logs/fallback',
-  fallbackTimeout: 30000, // 30秒后使用保底端点
+  fallbackTimeout: 10000, // 10秒后使用保底端点
 });
 ```
+
+#### 自定义 payload 格式（适配现有后端接口）
+
+```typescript
+ameathEarlyErrorPlugin({
+  enabled: true,
+  fallbackEndpoint: 'https://example.com/api/error/log/add',
+  fallbackTimeout: 10000,
+  fallbackTransport: 'xhr',
+  formatPayload: function(errors, meta) {
+    // 返回数组 → 逐条上报，匹配后端单条接口
+    return errors.map(function(e) {
+      return {
+        timestamp: e.timestamp,
+        systemName: meta.ua.indexOf('iPhone') !== -1 ? 'IOS' : 'WEB',
+        tip: 'early',
+        content: JSON.stringify({
+          level: 'error',
+          message: e.message,
+          error: e.stack ? { stack: e.stack } : null,
+          tags: { errorType: e.type },
+          context: { device: meta },
+        }),
+      };
+    });
+  },
+});
+```
+
+#### 添加自定义请求头
+
+```typescript
+ameathEarlyErrorPlugin({
+  enabled: true,
+  fallbackEndpoint: 'https://example.com/api/logs',
+  fallbackTransport: 'xhr', // 需要自定义 header 时必须用 xhr
+  fallbackHeaders: {
+    'X-App-Name': 'my-app',
+    'X-Log-Source': 'early-error',
+  },
+});
+```
+
+#### 发送方式说明
+
+| 模式 | 说明 | 适用场景 |
+|------|------|---------|
+| `'auto'` (默认) | sendBeacon 优先，失败降级到 XHR | 通用场景 |
+| `'xhr'` | 只用 XHR | 需要自定义 header 或确保 Content-Type |
+| `'beacon'` | 只用 sendBeacon | 页面卸载场景（`unload`/`beforeunload`） |
+
+> **注意**：配置了 `fallbackHeaders` 但未指定 `fallbackTransport` 时，会自动切换为 `'xhr'` 模式（sendBeacon 不支持自定义 header）。
 
 ---
 

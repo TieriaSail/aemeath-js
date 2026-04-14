@@ -240,6 +240,29 @@ describe('EarlyErrorCapturePlugin', () => {
       expect(config.autoRefreshOnChunkError).toBe(true);
       expect(config.checkCompatibility).toBe(true);
     });
+
+    it('新增配置项应有正确默认值', () => {
+      const plugin = new EarlyErrorCapturePlugin();
+      const config = plugin.getConfig();
+
+      expect(config.fallbackTransport).toBe('auto');
+      expect(config.fallbackHeaders).toBeUndefined();
+      expect(config.formatPayload).toBeUndefined();
+    });
+
+    it('应正确存储新增配置项', () => {
+      const formatFn = (errors: unknown[]) => errors;
+      const plugin = new EarlyErrorCapturePlugin({
+        fallbackTransport: 'xhr',
+        fallbackHeaders: { 'X-Token': 'abc' },
+        formatPayload: formatFn,
+      });
+
+      const config = plugin.getConfig();
+      expect(config.fallbackTransport).toBe('xhr');
+      expect(config.fallbackHeaders).toEqual({ 'X-Token': 'abc' });
+      expect(config.formatPayload).toBe(formatFn);
+    });
   });
 });
 

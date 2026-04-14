@@ -7,7 +7,7 @@
  */
 
 import type { Compiler, Compilation } from 'webpack';
-import { getEarlyErrorCaptureScript } from './early-error-script';
+import { getEarlyErrorCaptureScript, type EarlyErrorScriptOptions } from './early-error-script';
 
 // html-webpack-plugin 的类型（避免直接依赖）
 interface HtmlWebpackPluginData {
@@ -39,7 +39,7 @@ interface HtmlWebpackPluginStatic {
   getHooks: (compilation: Compilation) => HtmlWebpackPluginHooks;
 }
 
-export interface AemeathEarlyErrorWebpackPluginOptions {
+export interface AemeathEarlyErrorWebpackPluginOptions extends EarlyErrorScriptOptions {
   /**
    * 是否启用
    * @default true
@@ -73,33 +73,41 @@ export interface AemeathEarlyErrorWebpackPluginOptions {
  * // 强制输出独立文件（不依赖 html-webpack-plugin）
  * new AemeathEarlyErrorWebpackPlugin({ mode: 'file' })
  *
+ * // 启用 fallback 上报
+ * new AemeathEarlyErrorWebpackPlugin({
+ *   fallbackEndpoint: 'https://example.com/api/logs',
+ *   fallbackTimeout: 10000,
+ *   fallbackTransport: 'xhr',
+ * })
+ *
  * // 如果使用 file 模式，需要手动在 HTML 中添加：
  * // <script src="aemeath-early-error.js"></script>  <!-- 放在 <head> 最前面 -->
  * ```
  */
 export class AemeathEarlyErrorWebpackPlugin {
-  private readonly options: Required<AemeathEarlyErrorWebpackPluginOptions>;
+  private readonly pluginOptions: { enabled: boolean; mode: 'auto' | 'inject' | 'file'; filename: string };
+  private readonly scriptOptions: EarlyErrorScriptOptions;
 
   constructor(options: AemeathEarlyErrorWebpackPluginOptions = {}) {
-    this.options = {
-      enabled: options.enabled ?? true,
-      mode: options.mode ?? 'auto',
-      filename: options.filename ?? 'aemeath-early-error.js',
+    const { enabled, mode, filename, ...scriptOpts } = options;
+    this.pluginOptions = {
+      enabled: enabled ?? true,
+      mode: mode ?? 'auto',
+      filename: filename ?? 'aemeath-early-error.js',
     };
+    this.scriptOptions = scriptOpts;
   }
 
   apply(compiler: Compiler) {
-    if (!this.options.enabled) return;
+    if (!this.pluginOptions.enabled) return;
 
     const pluginName = 'AemeathEarlyErrorWebpackPlugin';
 
-    if (this.options.mode === 'file') {
-      // 强制文件模式
+    if (this.pluginOptions.mode === 'file') {
       this.emitScriptFile(compiler, pluginName);
       return;
     }
 
-    // 尝试注入模式
     compiler.hooks.compilation.tap(pluginName, (compilation) => {
       let HtmlWebpackPlugin: HtmlWebpackPluginStatic | undefined;
 
@@ -111,32 +119,25 @@ export class AemeathEarlyErrorWebpackPlugin {
       }
 
       if (HtmlWebpackPlugin && typeof HtmlWebpackPlugin.getHooks === 'function') {
-        // html-webpack-plugin 4+ 存在，使用注入模式
         this.injectViaHtmlPlugin(compilation, HtmlWebpackPlugin, pluginName);
-      } else if (this.options.mode === 'inject') {
-        // 强制注入模式但没有 html-webpack-plugin
+      } else if (this.pluginOptions.mode === 'inject') {
         console.error(
           `[${pluginName}] mode='inject' requires html-webpack-plugin 4+, but it was not found.`,
         );
       } else {
-        // auto 模式回退到文件模式
         console.info(
           `[${pluginName}] html-webpack-plugin not found, falling back to file mode.`,
-          `\n  Output: ${this.options.filename}`,
-          `\n  Please add <script src="${this.options.filename}"></script> to your HTML <head>.`,
+          `\n  Output: ${this.pluginOptions.filename}`,
+          `\n  Please add <script src="${this.pluginOptions.filename}"></script> to your HTML <head>.`,
         );
       }
     });
 
-    // auto 模式：同时注册文件输出（作为回退）
-    if (this.options.mode === 'auto') {
+    if (this.pluginOptions.mode === 'auto') {
       this.emitScriptFileIfNeeded(compiler, pluginName);
     }
   }
 
-  /**
-   * 通过 html-webpack-plugin 注入脚本
-   */
   private injectViaHtmlPlugin(
     compilation: Compilation,
     HtmlWebpackPlugin: HtmlWebpackPluginStatic,
@@ -152,7 +153,7 @@ export class AemeathEarlyErrorWebpackPlugin {
       ) => {
         const scriptTag = {
           tagName: 'script',
-          innerHTML: getEarlyErrorCaptureScript(),
+          innerHTML: getEarlyErrorCaptureScript(this.scriptOptions),
           voidTag: false,
         };
 
@@ -162,35 +163,27 @@ export class AemeathEarlyErrorWebpackPlugin {
     );
   }
 
-  /**
-   * 输出独立的脚本文件
-   */
   private emitScriptFile(compiler: Compiler, pluginName: string) {
     compiler.hooks.emit.tapAsync(pluginName, (compilation, callback) => {
-      const scriptContent = getEarlyErrorCaptureScript();
+      const scriptContent = getEarlyErrorCaptureScript(this.scriptOptions);
       
-      // 添加到 assets
-      compilation.assets[this.options.filename] = {
+      compilation.assets[this.pluginOptions.filename] = {
         source: () => scriptContent,
         size: () => scriptContent.length,
       } as never;
 
       console.info(
-        `[${pluginName}] Emitted ${this.options.filename}`,
-        `\n  Please add <script src="${this.options.filename}"></script> to your HTML <head>.`,
+        `[${pluginName}] Emitted ${this.pluginOptions.filename}`,
+        `\n  Please add <script src="${this.pluginOptions.filename}"></script> to your HTML <head>.`,
       );
 
       callback();
     });
   }
 
-  /**
-   * 如果没有 html-webpack-plugin，输出独立文件
-   */
   private emitScriptFileIfNeeded(compiler: Compiler, pluginName: string) {
     let hasHtmlPlugin = false;
 
-    // 第一次 compilation 时检测
     compiler.hooks.compilation.tap(`${pluginName}-detect`, () => {
       try {
         // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -203,12 +196,11 @@ export class AemeathEarlyErrorWebpackPlugin {
       }
     });
 
-    // emit 时决定是否输出文件
     compiler.hooks.emit.tapAsync(pluginName, (compilation, callback) => {
       if (!hasHtmlPlugin) {
-        const scriptContent = getEarlyErrorCaptureScript();
+        const scriptContent = getEarlyErrorCaptureScript(this.scriptOptions);
         
-        compilation.assets[this.options.filename] = {
+        compilation.assets[this.pluginOptions.filename] = {
           source: () => scriptContent,
           size: () => scriptContent.length,
         } as never;

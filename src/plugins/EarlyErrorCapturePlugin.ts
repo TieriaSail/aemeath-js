@@ -7,9 +7,12 @@
 
 import type { AemeathInterface, AemeathPlugin } from '../types';
 import { RouteMatcher, type RouteMatchConfig } from '../utils/routeMatcher';
+import { getEarlyErrorCaptureScript } from '../build-plugins/early-error-script';
 
 // 重新导出 RouteMatchConfig 以保持向后兼容
 export type { RouteMatchConfig } from '../utils/routeMatcher';
+
+export type { EarlyErrorScriptOptions } from '../build-plugins/early-error-script';
 
 export interface EarlyError {
   type: 'error' | 'resource' | 'unhandledrejection' | 'compatibility';
@@ -42,14 +45,49 @@ export interface EarlyErrorCaptureOptions {
    * 控制在哪些路由下启用早期错误监控
    */
   routeMatch?: RouteMatchConfig;
+
+  /**
+   * 发送方式偏好
+   *
+   * - 'auto'：sendBeacon 优先，失败降级到 XHR（默认）
+   * - 'xhr'：只用 XHR（需要自定义 header 或确保 Content-Type 时使用）
+   * - 'beacon'：只用 sendBeacon（页面卸载场景更可靠，但不支持自定义 header）
+   */
+  fallbackTransport?: 'auto' | 'xhr' | 'beacon';
+
+  /**
+   * 自定义请求头（仅 XHR 模式生效，sendBeacon 不支持自定义 header）
+   *
+   * Content-Type 默认为 application/json，可覆盖。
+   *
+   * WARNING: 值会被 JSON.stringify 序列化到内联脚本，必须是字面量。
+   */
+  fallbackHeaders?: Record<string, string>;
+
+  /**
+   * 自定义 payload 格式化函数
+   *
+   * 接收早期错误数组和设备元信息，返回要发送的数据：
+   * - 返回单个对象 → 一次请求发送（适合批量接口）
+   * - 返回数组 → 每个元素分别发一次请求（适合单条接口）
+   * - 不提供 → 使用默认格式
+   *
+   * WARNING: 此函数会被 .toString() 序列化注入到 HTML 内联脚本，
+   * 不能引用外部变量、闭包或 ES Module。函数体必须是纯 ES5 语法。
+   */
+  formatPayload?: (errors: unknown[], meta: unknown) => unknown;
 }
 
 export class EarlyErrorCapturePlugin implements AemeathPlugin {
   public name = 'EarlyErrorCapture';
-  public version = '1.2.0';
+  public version = '1.3.0';
   public description = 'Capture errors before React mounts';
 
-  private options: Omit<Required<EarlyErrorCaptureOptions>, 'routeMatch'>;
+  private options: Omit<Required<EarlyErrorCaptureOptions>, 'routeMatch' | 'fallbackHeaders' | 'formatPayload' | 'fallbackTransport'> & {
+    fallbackTransport: 'auto' | 'xhr' | 'beacon';
+    fallbackHeaders?: Record<string, string>;
+    formatPayload?: (errors: unknown[], meta: unknown) => unknown;
+  };
   private routeMatcher!: RouteMatcher;
   private readonly pluginRouteMatch: RouteMatchConfig | undefined;
   private logger: AemeathInterface | null = null;
@@ -62,6 +100,9 @@ export class EarlyErrorCapturePlugin implements AemeathPlugin {
       fallbackTimeout: options.fallbackTimeout ?? 30000,
       autoRefreshOnChunkError: options.autoRefreshOnChunkError !== false,
       checkCompatibility: options.checkCompatibility !== false,
+      fallbackTransport: options.fallbackTransport ?? 'auto',
+      fallbackHeaders: options.fallbackHeaders,
+      formatPayload: options.formatPayload,
     };
 
     this.pluginRouteMatch = options.routeMatch;
@@ -90,16 +131,14 @@ export class EarlyErrorCapturePlugin implements AemeathPlugin {
       return;
     }
 
-    // 🎯 检查路由匹配（使用共享的路由匹配器）
     if (!this.routeMatcher.shouldCapture()) {
       console.debug(
         '[EarlyErrorCapture] 当前路由不在监控范围内，跳过早期错误上报:',
         window.location.pathname,
       );
-      // 清空早期错误，避免后续路由切换时重复上报
       const flushFn = (window as any).__flushEarlyErrors__;
       if (typeof flushFn === 'function') {
-        flushFn(() => {}); // 清空但不上报
+        flushFn(() => {});
       }
       return;
     }
@@ -134,7 +173,7 @@ export class EarlyErrorCapturePlugin implements AemeathPlugin {
         (err as any).lineno = earlyError.lineno;
         (err as any).colno = earlyError.colno;
         (err as any).source = earlyError.source;
-        (err as any).earlyError = true; // 用于自动识别为早期错误
+        (err as any).earlyError = true;
         (err as any).captureTimestamp = earlyError.timestamp;
         (err as any).device = earlyError.device;
 
@@ -150,185 +189,21 @@ export class EarlyErrorCapturePlugin implements AemeathPlugin {
 
 /**
  * 生成早期错误捕获脚本（供构建插件使用）
+ *
+ * @deprecated 请使用 `getEarlyErrorCaptureScript(options)` 代替。
+ *             该函数保留用于向后兼容，内部已转发到新的统一实现。
  */
 export function generateEarlyErrorScript(
   options: Required<EarlyErrorCaptureOptions>,
 ): string {
-  return `
-(function() {
-  'use strict';
-  
-  window.__EARLY_ERRORS__ = [];
-  
-  var MAX_ERRORS = ${options.maxErrors};
-  var FALLBACK_ENDPOINT = ${JSON.stringify(options.fallbackEndpoint)};
-  var FALLBACK_TIMEOUT = ${options.fallbackTimeout};
-  var AUTO_REFRESH = ${options.autoRefreshOnChunkError};
-  var CHECK_COMPAT = ${options.checkCompatibility};
-  
-  var deviceInfo = {
-    ua: navigator.userAgent,
-    lang: navigator.language,
-    screen: screen.width + 'x' + screen.height,
-    url: location.href,
-    time: Date.now()
-  };
-  
-  function addError(error) {
-    if (window.__EARLY_ERRORS__.length >= MAX_ERRORS) {
-      return;
-    }
-    
-    window.__EARLY_ERRORS__.push({
-      type: error.type,
-      message: error.message,
-      stack: error.stack,
-      filename: error.filename,
-      lineno: error.lineno,
-      colno: error.colno,
-      source: error.source,
-      timestamp: Date.now(),
-      device: deviceInfo
-    });
-  }
-  
-  window.addEventListener('error', function(event) {
-    var target = event.target || event.srcElement;
-    
-    if (target !== window && (target.tagName === 'SCRIPT' || target.tagName === 'LINK' || target.tagName === 'IMG')) {
-      addError({
-        type: 'resource',
-        message: 'Resource load failed',
-        source: target.src || target.href,
-        filename: target.src || target.href,
-        stack: null
-      });
-      
-      if (AUTO_REFRESH && target.tagName === 'SCRIPT' && (target.src || '').indexOf('chunk') !== -1) {
-        var hasRefreshed = sessionStorage.getItem('__chunk_refreshed__');
-        if (!hasRefreshed) {
-          sessionStorage.setItem('__chunk_refreshed__', '1');
-          setTimeout(function() { location.reload(); }, 100);
-        }
-      }
-    } else {
-      addError({
-        type: 'error',
-        message: event.message,
-        filename: event.filename,
-        lineno: event.lineno,
-        colno: event.colno,
-        stack: event.error ? event.error.stack : null
-      });
-    }
-  }, true);
-  
-  window.addEventListener('unhandledrejection', function(event) {
-    var reason = event.reason;
-    var message = 'Unhandled Promise Rejection';
-    var stack = null;
-    
-    if (reason instanceof Error) {
-      message = reason.message;
-      stack = reason.stack;
-    } else if (typeof reason === 'string') {
-      message = reason;
-    } else if (reason) {
-      message = JSON.stringify(reason);
-    }
-    
-    addError({
-      type: 'unhandledrejection',
-      message: message,
-      stack: stack
-    });
+  return getEarlyErrorCaptureScript({
+    maxErrors: options.maxErrors,
+    fallbackEndpoint: options.fallbackEndpoint,
+    fallbackTimeout: options.fallbackTimeout,
+    autoRefreshOnChunkError: options.autoRefreshOnChunkError,
+    checkCompatibility: options.checkCompatibility,
+    fallbackTransport: options.fallbackTransport as 'auto' | 'xhr' | 'beacon' | undefined,
+    fallbackHeaders: options.fallbackHeaders,
+    formatPayload: options.formatPayload,
   });
-  
-  if (CHECK_COMPAT) {
-    (function() {
-      var issues = [];
-      
-      if (!window.Promise) issues.push('Promise');
-      if (!window.fetch) issues.push('fetch');
-      if (!Array.prototype.includes) issues.push('Array.includes');
-      if (!Object.assign) issues.push('Object.assign');
-      if (!window.Map) issues.push('Map');
-      if (!window.Set) issues.push('Set');
-      
-      if (issues.length > 0) {
-        addError({
-          type: 'compatibility',
-          message: 'Browser compatibility issues: ' + issues.join(', '),
-          stack: null
-        });
-      }
-    })();
-  }
-  
-  window.__flushEarlyErrors__ = function(callback) {
-    if (typeof callback !== 'function') return;
-    
-    window.__LOGGER_INITIALIZED__ = true;
-    
-    var errors = window.__EARLY_ERRORS__.slice();
-    window.__EARLY_ERRORS__ = [];
-    
-    try {
-      callback(errors);
-    } catch (e) {
-      console.error('[EarlyErrorCapture] Error in flush callback:', e);
-    }
-  };
-  
-  if (FALLBACK_ENDPOINT) {
-    setTimeout(function() {
-      if (window.__LOGGER_INITIALIZED__) {
-        return;
-      }
-      
-      if (window.__EARLY_ERRORS__.length > 0) {
-        console.warn('[EarlyErrorCapture] Logger not initialized after ' + FALLBACK_TIMEOUT + 'ms, using fallback endpoint');
-        
-        var errors = window.__EARLY_ERRORS__.slice();
-        window.__EARLY_ERRORS__ = [];
-        
-        var payload = JSON.stringify({
-          errors: errors,
-          type: 'early-error-fallback',
-          timestamp: Date.now()
-        });
-        
-        if (navigator.sendBeacon) {
-          try {
-            var sent = navigator.sendBeacon(FALLBACK_ENDPOINT, payload);
-            if (sent) {
-              console.debug('[EarlyErrorCapture] Sent ' + errors.length + ' errors via sendBeacon');
-            } else {
-              fallbackXHR();
-            }
-          } catch (e) {
-            fallbackXHR();
-          }
-        } else {
-          fallbackXHR();
-        }
-        
-        function fallbackXHR() {
-          try {
-            var xhr = new XMLHttpRequest();
-            xhr.open('POST', FALLBACK_ENDPOINT, true);
-            xhr.setRequestHeader('Content-Type', 'application/json');
-            xhr.send(payload);
-            console.debug('[EarlyErrorCapture] Sent ' + errors.length + ' errors via XHR');
-          } catch (e) {
-            console.error('[EarlyErrorCapture] Failed to send via fallback:', e);
-          }
-        }
-      }
-    }, FALLBACK_TIMEOUT);
-  }
-  
-  window.__EARLY_ERROR_CAPTURE_LOADED__ = true;
-})();
-`.trim();
 }

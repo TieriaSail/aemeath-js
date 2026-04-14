@@ -44,6 +44,7 @@ export type { ErrorCapturePluginOptions } from './plugins/ErrorCapturePlugin';
 export { EarlyErrorCapturePlugin } from './plugins/EarlyErrorCapturePlugin';
 export type {
   EarlyErrorCaptureOptions,
+  EarlyErrorScriptOptions,
   EarlyError,
 } from './plugins/EarlyErrorCapturePlugin';
 

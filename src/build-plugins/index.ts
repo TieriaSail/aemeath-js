@@ -26,7 +26,7 @@
 
 // ==================== 类型导出 ====================
 
-export type { EarlyErrorCaptureOptions } from '../plugins/EarlyErrorCapturePlugin';
+export type { EarlyErrorCaptureOptions, EarlyErrorScriptOptions } from '../plugins/EarlyErrorCapturePlugin';
 export type { SourceMapPluginOptions } from './rsbuild-sourcemap';
 export type { SourceMapUploadConfig, SourceMapFile } from './sourcemap-uploader';
 export type { ViteSourceMapPluginOptions } from './vite-sourcemap';
