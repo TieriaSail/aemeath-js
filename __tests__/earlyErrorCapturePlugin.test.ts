@@ -189,10 +189,8 @@ describe('EarlyErrorCapturePlugin', () => {
       });
       logger.use(plugin);
 
-      // flushFn 会被调用（清空但不上报），但 logListener 不应被调用
       expect(logListener).not.toHaveBeenCalled();
 
-      // 恢复
       (window as any).location = { pathname: '/' };
     });
 
@@ -213,7 +211,6 @@ describe('EarlyErrorCapturePlugin', () => {
 
       expect(logListener).not.toHaveBeenCalled();
 
-      // 恢复
       (window as any).location = { pathname: '/' };
     });
   });
@@ -241,6 +238,28 @@ describe('EarlyErrorCapturePlugin', () => {
       expect(config.autoRefreshOnChunkError).toBe(true);
       expect(config.checkCompatibility).toBe(true);
     });
+
+    it('新增配置项应有正确默认值', () => {
+      const plugin = new EarlyErrorCapturePlugin();
+      const config = plugin.getConfig();
+
+      expect(config.fallbackTransport).toBe('auto');
+      expect(config.fallbackHeaders).toBeUndefined();
+      expect(config.formatPayload).toBeUndefined();
+    });
+
+    it('应正确存储新增配置项', () => {
+      const formatFn = (errors: unknown[]) => errors;
+      const plugin = new EarlyErrorCapturePlugin({
+        fallbackTransport: 'xhr',
+        fallbackHeaders: { 'X-Token': 'abc' },
+        formatPayload: formatFn,
+      });
+
+      const config = plugin.getConfig();
+      expect(config.fallbackTransport).toBe('xhr');
+      expect(config.fallbackHeaders).toEqual({ 'X-Token': 'abc' });
+      expect(config.formatPayload).toBe(formatFn);
+    });
   });
 });
-

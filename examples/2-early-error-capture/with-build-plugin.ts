@@ -13,14 +13,12 @@ import { ameathEarlyErrorPlugin } from 'aemeath-js/build-plugins/rsbuild';
 
 export default defineConfig({
   plugins: [
-    // 添加早期错误捕获插件
     ameathEarlyErrorPlugin({
       enabled: process.env.NODE_ENV === 'production',
     })
   ],
   
   output: {
-    // 生成 hidden source map（不泄露）
     sourceMap: process.env.NODE_ENV === 'production'
       ? { js: 'hidden-source-map', css: false }
       : { js: 'cheap-module-source-map', css: true }
@@ -57,6 +55,44 @@ export default defineConfig({
   plugins: [
     ameathEarlyErrorPlugin({
       enabled: process.env.NODE_ENV === 'production',
+    })
+  ]
+});
+*/
+
+// ==================== 带 Fallback 的构建配置 ====================
+
+/*
+// vite.config.ts — 自定义 fallback 上报
+import { defineConfig } from 'vite';
+import { ameathEarlyErrorPlugin } from 'aemeath-js/build-plugins/vite';
+
+export default defineConfig({
+  plugins: [
+    ameathEarlyErrorPlugin({
+      enabled: process.env.NODE_ENV === 'production',
+      fallbackEndpoint: 'https://example.com/api/error/log/add',
+      fallbackTimeout: 10000,
+      fallbackTransport: 'xhr',
+      fallbackHeaders: {
+        'X-App-Name': 'my-app',
+        'X-Log-Source': 'early-error',
+      },
+      // 自定义 payload 格式（适配现有后端接口）
+      formatPayload: function(errors, meta) {
+        return errors.map(function(e) {
+          return {
+            timestamp: e.timestamp,
+            content: JSON.stringify({
+              level: 'error',
+              message: e.message,
+              error: e.stack ? { stack: e.stack } : null,
+              tags: { errorType: e.type },
+              context: { device: meta },
+            }),
+          };
+        });
+      },
     })
   ]
 });
@@ -103,13 +139,14 @@ export default logger;
 /*
 // Node.js + Express
 app.post('/api/logs/early', (req, res) => {
-  const { errors, type, timestamp } = req.body;
+  const { errors, device, type, timestamp } = req.body;
   
   // 保存早期错误
   console.log('Early errors:', errors);
+  console.log('Device info:', device);
   
   // 可以发送告警
-  if (errors.some(e => e.type === 'resource-error')) {
+  if (errors.some(e => e.type === 'resource')) {
     sendAlert('Resource loading failed!');
   }
   

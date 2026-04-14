@@ -5,9 +5,9 @@
  */
 
 import type { RsbuildPlugin } from '@rsbuild/core';
-import { getEarlyErrorCaptureScript } from './early-error-script';
+import { getEarlyErrorCaptureScript, type EarlyErrorScriptOptions } from './early-error-script';
 
-export interface EarlyErrorCapturePluginOptions {
+export interface EarlyErrorCapturePluginOptions extends EarlyErrorScriptOptions {
   /**
    * 是否启用
    * @default true
@@ -28,11 +28,21 @@ export interface EarlyErrorCapturePluginOptions {
  *   ]
  * };
  * ```
+ *
+ * @example
+ * ```javascript
+ * // 启用 fallback 上报
+ * ameathEarlyErrorPlugin({
+ *   fallbackEndpoint: 'https://example.com/api/logs',
+ *   fallbackTimeout: 10000,
+ *   fallbackTransport: 'xhr',
+ * })
+ * ```
  */
 export function ameathEarlyErrorPlugin(
   options: EarlyErrorCapturePluginOptions = {},
 ): RsbuildPlugin {
-  const { enabled = true } = options;
+  const { enabled = true, ...scriptOptions } = options;
 
   return {
     name: 'aemeath-early-error-capture',
@@ -43,7 +53,7 @@ export function ameathEarlyErrorPlugin(
       api.modifyHTMLTags(({ headTags, bodyTags }) => {
         const scriptTag = {
           tag: 'script',
-          children: getEarlyErrorCaptureScript(),
+          children: getEarlyErrorCaptureScript(scriptOptions),
           attrs: { type: 'text/javascript' },
         };
 
@@ -55,4 +65,3 @@ export function ameathEarlyErrorPlugin(
     },
   };
 }
-
