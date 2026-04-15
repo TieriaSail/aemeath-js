@@ -446,7 +446,7 @@ export class AemeathLogger implements AemeathInterface {
       this.debugLog(`Plugin "${plugin.name}" installed`);
     } catch (err) {
       this.debugWarn(`Failed to install plugin "${plugin.name}":`, err);
-      throw err;
+      return this;
     }
 
     return this;
@@ -466,7 +466,11 @@ export class AemeathLogger implements AemeathInterface {
     const idx = this.pluginInstances.findIndex((p) => p.name === name);
     if (idx !== -1) {
       const plugin = this.pluginInstances[idx]!;
-      plugin.uninstall?.(this);
+      try {
+        plugin.uninstall?.(this);
+      } catch (err) {
+        this.debugWarn(`Plugin "${name}" uninstall error:`, err);
+      }
       this.pluginInstances.splice(idx, 1);
     }
 

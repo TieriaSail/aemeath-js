@@ -351,6 +351,8 @@ logger.use(new MyPlugin());
 
 ### Browser
 
+All packages (ESM, CJS, IIFE) are built with **ES2017** target and can run directly in the following browsers:
+
 | Environment | Minimum Version | Notes |
 |-------------|----------------|-------|
 | Chrome | 64+ | Full support |
@@ -361,7 +363,71 @@ logger.use(new MyPlugin());
 | Android WebView | 64+ | Full support |
 | IE | ❌ Not supported | Use browser bundle with polyfills if needed |
 
-> The npm package targets **ES2020**. The browser IIFE bundle (`aemeath-js.global.js`) targets **ES2017** for broader compatibility.
+### Supporting Older Browsers (Chrome < 64)
+
+If your `browserslist` includes browsers older than the versions listed above, you need to add aemeath-js to your build tool's transpilation scope:
+
+**Rsbuild / Rspack**
+
+```typescript
+// rsbuild.config.ts
+export default defineConfig({
+  source: {
+    include: [/[\\/]node_modules[\\/]aemeath-js[\\/]/],
+  },
+});
+```
+
+**Webpack**
+
+```javascript
+// webpack.config.js
+module.exports = {
+  module: {
+    rules: [
+      {
+        test: /\.m?js$/,
+        include: [
+          path.resolve(__dirname, 'src'),
+          /node_modules[\\/]aemeath-js/,
+        ],
+        use: {
+          loader: 'babel-loader',
+          options: {
+            presets: [['@babel/preset-env', { targets: '> 0.5%, not dead' }]],
+          },
+        },
+      },
+    ],
+  },
+};
+```
+
+**Vite**
+
+Vite uses esbuild which skips `node_modules` by default. For production builds targeting legacy browsers, use `@vitejs/plugin-legacy`:
+
+```typescript
+// vite.config.ts
+import legacy from '@vitejs/plugin-legacy';
+
+export default defineConfig({
+  plugins: [
+    legacy({
+      targets: ['Chrome >= 49'],
+    }),
+  ],
+});
+```
+
+**Next.js**
+
+```javascript
+// next.config.js
+module.exports = {
+  transpilePackages: ['aemeath-js'],
+};
+```
 
 ### Node.js
 
@@ -394,11 +460,11 @@ logger.use(new MyPlugin());
 
 ### Module Formats
 
-| Format | File | Usage |
-|--------|------|-------|
-| **ESM** | `dist/index.js` | `import` — modern bundlers |
-| **CJS** | `dist/index.cjs` | `require()` — Node.js, older bundlers |
-| **IIFE** | `dist/aemeath-js.global.js` | `<script>` tag — no build tools |
+| Format | File | Target | Usage |
+|--------|------|--------|-------|
+| **ESM** | `dist/index.js` | ES2017 | `import` — modern bundlers |
+| **CJS** | `dist/index.cjs` | ES2017 | `require()` — Node.js, older bundlers |
+| **IIFE** | `dist/aemeath-js.global.js` | ES2017 | `<script>` tag — no build tools |
 
 ## Also Check Out
 

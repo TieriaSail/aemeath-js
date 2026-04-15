@@ -351,6 +351,8 @@ logger.use(new MyPlugin());
 
 ### 浏览器
 
+所有产物（ESM、CJS、IIFE）均以 **ES2017** 为构建目标，可直接在以下浏览器中运行：
+
 | 环境 | 最低版本 | 说明 |
 |------|---------|------|
 | Chrome | 64+ | 完整支持 |
@@ -361,7 +363,71 @@ logger.use(new MyPlugin());
 | Android WebView | 64+ | 完整支持 |
 | IE | ❌ 不支持 | 如需兼容可使用浏览器 IIFE 包 + polyfill |
 
-> npm 包构建目标为 **ES2020**。浏览器 IIFE 包（`aemeath-js.global.js`）构建目标为 **ES2017**，兼容性更广。
+### 兼容更低版本浏览器（Chrome < 64）
+
+如果你的 `browserslist` 包含上述表格之前的浏览器版本，需要将 aemeath-js 加入构建工具的转译范围：
+
+**Rsbuild / Rspack**
+
+```typescript
+// rsbuild.config.ts
+export default defineConfig({
+  source: {
+    include: [/[\\/]node_modules[\\/]aemeath-js[\\/]/],
+  },
+});
+```
+
+**Webpack**
+
+```javascript
+// webpack.config.js
+module.exports = {
+  module: {
+    rules: [
+      {
+        test: /\.m?js$/,
+        include: [
+          path.resolve(__dirname, 'src'),
+          /node_modules[\\/]aemeath-js/,
+        ],
+        use: {
+          loader: 'babel-loader',
+          options: {
+            presets: [['@babel/preset-env', { targets: '> 0.5%, not dead' }]],
+          },
+        },
+      },
+    ],
+  },
+};
+```
+
+**Vite**
+
+Vite 使用 esbuild 构建，默认跳过 `node_modules`。对于需要兼容低版本浏览器的生产构建，请使用 `@vitejs/plugin-legacy`：
+
+```typescript
+// vite.config.ts
+import legacy from '@vitejs/plugin-legacy';
+
+export default defineConfig({
+  plugins: [
+    legacy({
+      targets: ['Chrome >= 49'],
+    }),
+  ],
+});
+```
+
+**Next.js**
+
+```javascript
+// next.config.js
+module.exports = {
+  transpilePackages: ['aemeath-js'],
+};
+```
 
 ### Node.js
 
@@ -394,11 +460,11 @@ logger.use(new MyPlugin());
 
 ### 模块格式
 
-| 格式 | 文件 | 用途 |
-|------|------|------|
-| **ESM** | `dist/index.js` | `import` — 现代打包工具 |
-| **CJS** | `dist/index.cjs` | `require()` — Node.js、旧版打包工具 |
-| **IIFE** | `dist/aemeath-js.global.js` | `<script>` 标签 — 无需构建工具 |
+| 格式 | 文件 | 构建目标 | 用途 |
+|------|------|----------|------|
+| **ESM** | `dist/index.js` | ES2017 | `import` — 现代打包工具 |
+| **CJS** | `dist/index.cjs` | ES2017 | `require()` — Node.js、旧版打包工具 |
+| **IIFE** | `dist/aemeath-js.global.js` | ES2017 | `<script>` 标签 — 无需构建工具 |
 
 ## 推荐搭配
 

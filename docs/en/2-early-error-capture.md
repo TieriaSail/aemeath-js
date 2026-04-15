@@ -209,6 +209,23 @@ EarlyErrorCapturePlugin inherits the global `routeMatch` config from `initAemeat
 
 ---
 
+## ⚠️ Compatibility Notice
+
+The **inline early error capture script** uses pure **ES5** syntax and runs in any browser.
+
+However, the aemeath-js **npm package** (including `EarlyErrorCapturePlugin` and `initAemeath()`) is built with **ES2017** target. If the npm package fails to load due to syntax incompatibility (e.g., in very old WebViews):
+
+1. `initAemeath()` will never execute
+2. `__flushEarlyErrors__` will never be called
+3. Captured early errors will remain in memory and never be reported through the normal pipeline
+
+**Recommendations:**
+
+- If your `browserslist` includes browsers older than Chrome 64 / Safari 12, add aemeath-js to your build tool's transpilation scope (see [Compatibility — Supporting Older Browsers](../../README.md#supporting-older-browsers-chrome--64))
+- Configure `fallbackEndpoint` as a safety net — even if the SDK itself fails to load, early errors will be sent to your fallback endpoint after the timeout
+
+---
+
 ## 🔧 Build Plugin Compatibility
 
 | Build Tool | Version Support | Import Path | html-webpack-plugin |
