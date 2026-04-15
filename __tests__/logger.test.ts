@@ -695,5 +695,124 @@ describe('AemeathLogger Core', () => {
       expect(listener).not.toHaveBeenCalled();
     });
   });
+
+  // ==================== 错误兜底（防御性编程） ====================
+
+  describe('错误兜底', () => {
+    it('use() 插件安装失败不应向外抛出', () => {
+      const badPlugin: AemeathPlugin = {
+        name: 'bad-plugin',
+        version: '1.0.0',
+        install: () => { throw new Error('install crash'); },
+      };
+
+      expect(() => logger.use(badPlugin)).not.toThrow();
+      expect(logger.hasPlugin('bad-plugin')).toBe(false);
+    });
+
+    it('use() 安装失败后 Logger 仍可正常使用', () => {
+      const badPlugin: AemeathPlugin = {
+        name: 'bad-plugin',
+        install: () => { throw new Error('install crash'); },
+      };
+
+      logger.use(badPlugin);
+
+      const listener = vi.fn();
+      logger.on('log', listener);
+      logger.info('still working');
+
+      expect(listener).toHaveBeenCalledTimes(1);
+      expect(listener.mock.calls[0][0].message).toBe('still working');
+    });
+
+    it('use() 安装失败不影响后续插件安装', () => {
+      const badPlugin: AemeathPlugin = {
+        name: 'bad',
+        install: () => { throw new Error('crash'); },
+      };
+      const goodPlugin: AemeathPlugin = {
+        name: 'good',
+        install: vi.fn(),
+      };
+
+      logger.use(badPlugin).use(goodPlugin);
+
+      expect(logger.hasPlugin('bad')).toBe(false);
+      expect(logger.hasPlugin('good')).toBe(true);
+    });
+
+    it('use() 依赖不满足仍应抛出（编程错误）', () => {
+      const plugin: AemeathPlugin = {
+        name: 'child',
+        dependencies: ['parent'],
+        install: vi.fn(),
+      };
+
+      expect(() => logger.use(plugin)).toThrow('requires "parent"');
+    });
+
+    it('uninstall() 插件卸载抛错不应影响清理', () => {
+      const plugin: AemeathPlugin = {
+        name: 'crash-uninstall',
+        install: vi.fn(),
+        uninstall: () => { throw new Error('uninstall crash'); },
+      };
+
+      logger.use(plugin);
+      expect(logger.hasPlugin('crash-uninstall')).toBe(true);
+
+      expect(() => logger.uninstall('crash-uninstall')).not.toThrow();
+      expect(logger.hasPlugin('crash-uninstall')).toBe(false);
+    });
+
+    it('uninstall() 卸载抛错后事件仍正常触发', () => {
+      const eventHandler = vi.fn();
+      logger.on('plugin:uninstall', eventHandler);
+
+      const plugin: AemeathPlugin = {
+        name: 'crash-uninstall',
+        install: vi.fn(),
+        uninstall: () => { throw new Error('boom'); },
+      };
+
+      logger.use(plugin);
+      logger.uninstall('crash-uninstall');
+
+      expect(eventHandler).toHaveBeenCalledWith('crash-uninstall');
+    });
+
+    it('destroy() 某个插件卸载失败不影响其他插件', () => {
+      const uninstallA = vi.fn();
+      const uninstallC = vi.fn();
+
+      logger.use({ name: 'a', install: vi.fn(), uninstall: uninstallA });
+      logger.use({
+        name: 'b',
+        install: vi.fn(),
+        uninstall: () => { throw new Error('b crash'); },
+      });
+      logger.use({ name: 'c', install: vi.fn(), uninstall: uninstallC });
+
+      expect(() => logger.destroy()).not.toThrow();
+
+      expect(uninstallA).toHaveBeenCalled();
+      expect(uninstallC).toHaveBeenCalled();
+      expect(logger.getPlugins()).toHaveLength(0);
+    });
+
+    it('destroy() 后 log() 不再执行', () => {
+      const listener = vi.fn();
+      logger.on('log', listener);
+
+      logger.destroy();
+
+      logger.info('should not fire');
+      logger.warn('should not fire');
+      logger.error('should not fire');
+
+      expect(listener).not.toHaveBeenCalled();
+    });
+  });
 });
 

@@ -42,7 +42,7 @@ export default defineConfig([
       '@rsbuild/core',
       'html-webpack-plugin',
     ],
-    target: 'es2020',
+    target: 'es2017',
     outDir: 'dist',
   },
 

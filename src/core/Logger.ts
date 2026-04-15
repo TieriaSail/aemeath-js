@@ -45,6 +45,7 @@ export class AemeathLogger implements AemeathInterface {
   private readonly release?: string;
   private readonly debugEnabled: boolean;
   private readonly _routeMatcher: RouteMatcher;
+  private destroyed = false;
 
   get routeMatcher(): RouteMatcher {
     return this._routeMatcher;
@@ -94,6 +95,8 @@ export class AemeathLogger implements AemeathInterface {
     message: string,
     options: LogOptions = {},
   ): void {
+    if (this.destroyed) return;
+
     // Phase 1: beforeLog 管道 — 遍历插件，允许拦截或修改参数
     let currentLevel = level;
     let currentMessage = message;
@@ -430,7 +433,7 @@ export class AemeathLogger implements AemeathInterface {
       this.debugLog(`Plugin "${plugin.name}" installed`);
     } catch (err) {
       this.debugWarn(`Failed to install plugin "${plugin.name}":`, err);
-      throw err;
+      return this;
     }
 
     return this;
@@ -450,7 +453,11 @@ export class AemeathLogger implements AemeathInterface {
     const idx = this.pluginInstances.findIndex((p) => p.name === name);
     if (idx !== -1) {
       const plugin = this.pluginInstances[idx]!;
-      plugin.uninstall?.(this);
+      try {
+        plugin.uninstall?.(this);
+      } catch (err) {
+        this.debugWarn(`Plugin "${name}" uninstall error:`, err);
+      }
       this.pluginInstances.splice(idx, 1);
     }
 
@@ -509,12 +516,18 @@ export class AemeathLogger implements AemeathInterface {
   }
 
   public destroy(): void {
+    this.destroyed = true;
     const pluginNames = Array.from(this.plugins.keys());
     for (const name of pluginNames) {
-      this.uninstall(name);
+      try {
+        this.uninstall(name);
+      } catch (err) {
+        this.debugWarn(`Failed to uninstall plugin "${name}" during destroy:`, err);
+      }
     }
     this.logListeners.clear();
     this.eventListeners.clear();
+    this.plugins.clear();
     this.pluginInstances.length = 0;
     this.staticContext = {};
     this.dynamicContext.clear();
