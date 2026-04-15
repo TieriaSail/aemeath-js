@@ -36,8 +36,6 @@ jobs:
           TAG="${GITHUB_REF#refs/tags/}"
           if [[ "$TAG" == *"-beta"* || "$TAG" == *"-alpha"* || "$TAG" == *"-rc"* ]]; then
             echo "tag=beta" >> "$GITHUB_OUTPUT"
-          elif [[ "$TAG" == v1.* ]]; then
-            echo "tag=v1-lts" >> "$GITHUB_OUTPUT"
           else
             echo "tag=latest" >> "$GITHUB_OUTPUT"
           fi
