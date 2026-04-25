@@ -343,6 +343,7 @@ logger.use(new MyPlugin());
 | **[上报插件](./docs/zh/4-upload-plugin.md)** | 带队列和重试的日志上报 |
 | **[全局上下文](./docs/zh/5-global-context.md)** | 自动附加上下文到每条日志 |
 | **[性能监控](./docs/zh/6-performance-monitoring.md)** | 🌐🧪 Web Vitals 性能监控 — **仅浏览器可用**，实验性 |
+| **[微信小程序支持](./docs/zh/7-miniprogram-support.md)** | 基于 `miniprogram` 字段的精简产物，原生可用 |
 | **[浏览器直接使用](./docs/zh/0-browser-usage.md)** | Script 标签引入（无需构建工具） |
 
 > 📖 English docs: [README](./README.md) | [Quick Start](./QUICK_START.md) | [Module Docs](./docs/en/)
@@ -429,6 +430,39 @@ module.exports = {
 };
 ```
 
+### 微信小程序
+
+自 `2.3.0-beta.0` 起，aemeath-js 提供了专门面向微信开发者工具 "构建 npm" 的精简产物 `dist-miniprogram/`，通过 `package.json` 的 `miniprogram` 字段接入，**无需任何打包工作流 workaround**。
+
+```javascript
+// app.js
+const { initAemeath, createMiniAppAdapter } = require('aemeath-js');
+
+App({
+  onLaunch() {
+    initAemeath({
+      platform: createMiniAppAdapter('wechat', wx),
+      upload: (log) => new Promise((resolve) => {
+        wx.request({
+          url: 'https://your-server.com/api/logs',
+          method: 'POST',
+          data: log,
+          success: () => resolve({ success: true }),
+          fail: (err) => resolve({ success: false, shouldRetry: true, error: err.errMsg }),
+        });
+      }),
+    });
+  },
+});
+```
+
+| 环境 | 最低版本 | 说明 |
+|------|---------|------|
+| 微信基础库 | 2.0+ | ES2017 语法、CJS 单文件 bundle |
+| Taro / uni-app | 最新 | 走主入口；详见 [小程序接入文档](./docs/zh/7-miniprogram-support.md) |
+
+小程序精简产物**不包含**浏览器专用插件（`BrowserApiErrorsPlugin`、`PerformancePlugin`、`EarlyErrorCapturePlugin`），且要求通过 `createMiniAppAdapter(vendor, wx)` **显式传入 `platform`**。完整 API 列表请参见 [微信小程序支持](./docs/zh/7-miniprogram-support.md) 文档。
+
 ### Node.js
 
 | 用途 | 最低版本 | 说明 |
@@ -465,6 +499,7 @@ module.exports = {
 | **ESM** | `dist/index.js` | ES2017 | `import` — 现代打包工具 |
 | **CJS** | `dist/index.cjs` | ES2017 | `require()` — Node.js、旧版打包工具 |
 | **IIFE** | `dist/aemeath-js.global.js` | ES2017 | `<script>` 标签 — 无需构建工具 |
+| **微信小程序** | `dist-miniprogram/index.js` | ES2017 | 单文件 CJS bundle，通过 `miniprogram` 字段解析 — 详见[文档](./docs/zh/7-miniprogram-support.md) |
 
 ## 推荐搭配
 

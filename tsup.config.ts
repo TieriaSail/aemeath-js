@@ -78,4 +78,48 @@ export default defineConfig([
       js: '/* aemeath-js - Browser Bundle */',
     },
   },
+
+  // 微信小程序构建：单文件 CJS（dist-miniprogram/index.js）
+  //
+  // 微信开发者工具 的 npm 构建器会读取 package.json 的 `miniprogram` 字段，
+  // 将该目录原样拷贝到 `miniprogram_npm/aemeath-js/` 下。该构建器对 ESM、
+  // 动态 import、文件后缀 `.cjs`、代码分片（chunk）均不友好，因此此构建：
+  // - 强制 CJS 单文件（splitting: false）
+  // - 强制 `.js` 后缀（outExtension）
+  // - 目标 ES2017（小程序基础库普遍支持）
+  // - 不生成 d.ts（小程序侧不需要）
+  // - 不做 external（source-map-js 在小程序侧不会被引用到，但保留 external
+  //   避免动态 require 穿透到 miniprogram_npm 外部）
+  {
+    entry: {
+      index: 'src/miniprogram.ts',
+    },
+    format: ['cjs'],
+    dts: false,
+    splitting: false,
+    bundle: true,
+    sourcemap: false,
+    clean: false, // 主构建已清理根 dist，不动 dist-miniprogram
+    minify: true,
+    treeshake: true,
+    external: ['source-map-js'],
+    target: 'es2017',
+    outDir: 'dist-miniprogram',
+    outExtension: () => ({ js: '.js' }),
+    platform: 'neutral',
+    banner: {
+      js: '/* aemeath-js - WeChat Miniprogram Bundle */',
+    },
+    // 根 package.json 声明了 "type": "module"，该产物为 CJS，
+    // 写入一个本地 package.json 覆盖 type 字段，避免 Node 误解析
+    // （微信开发者工具不读此文件，仅影响 Node 侧 require）。
+    onSuccess: async () => {
+      const { writeFileSync, mkdirSync } = await import('node:fs');
+      mkdirSync('dist-miniprogram', { recursive: true });
+      writeFileSync(
+        'dist-miniprogram/package.json',
+        `${JSON.stringify({ type: 'commonjs', main: 'index.js' }, null, 2)}\n`,
+      );
+    },
+  },
 ]);

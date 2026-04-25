@@ -343,6 +343,7 @@ logger.use(new MyPlugin());
 | **[Upload Plugin](./docs/en/4-upload-plugin.md)** | Log upload with queue & retry |
 | **[Global Context](./docs/en/5-global-context.md)** | Attach context to every log |
 | **[Performance Monitoring](./docs/en/6-performance-monitoring.md)** | 🌐🧪 Web Vitals performance monitoring — **browser only**, experimental |
+| **[WeChat Miniprogram Support](./docs/en/7-miniprogram-support.md)** | Native support via `miniprogram` field & slim bundle |
 | **[Browser Usage](./docs/en/0-browser-usage.md)** | Script tag usage (no build tools) |
 
 > 📖 中文文档：[查看中文 README](./README.zh_CN.md) | [快速开始](./QUICK_START.zh_CN.md) | [模块文档](./docs/zh/)
@@ -429,6 +430,39 @@ module.exports = {
 };
 ```
 
+### WeChat Miniprogram
+
+Since `2.3.0-beta.0`, aemeath-js ships a dedicated slim bundle at `dist-miniprogram/` that is picked up by the WeChat DevTools "Build npm" step via the `miniprogram` field — **no bundler workaround required**.
+
+```javascript
+// app.js
+const { initAemeath, createMiniAppAdapter } = require('aemeath-js');
+
+App({
+  onLaunch() {
+    initAemeath({
+      platform: createMiniAppAdapter('wechat', wx),
+      upload: (log) => new Promise((resolve) => {
+        wx.request({
+          url: 'https://your-server.com/api/logs',
+          method: 'POST',
+          data: log,
+          success: () => resolve({ success: true }),
+          fail: (err) => resolve({ success: false, shouldRetry: true, error: err.errMsg }),
+        });
+      }),
+    });
+  },
+});
+```
+
+| Environment | Minimum Version | Notes |
+|-------------|----------------|-------|
+| WeChat base library | 2.0+ | ES2017 syntax, CJS single-file bundle |
+| Taro / uni-app | Latest | Uses main entry; see [miniprogram docs](./docs/en/7-miniprogram-support.md) |
+
+The miniprogram bundle excludes browser-only plugins (`BrowserApiErrorsPlugin`, `PerformancePlugin`, `EarlyErrorCapturePlugin`) and requires **explicit `platform` injection** via `createMiniAppAdapter(vendor, wx)`. See the [WeChat Miniprogram Support](./docs/en/7-miniprogram-support.md) guide for the full API surface.
+
 ### Node.js
 
 | Usage | Minimum Version | Notes |
@@ -465,6 +499,7 @@ module.exports = {
 | **ESM** | `dist/index.js` | ES2017 | `import` — modern bundlers |
 | **CJS** | `dist/index.cjs` | ES2017 | `require()` — Node.js, older bundlers |
 | **IIFE** | `dist/aemeath-js.global.js` | ES2017 | `<script>` tag — no build tools |
+| **WeChat Miniprogram** | `dist-miniprogram/index.js` | ES2017 | Slim CJS bundle resolved via `miniprogram` field — see [docs](./docs/en/7-miniprogram-support.md) |
 
 ## Also Check Out
 

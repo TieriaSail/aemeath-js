@@ -40,23 +40,60 @@ logger.info('Hello from browser');
 
 ## 2. WeChat MiniApp | 微信小程序
 
-Use `createMiniAppAdapter` with WeChat's global `wx` object.
+### 2.1 Native miniprogram (no bundler) | 原生小程序（无打包器）
 
-使用 `createMiniAppAdapter` 搭配微信全局对象 `wx`。
+Since `2.3.0-beta.0`, aemeath-js ships a dedicated slim bundle at `dist-miniprogram/` that is picked up by the WeChat DevTools "Build npm" step via the `miniprogram` field in `package.json` — **no bundler workaround needed**.
+
+自 `2.3.0-beta.0` 起，aemeath-js 提供了专门的精简产物 `dist-miniprogram/`，通过 `package.json` 的 `miniprogram` 字段被微信开发者工具 "构建 npm" 识别 — **无需任何打包器配置**。
 
 ```javascript
-import { initAemeath, getAemeath, createMiniAppAdapter } from 'aemeath-js';
+// app.js — use CommonJS require (miniprogram runtime is CJS)
+// app.js — 使用 CommonJS require（小程序运行时为 CJS）
+const { initAemeath, getAemeath, createMiniAppAdapter } = require('aemeath-js');
 
-const platform = createMiniAppAdapter('wechat', wx);
-
-initAemeath({
-  platform,
-  upload: async (log) => ({ success: true }),
+App({
+  onLaunch() {
+    initAemeath({
+      // Explicit platform is required in the miniprogram entry
+      // 小程序精简入口要求显式传入 platform
+      platform: createMiniAppAdapter('wechat', wx),
+      upload: (log) => new Promise((resolve) => {
+        wx.request({
+          url: 'https://your-server.com/api/logs',
+          method: 'POST',
+          data: log,
+          success: () => resolve({ success: true }),
+          fail: (err) => resolve({
+            success: false,
+            shouldRetry: true,
+            error: err.errMsg,
+          }),
+        });
+      }),
+    });
+  },
 });
 
-const logger = getAemeath();
-logger.info('Hello from WeChat MiniApp');
+// In pages | 页面中
+Page({
+  onLoad() {
+    const logger = getAemeath();
+    logger.info('Hello from WeChat MiniApp');
+  },
+});
 ```
+
+**What you get | 精简版包含：** `AemeathLogger`, `ErrorCapturePlugin`, `UploadPlugin`, `SafeGuardPlugin`, `NetworkPlugin`, `createMiniAppAdapter`, `instrumentMiniAppRequest`, `initAemeath` / `getAemeath` / `resetAemeath` / `isAemeathInitialized`.
+
+**Intentionally excluded | 精简版排除：** `BrowserApiErrorsPlugin`, `PerformancePlugin`, `EarlyErrorCapturePlugin`, `createBrowserAdapter`, `detectPlatform`, `instrumentFetch`, `instrumentXHR` (all browser-only / 均为浏览器专用).
+
+> See [docs/en/7-miniprogram-support.md](../../docs/en/7-miniprogram-support.md) / [docs/zh/7-miniprogram-support.md](../../docs/zh/7-miniprogram-support.md) for the full guide.
+
+### 2.2 WeChat target via Taro / uni-app | 使用 Taro / uni-app 构建微信目标
+
+See sections 4 and 5 below. Framework-level bundlers resolve the **main** entry (not `miniprogram`), so the full `aemeath-js` API is available; just make sure you pass the framework-provided global.
+
+参见第 4、5 节。Taro / uni-app 等框架在 Node 侧预编译，解析的是 `main` 入口（而非 `miniprogram`），所以可以使用 `aemeath-js` 的完整 API；只需传入框架提供的全局即可。
 
 ---
 
@@ -196,3 +233,4 @@ initAemeath({
 
 - [Quick Start](../../QUICK_START.md) | [快速开始](../../QUICK_START.zh_CN.md)
 - [Examples Index](../README.md) | [示例索引](../README.md)
+- [WeChat Miniprogram Guide](../../docs/en/7-miniprogram-support.md) | [微信小程序接入指南](../../docs/zh/7-miniprogram-support.md)
