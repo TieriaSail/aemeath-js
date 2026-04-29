@@ -569,6 +569,12 @@ export function getAemeath(): AemeathLogger {
     globalAemeath.use(new ErrorCapturePlugin());
     // 兜底也要装 BeforeSendPlugin，否则后续 setBeforeSend(...) 会静默无效
     globalAemeath.use(new BeforeSendPlugin());
+    // 如果构建插件已注入早期脚本，必须装 EarlyErrorCapturePlugin 完成接管，
+    // 否则 __LOGGER_INITIALIZED__ 永远不被翻牌、fallback 定时器到点照样开火，
+    // 与 initAemeath() 行为不一致。
+    if (typeof window !== 'undefined' && (window as any).__EARLY_ERRORS__) {
+      globalAemeath.use(new EarlyErrorCapturePlugin());
+    }
   }
 
   return globalAemeath;

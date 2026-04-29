@@ -168,6 +168,44 @@ describe('Singleton (initAemeath / getAemeath)', () => {
 
       mod.resetAemeath();
     });
+
+    it('早期脚本已注入时，兜底创建路径也应装载 EarlyErrorCapturePlugin', async () => {
+      // 与 initAemeath() 行为对齐，避免 __LOGGER_INITIALIZED__ 永不翻牌。
+      const mod = await import('../src/singleton/index');
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      (window as { __EARLY_ERRORS__?: unknown[] }).__EARLY_ERRORS__ = [];
+      (window as { __flushEarlyErrors__?: unknown }).__flushEarlyErrors__ = vi.fn(
+        (cb: (errs: unknown[]) => void) => {
+          (window as { __LOGGER_INITIALIZED__?: boolean }).__LOGGER_INITIALIZED__ = true;
+          cb([]);
+        },
+      );
+
+      const logger = mod.getAemeath();
+      expect(logger.hasPlugin('EarlyErrorCapture')).toBe(true);
+      expect((window as { __LOGGER_INITIALIZED__?: boolean }).__LOGGER_INITIALIZED__).toBe(true);
+
+      warnSpy.mockRestore();
+      mod.resetAemeath();
+      delete (window as { __EARLY_ERRORS__?: unknown[] }).__EARLY_ERRORS__;
+      delete (window as { __flushEarlyErrors__?: unknown }).__flushEarlyErrors__;
+      delete (window as { __LOGGER_INITIALIZED__?: boolean }).__LOGGER_INITIALIZED__;
+    });
+
+    it('早期脚本未注入时，兜底创建路径不应装载 EarlyErrorCapturePlugin', async () => {
+      const mod = await import('../src/singleton/index');
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      delete (window as { __EARLY_ERRORS__?: unknown[] }).__EARLY_ERRORS__;
+      delete (window as { __flushEarlyErrors__?: unknown }).__flushEarlyErrors__;
+
+      const logger = mod.getAemeath();
+      expect(logger.hasPlugin('EarlyErrorCapture')).toBe(false);
+
+      warnSpy.mockRestore();
+      mod.resetAemeath();
+    });
   });
 
   // ==================== isAemeathInitialized ====================
