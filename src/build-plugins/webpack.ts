@@ -9,6 +9,10 @@
 import type { Compiler, Compilation } from 'webpack';
 import { getEarlyErrorCaptureScript, type EarlyErrorScriptOptions } from './early-error-script';
 
+// R14.5: re-export EarlyErrorScriptOptions 让用户可从子路径直接 import，
+// 避免依赖内部路径 './early-error-script'。
+export type { EarlyErrorScriptOptions } from './early-error-script';
+
 // html-webpack-plugin 的类型（避免直接依赖）
 interface HtmlWebpackPluginData {
   headTags: Array<{
