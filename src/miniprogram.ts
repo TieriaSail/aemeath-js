@@ -267,20 +267,39 @@ export interface AemeathInitOptions {
  */
 export function initAemeath(options: AemeathInitOptions): AemeathLogger {
   if (globalAemeath) {
-    // 重复 init：整个 options 不会被再次应用，但允许单独转嫁 beforeSend，
-    // 避免用户传入的 hook 被静默吞掉（与 web 端入口保持对称）。
+    // 重复 init：整个 options 不会被再次应用，但下面的「可挽救」选项会被增量应用：
+    //   - beforeSend：直接 setHook 到现有 BeforeSendPlugin
+    //   - upload：第一次 init 没传 upload 时，第二次 init({ upload }) 会被丢弃，
+    //     这里**增量补装**，否则用户在多模块场景下传 upload 会被静默吞掉。
+    //     （与 web 端 singleton/index.ts 修复对称。）
+    const honored: string[] = [];
     if (options && options.beforeSend !== undefined) {
       const existing = globalAemeath.getPluginInstance('before-send') as BeforeSendPlugin | undefined;
       if (existing && typeof existing.setHook === 'function') {
         existing.setHook(options.beforeSend);
+        honored.push('beforeSend');
       }
     }
+    if (options && options.upload && !globalAemeath.hasPlugin('upload')) {
+      globalAemeath.use(
+        new UploadPlugin({
+          onUpload: options.upload,
+          getPriority: options.getPriority,
+          queue: options.queue,
+          cache: { enabled: true },
+        }),
+      );
+      honored.push('upload');
+    }
     if (typeof console !== 'undefined' && console.warn) {
-      const ignored = options ? Object.keys(options).filter((k) => k !== 'beforeSend') : [];
+      const ignored = options ? Object.keys(options).filter((k) => !honored.includes(k)) : [];
       if (ignored.length > 0) {
+        const honoredText = honored.length > 0
+          ? ` Only the following were honored: ${honored.join(', ')}.`
+          : '';
         console.warn(
           '[Aemeath] initAemeath() called twice. The following options were ignored: '
-            + `${ignored.join(', ')}. Only beforeSend is honored.`,
+            + `${ignored.join(', ')}.${honoredText}`,
         );
       }
     }

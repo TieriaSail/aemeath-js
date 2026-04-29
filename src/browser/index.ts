@@ -135,9 +135,19 @@ function getAemeath(): AemeathLogger {
 
 function flushEarlyErrors(logger: AemeathLogger): void {
   const platform = logger.platform;
-  if (!platform.earlyCapture.hasEarlyErrors()) return;
+  // 不变量：只要早期脚本已被注入（isInstalled() === true），就**必须**调用一次 flush()。
+  // flush() 内部会:
+  //   1. 把 window.__LOGGER_INITIALIZED__ 翻为 true（让早期脚本所有 listener 让位）
+  //   2. 清掉 __FALLBACK_TIMER__（避免 doFallback 重复上报）
+  //   3. 把累计的 __EARLY_ERRORS__ 通过 callback 交给主 Logger
+  // 上报与否（错误数量）是 callback 内部的决定，**不能**用来跳过 flush 本身。
+  // 旧实现用 hasEarlyErrors()（length > 0）早 return，导致绝大多数无错误的健康加载下
+  // __LOGGER_INITIALIZED__ 永远不被翻牌、fallback 定时器到点开火，造成与模块化插件
+  // 双轨重复上报。详见 v2.2.0-beta.1 early-handoff-bug-report Bug 1+2。
+  if (!platform.earlyCapture.isInstalled()) return;
 
   platform.earlyCapture.flush((errors) => {
+    if (errors.length === 0) return;
     errors.forEach((err) => {
       const context: Record<string, unknown> = {
         errorType: err.type,
