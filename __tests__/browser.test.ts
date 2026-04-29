@@ -222,9 +222,43 @@ describe('Browser IIFE 入口', () => {
 
       expect((window as any).__flushEarlyErrors__).toHaveBeenCalled();
 
-      // 清理
       delete (window as any).__flushEarlyErrors__;
       delete (window as any).__EARLY_ERRORS__;
+    });
+
+    // 升级回归（v2.2.0-beta.1 early-handoff bug — Bug A）：
+    // 健康加载（脚本注入但无累计早期错误）也必须调 __flushEarlyErrors__，
+    // 否则 __LOGGER_INITIALIZED__ 永远不被翻牌、fallback 定时器到点开火、
+    // 早期脚本 listener 与模块化 ErrorCapturePlugin 双轨重复上报。
+    it('健康加载（脚本注入但无早期错误）也必须调 __flushEarlyErrors__ 翻牌', async () => {
+      const flushFn = vi.fn((callback: Function) => {
+        (window as any).__LOGGER_INITIALIZED__ = true;
+        callback([]);
+      });
+      (window as any).__flushEarlyErrors__ = flushFn;
+      (window as any).__EARLY_ERRORS__ = [];
+
+      const mod = await import('../src/browser/index');
+      mod.init({ errorCapture: false, safeGuard: false });
+
+      expect(flushFn).toHaveBeenCalledTimes(1);
+      expect((window as any).__LOGGER_INITIALIZED__).toBe(true);
+
+      delete (window as any).__flushEarlyErrors__;
+      delete (window as any).__EARLY_ERRORS__;
+      delete (window as any).__LOGGER_INITIALIZED__;
+    });
+
+    it('脚本未注入时不应调用 flush，也不应抛错', async () => {
+      delete (window as any).__flushEarlyErrors__;
+      delete (window as any).__EARLY_ERRORS__;
+
+      const mod = await import('../src/browser/index');
+      expect(() => {
+        mod.init({ errorCapture: false, safeGuard: false });
+      }).not.toThrow();
+
+      expect((window as any).__LOGGER_INITIALIZED__).toBeUndefined();
     });
   });
 });

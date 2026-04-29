@@ -17,19 +17,25 @@ describe('Vite Plugin', () => {
     expect(plugin.transformIndexHtml).toBeTypeOf('function');
   });
 
-  it('enabled=true 时应注入脚本到 head', async () => {
+  it('enabled=true 时应返回 head-prepend 的 script tag（vite 标准 API）', async () => {
     const { ameathEarlyErrorPlugin } = await import('../src/build-plugins/vite');
     const plugin = ameathEarlyErrorPlugin({ enabled: true });
 
     const html = '<html><head><title>Test</title></head><body></body></html>';
-    const result = (plugin.transformIndexHtml as Function)(html);
+    const result = (plugin.transformIndexHtml as Function)(html) as {
+      html: string;
+      tags: Array<{ tag: string; injectTo: string; children: string }>;
+    };
 
-    expect(result).toContain('<script>');
-    expect(result).toContain('__EARLY_ERRORS__');
-    expect(result).toContain('__flushEarlyErrors__');
+    expect(result.html).toBe(html);
+    expect(result.tags).toHaveLength(1);
+    expect(result.tags[0].tag).toBe('script');
+    expect(result.tags[0].injectTo).toBe('head-prepend');
+    expect(result.tags[0].children).toContain('__EARLY_ERRORS__');
+    expect(result.tags[0].children).toContain('__flushEarlyErrors__');
   });
 
-  it('enabled=false 时不应修改 HTML', async () => {
+  it('enabled=false 时不应注入任何 tag', async () => {
     const { ameathEarlyErrorPlugin } = await import('../src/build-plugins/vite');
     const plugin = ameathEarlyErrorPlugin({ enabled: false });
 
@@ -39,18 +45,29 @@ describe('Vite Plugin', () => {
     expect(result).toBe(html);
   });
 
-  it('脚本应注入到 <head> 最前面', async () => {
+  // 升级回归（Bug E）：旧实现 `html.replace('<head>', ...)` 字面量匹配，对
+  // `<HEAD>` / `<head class="x">` 等场景静默失效，整个早期错误捕获机制失能。
+  // 新实现走 vite 标准 `injectTo` API，由 vite 内部解析 HTML 树，对任意合法
+  // `<head>` 都成立。这里不再依赖字符串匹配，只确认插件返回 head-prepend 的
+  // 标准结构（实际注入由 vite 自己负责）。
+  it('Bug E: head 含属性 / 大小写差异时也必须返回相同 tag 结构（不依赖字面量 replace）', async () => {
     const { ameathEarlyErrorPlugin } = await import('../src/build-plugins/vite');
     const plugin = ameathEarlyErrorPlugin();
 
-    const html = '<html><head><meta charset="UTF-8"></head><body></body></html>';
-    const result = (plugin.transformIndexHtml as Function)(html);
-
-    // 脚本应在 <head> 后面紧跟着
-    const headIndex = result.indexOf('<head>');
-    const scriptIndex = result.indexOf('<script>');
-    expect(scriptIndex).toBeGreaterThan(headIndex);
-    expect(scriptIndex).toBeLessThan(result.indexOf('<meta'));
+    const cases = [
+      '<html><head><title>Test</title></head><body></body></html>',
+      '<html><head class="x"><title>Test</title></head><body></body></html>',
+      '<html><head lang="en"><title>Test</title></head><body></body></html>',
+      '<HTML><HEAD><TITLE>X</TITLE></HEAD><BODY></BODY></HTML>',
+    ];
+    for (const html of cases) {
+      const result = (plugin.transformIndexHtml as Function)(html) as {
+        html: string;
+        tags: Array<{ injectTo: string }>;
+      };
+      expect(result.tags).toHaveLength(1);
+      expect(result.tags[0].injectTo).toBe('head-prepend');
+    }
   });
 });
 

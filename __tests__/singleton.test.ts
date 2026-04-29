@@ -1,11 +1,22 @@
 /**
  * Singleton 单例模式测试
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 describe('Singleton (initAemeath / getAemeath)', () => {
   beforeEach(() => {
     vi.resetModules();
+  });
+
+  // 测试隔离卫生：清掉 jsdom window 上的 early-error globals 和所有 mock
+  // （包含 console.warn spy）。避免一个测试 set 了 __flushEarlyErrors__ 后，
+  // 下一个测试 getAemeath() 误进入 EarlyErrorCapturePlugin 装载分支，
+  // 触发不预期的 console.warn 计数。
+  afterEach(() => {
+    delete (window as { __flushEarlyErrors__?: unknown }).__flushEarlyErrors__;
+    delete (window as { __EARLY_ERRORS__?: unknown[] }).__EARLY_ERRORS__;
+    delete (window as { __LOGGER_INITIALIZED__?: boolean }).__LOGGER_INITIALIZED__;
+    vi.restoreAllMocks();
   });
 
   // ==================== initAemeath ====================
@@ -165,11 +176,14 @@ describe('Singleton (initAemeath / getAemeath)', () => {
       mod.resetAemeath();
     });
 
-    it('早期脚本已注入时，兜底创建路径也应装载 EarlyErrorCapturePlugin', async () => {
+    it('早期脚本已注入时，兜底创建路径也应装载 EarlyErrorCapturePlugin 并 console.warn', async () => {
       // 升级回归（v2.2.0-beta.1 early-handoff bug）：
       // 如果只用 getAemeath() 而不调 initAemeath()（少见但合法），早期脚本接管
       // 也必须发生，否则 __LOGGER_INITIALIZED__ 永不翻牌、fallback 定时器照样开火。
+      // 同时（Bug C）：本兜底路径没有 UploadPlugin，必须 console.warn 提示用户
+      // 「早期错误已接管但不会上传」，避免误以为 plugin 装了就万事大吉。
       const mod = await import('../src/singleton/index');
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       const flushFn = vi.fn((cb: (errs: unknown[]) => void) => {
         (window as { __LOGGER_INITIALIZED__?: boolean }).__LOGGER_INITIALIZED__ = true;
         cb([]);
@@ -182,7 +196,12 @@ describe('Singleton (initAemeath / getAemeath)', () => {
       expect(logger.hasPlugin('EarlyErrorCapture')).toBe(true);
       expect(flushFn).toHaveBeenCalledTimes(1);
       expect((window as { __LOGGER_INITIALIZED__?: boolean }).__LOGGER_INITIALIZED__).toBe(true);
+      // Bug C 警告必须发出（提示「不会上传」）
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('will NOT be uploaded'),
+      );
 
+      warnSpy.mockRestore();
       mod.resetAemeath();
       delete (window as { __flushEarlyErrors__?: unknown }).__flushEarlyErrors__;
       delete (window as { __EARLY_ERRORS__?: unknown[] }).__EARLY_ERRORS__;
@@ -196,6 +215,69 @@ describe('Singleton (initAemeath / getAemeath)', () => {
 
       const logger = mod.getAemeath();
       expect(logger.hasPlugin('EarlyErrorCapture')).toBe(false);
+
+      mod.resetAemeath();
+    });
+
+    // 升级回归（Bug D — 与 Bug C 配套）：
+    // 「先 getAemeath() 后 initAemeath({ upload })」过去 upload 会被静默丢弃，
+    // 这让 Bug C 的 warn「Call initAemeath({ upload }) afterwards」变成空头支票。
+    // 修复后必须支持「增量补装 UploadPlugin」。
+    it('Bug D: 先 getAemeath() 后 initAemeath({ upload }) 必须增量补装 UploadPlugin', async () => {
+      const mod = await import('../src/singleton/index');
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      // 第一步：getAemeath() 兜底创建（无 UploadPlugin）
+      const logger1 = mod.getAemeath();
+      expect(logger1.hasPlugin('upload')).toBe(false);
+
+      // 第二步：initAemeath({ upload }) 必须增量补装
+      const uploadFn = vi.fn(async () => ({ success: true as const }));
+      const logger2 = mod.initAemeath({ upload: uploadFn });
+
+      expect(logger2).toBe(logger1);
+      expect(logger2.hasPlugin('upload')).toBe(true);
+
+      // 真实端到端：发一条 log，确认 uploadFn 被调用
+      logger2.error('post-incremental-upload');
+      await new Promise((r) => setTimeout(r, 50));
+      expect(uploadFn).toHaveBeenCalled();
+
+      mod.resetAemeath();
+    });
+
+    it('Bug D: 增量补装时 console.warn 应明确「upload was honored」', async () => {
+      const mod = await import('../src/singleton/index');
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      mod.getAemeath();
+      mod.initAemeath({
+        upload: async () => ({ success: true as const }),
+        environment: 'production',
+      });
+
+      const warnTexts = warnSpy.mock.calls.map((c) => String(c[0]));
+      const hit = warnTexts.find((t) => t.includes('initAemeath() called after the global instance'));
+      expect(hit).toBeDefined();
+      expect(hit).toContain('honored: upload');
+      expect(hit).toContain('ignored: environment');
+
+      mod.resetAemeath();
+    });
+
+    it('Bug D: 重复 init({ upload }) 时不应重复装载（防止 pipeline 出现两个 UploadPlugin）', async () => {
+      const mod = await import('../src/singleton/index');
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      mod.getAemeath();
+      mod.initAemeath({ upload: async () => ({ success: true as const }) });
+      const firstCount = mod.getAemeath().getPlugins().filter((p) => p.name === 'upload').length;
+      expect(firstCount).toBe(1);
+
+      // 第二次 init 不应该再加一个
+      mod.initAemeath({ upload: async () => ({ success: true as const }) });
+      const secondCount = mod.getAemeath().getPlugins().filter((p) => p.name === 'upload').length;
+      expect(secondCount).toBe(1);
 
       mod.resetAemeath();
     });
@@ -232,6 +314,29 @@ describe('Singleton (initAemeath / getAemeath)', () => {
       expect(logger2).not.toBe(logger1);
 
       mod.resetAemeath();
+    });
+
+    /**
+     * R15.2 回归：resetAemeath() 必须清理 window 上的 early-error globals，
+     * 让 reset 真正彻底。否则下次 initAemeath() 会被残留 __LOGGER_INITIALIZED__、
+     * __EARLY_ERRORS__、__flushEarlyErrors__、__EARLY_ERROR_CAPTURE_LOADED__ 影响。
+     */
+    it('R15.2: resetAemeath 必须清理 window 上所有 early-error globals', async () => {
+      // 先模拟早期脚本注入的全局
+      (window as any).__EARLY_ERRORS__ = [{ type: 'error', message: 'leftover', stack: null, timestamp: 0, device: {} }];
+      (window as any).__flushEarlyErrors__ = () => {};
+      (window as any).__LOGGER_INITIALIZED__ = false;
+      (window as any).__EARLY_ERROR_CAPTURE_LOADED__ = true;
+
+      const mod = await import('../src/singleton/index');
+      mod.initAemeath();
+      mod.resetAemeath();
+
+      // 关键断言：resetAemeath 后所有 early-error globals 必须被删除
+      expect((window as any).__EARLY_ERRORS__).toBeUndefined();
+      expect((window as any).__flushEarlyErrors__).toBeUndefined();
+      expect((window as any).__LOGGER_INITIALIZED__).toBeUndefined();
+      expect((window as any).__EARLY_ERROR_CAPTURE_LOADED__).toBeUndefined();
     });
   });
 

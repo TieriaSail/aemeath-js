@@ -112,6 +112,71 @@ describe('src/miniprogram.ts 精简入口（源码）', () => {
     expect(a).toBe(b);
   });
 
+  // 升级回归（Bug D — 与 web 端 singleton 修复对称）：
+  // 「第一次 init 没传 upload，第二次 init({ upload })」过去 upload 会被静默丢弃。
+  // 多模块 / monorepo 场景下 A 模块先 init({}) → B 模块 init({ upload }) 是常见反模式。
+  it('Bug D: 第一次 init 无 upload，第二次 init({ upload }) 必须增量补装 UploadPlugin', async () => {
+    const mod = await import('../src/miniprogram');
+    const wx = createFakeWx();
+    const platform = mod.createMiniAppAdapter('wechat', wx);
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const logger1 = mod.initAemeath({ platform });
+    expect(logger1.hasPlugin('upload')).toBe(false);
+
+    const uploadFn = vi.fn(async () => ({ success: true as const }));
+    const logger2 = mod.initAemeath({ platform, upload: uploadFn });
+
+    expect(logger2).toBe(logger1);
+    expect(logger2.hasPlugin('upload')).toBe(true);
+
+    logger2.error('post-incremental-upload');
+    await new Promise((r) => setTimeout(r, 50));
+    expect(uploadFn).toHaveBeenCalled();
+  });
+
+  it('Bug D: 增量补装时 console.warn 应明确「upload was honored」', async () => {
+    const mod = await import('../src/miniprogram');
+    const wx = createFakeWx();
+    const platform = mod.createMiniAppAdapter('wechat', wx);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    mod.initAemeath({ platform });
+    mod.initAemeath({
+      platform,
+      upload: async () => ({ success: true as const }),
+      environment: 'production',
+    });
+
+    const warnTexts = warnSpy.mock.calls.map((c) => String(c[0]));
+    const hit = warnTexts.find((t) => t.includes('initAemeath() called twice'));
+    expect(hit).toBeDefined();
+    expect(hit).toContain('honored: upload');
+    expect(hit).toContain('ignored');
+    expect(hit).toContain('environment');
+  });
+
+  it('Bug D: 第一次 init 已有 upload 时，第二次 init({ upload }) 不应重复装载', async () => {
+    const mod = await import('../src/miniprogram');
+    const wx = createFakeWx();
+    const platform = mod.createMiniAppAdapter('wechat', wx);
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    mod.initAemeath({
+      platform,
+      upload: async () => ({ success: true as const }),
+    });
+    const firstCount = mod.getAemeath().getPlugins().filter((p) => p.name === 'upload').length;
+    expect(firstCount).toBe(1);
+
+    mod.initAemeath({
+      platform,
+      upload: async () => ({ success: true as const }),
+    });
+    const secondCount = mod.getAemeath().getPlugins().filter((p) => p.name === 'upload').length;
+    expect(secondCount).toBe(1);
+  });
+
   it('未初始化时 getAemeath 应抛 TypeError（与浏览器版静默兜底行为不同）', async () => {
     const mod = await import('../src/miniprogram');
     expect(mod.isAemeathInitialized()).toBe(false);
