@@ -584,10 +584,17 @@ export function setBeforeSend(hook: BeforeSendHook | null): void {
  */
 export function getAemeath(): AemeathLogger {
   if (!globalAemeath) {
-    globalAemeath = new AemeathLogger({ platform: detectPlatform() });
+    const platform = detectPlatform();
+    globalAemeath = new AemeathLogger({ platform });
     globalAemeath.use(new ErrorCapturePlugin());
     // 兜底也要装 BeforeSendPlugin，否则后续 setBeforeSend(...) 会静默无效
     globalAemeath.use(new BeforeSendPlugin());
+    // 如果构建插件已注入早期脚本，必须装 EarlyErrorCapturePlugin 完成接管，
+    // 否则同 v2.2.0-beta.1 early-handoff bug：__LOGGER_INITIALIZED__ 永远不被
+    // 翻牌，fallback 定时器到点就开火，造成双轨重复上报。
+    if (platform.earlyCapture.isInstalled()) {
+      globalAemeath.use(new EarlyErrorCapturePlugin());
+    }
   }
 
   return globalAemeath;

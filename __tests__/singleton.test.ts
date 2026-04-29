@@ -164,6 +164,41 @@ describe('Singleton (initAemeath / getAemeath)', () => {
 
       mod.resetAemeath();
     });
+
+    it('早期脚本已注入时，兜底创建路径也应装载 EarlyErrorCapturePlugin', async () => {
+      // 升级回归（v2.2.0-beta.1 early-handoff bug）：
+      // 如果只用 getAemeath() 而不调 initAemeath()（少见但合法），早期脚本接管
+      // 也必须发生，否则 __LOGGER_INITIALIZED__ 永不翻牌、fallback 定时器照样开火。
+      const mod = await import('../src/singleton/index');
+      const flushFn = vi.fn((cb: (errs: unknown[]) => void) => {
+        (window as { __LOGGER_INITIALIZED__?: boolean }).__LOGGER_INITIALIZED__ = true;
+        cb([]);
+      });
+      (window as { __flushEarlyErrors__?: unknown }).__flushEarlyErrors__ = flushFn;
+      (window as { __EARLY_ERRORS__?: unknown[] }).__EARLY_ERRORS__ = [];
+
+      const logger = mod.getAemeath();
+
+      expect(logger.hasPlugin('EarlyErrorCapture')).toBe(true);
+      expect(flushFn).toHaveBeenCalledTimes(1);
+      expect((window as { __LOGGER_INITIALIZED__?: boolean }).__LOGGER_INITIALIZED__).toBe(true);
+
+      mod.resetAemeath();
+      delete (window as { __flushEarlyErrors__?: unknown }).__flushEarlyErrors__;
+      delete (window as { __EARLY_ERRORS__?: unknown[] }).__EARLY_ERRORS__;
+      delete (window as { __LOGGER_INITIALIZED__?: boolean }).__LOGGER_INITIALIZED__;
+    });
+
+    it('早期脚本未注入时，兜底创建路径不应尝试装载 EarlyErrorCapturePlugin', async () => {
+      const mod = await import('../src/singleton/index');
+      delete (window as { __flushEarlyErrors__?: unknown }).__flushEarlyErrors__;
+      delete (window as { __EARLY_ERRORS__?: unknown[] }).__EARLY_ERRORS__;
+
+      const logger = mod.getAemeath();
+      expect(logger.hasPlugin('EarlyErrorCapture')).toBe(false);
+
+      mod.resetAemeath();
+    });
   });
 
   // ==================== isAemeathInitialized ====================
