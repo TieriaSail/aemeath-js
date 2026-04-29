@@ -10,6 +10,7 @@
  */
 
 import type { AemeathPlugin, LogEntry, AemeathInterface } from '../types';
+import { PluginPriority } from '../types';
 import { generateId } from '../utils/generateId';
 
 /**
@@ -204,6 +205,7 @@ const defaultGetPriority: PriorityCallback = (log: LogEntry) => {
 export class UploadPlugin implements AemeathPlugin {
   readonly name = 'upload';
   readonly version = '1.2.0';
+  readonly priority: number = PluginPriority.LATE;
   readonly description = '日志上传插件（回调方式）';
 
   private config: {

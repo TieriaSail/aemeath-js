@@ -177,6 +177,47 @@ logger.use(
 
 ---
 
+### [模块9：`beforeSend` 钩子](./9-before-send/) 🛡️
+
+> 适用 v1.5.0+（v1 LTS）/ v2.4.0+（v2）；完整文档：[docs/zh/9-before-send.md](../docs/zh/9-before-send.md)
+
+全链路最终拦截 — 隐私脱敏、业务过滤、字段补充
+
+**示例**：
+
+- [basic.ts](./9-before-send/basic.ts) - 基础脱敏
+- [redact-network.ts](./9-before-send/redact-network.ts) - 网络日志全字段脱敏
+- [drop-noise.ts](./9-before-send/drop-noise.ts) - 业务过滤
+- [runtime-swap.ts](./9-before-send/runtime-swap.ts) - 运行时切换钩子
+- [compose-rules.ts](./9-before-send/compose-rules.ts) - 多规则组合
+
+**快速开始**：
+
+```typescript
+import { initAemeath } from 'aemeath-js';
+
+initAemeath({
+  upload: async (log) => ({ success: true }),
+  beforeSend: (entry) => {
+    if (entry.tags?.errorCategory === 'noise') return null; // 丢弃
+    // NetworkPlugin 标签是 'http'，字段在 context 上
+    if (entry.tags?.errorCategory === 'http' && entry.context) {
+      return {
+        ...entry,
+        context: {
+          ...entry.context,
+          requestData: '[REDACTED]',
+          responseData: '[REDACTED]',
+        },
+      };
+    }
+    return entry;
+  },
+});
+```
+
+---
+
 ### [推荐配置](./recommended-config.ts) ⭐
 
 完整的生产环境配置示例

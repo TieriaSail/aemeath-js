@@ -122,6 +122,37 @@ logger.updateContext('userId', '67890');
 | `PerformancePlugin` | 🧪 Web Vitals 性能监控（[了解更多](./docs/zh/6-performance-monitoring.md)） | ~4KB |
 | `NetworkPlugin` | 监控 fetch/XHR 请求（错误、慢请求） | ~3KB |
 | `SafeGuardPlugin` | 频率限制、递归保护、错误预算 | ~3KB |
+| `BeforeSendPlugin` | 🛡️ 全链路最终拦截，用于隐私脱敏 / 过滤（[文档](./docs/zh/9-before-send.md)） | <1KB |
+
+> 想精确控制插件执行顺序？请看 [插件执行顺序](./docs/zh/8-plugin-ordering.md)（priority 字段）。
+
+### `beforeSend` — 隐私保护与脱敏
+
+```ts
+import { initAemeath } from 'aemeath-js';
+
+initAemeath({
+  upload: async (log) => { /* ... */ },
+  // 修改、丢弃或放行任意一条日志（包括 NetworkPlugin 自动捕获的网络日志）
+  beforeSend: (entry) => {
+    // NetworkPlugin 把网络日志标记为 errorCategory: 'http'，
+    // 并把 url / requestData / responseData 写在 entry.context 上（详见 docs/zh/9-before-send.md）
+    if (entry.tags?.errorCategory === 'http' && entry.context) {
+      return {
+        ...entry,
+        context: {
+          ...entry.context,
+          requestData: '[REDACTED]',
+          responseData: '[REDACTED]',
+        },
+      };
+    }
+    return entry;
+  },
+});
+```
+
+返回 `null` 可完全丢弃该条日志。完整 API 见 [docs/zh/9-before-send.md](./docs/zh/9-before-send.md)。
 
 ## 框架集成
 
@@ -321,6 +352,8 @@ logger.use(new MyPlugin());
 | **[上报插件](./docs/zh/4-upload-plugin.md)** | 带队列和重试的日志上报 |
 | **[全局上下文](./docs/zh/5-global-context.md)** | 自动附加上下文到每条日志 |
 | **[性能监控](./docs/zh/6-performance-monitoring.md)** | 🧪 Web Vitals 性能监控（实验性） |
+| **[插件执行顺序](./docs/zh/8-plugin-ordering.md)** | 🧩 通过 `priority` 控制插件执行顺序 |
+| **[`beforeSend` 钩子](./docs/zh/9-before-send.md)** | 🛡️ 全链路最终拦截，用于隐私脱敏 / 过滤 |
 | **[浏览器直接使用](./docs/zh/0-browser-usage.md)** | Script 标签引入（无需构建工具） |
 
 > 📖 English docs: [README](./README.md) | [Quick Start](./QUICK_START.md) | [Module Docs](./docs/en/)

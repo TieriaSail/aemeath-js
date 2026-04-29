@@ -12,6 +12,7 @@
  */
 
 import type { AemeathPlugin, AemeathInterface } from '../types';
+import { PluginPriority } from '../types';
 import { RouteMatcher, type RouteMatchConfig } from '../utils/routeMatcher';
 
 /**
@@ -145,6 +146,7 @@ type NetworkPluginConfig = Required<
 export class NetworkPlugin implements AemeathPlugin {
   readonly name = 'network';
   readonly version = '1.2.0';
+  readonly priority: number = PluginPriority.NORMAL;
   readonly description = '网络请求监控';
 
   private readonly config: NetworkPluginConfig;
@@ -381,7 +383,7 @@ export class NetworkPlugin implements AemeathPlugin {
 
     // 构建上下文（与 reportHttpError 格式保持一致）
     const context: Record<string, unknown> = {
-      type: 'HTTP_ERROR',
+      type: isError ? 'HTTP_ERROR' : 'HTTP_REQUEST',
       url: log.url,
       method: log.method,
       status: log.status,

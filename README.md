@@ -122,6 +122,37 @@ All plugins are optional. Only import what you need — unused plugins are tree-
 | `PerformancePlugin` | 🧪 Web Vitals performance monitoring ([learn more](./docs/en/6-performance-monitoring.md)) | ~4KB |
 | `NetworkPlugin` | Monitor fetch/XHR requests (errors, slow requests) | ~3KB |
 | `SafeGuardPlugin` | Rate limiting, recursion guard, error budget | ~3KB |
+| `BeforeSendPlugin` | 🛡️ End-of-pipeline interceptor for redaction / filtering ([docs](./docs/en/9-before-send.md)) | <1KB |
+
+> Need to control plugin execution order? See [Plugin Ordering](./docs/en/8-plugin-ordering.md) (priority field).
+
+### `beforeSend` — privacy & redaction
+
+```ts
+import { initAemeath } from 'aemeath-js';
+
+initAemeath({
+  upload: async (log) => { /* ... */ },
+  // Modify, drop, or pass through every log entry (incl. auto-captured network logs).
+  // NetworkPlugin tags network logs as `errorCategory: 'http'` and writes
+  // url / requestData / responseData on `entry.context` (see docs/en/9-before-send.md).
+  beforeSend: (entry) => {
+    if (entry.tags?.errorCategory === 'http' && entry.context) {
+      return {
+        ...entry,
+        context: {
+          ...entry.context,
+          requestData: '[REDACTED]',
+          responseData: '[REDACTED]',
+        },
+      };
+    }
+    return entry;
+  },
+});
+```
+
+Return `null` to drop the entry entirely. See [docs/en/9-before-send.md](./docs/en/9-before-send.md) for full reference.
 
 ## Framework Integrations
 
@@ -321,6 +352,8 @@ logger.use(new MyPlugin());
 | **[Upload Plugin](./docs/en/4-upload-plugin.md)** | Log upload with queue & retry |
 | **[Global Context](./docs/en/5-global-context.md)** | Attach context to every log |
 | **[Performance Monitoring](./docs/en/6-performance-monitoring.md)** | 🧪 Web Vitals performance monitoring (experimental) |
+| **[Plugin Ordering](./docs/en/8-plugin-ordering.md)** | 🧩 Control plugin execution order via `priority` |
+| **[`beforeSend` Hook](./docs/en/9-before-send.md)** | 🛡️ End-of-pipeline interceptor for redaction / filtering |
 | **[Browser Usage](./docs/en/0-browser-usage.md)** | Script tag usage (no build tools) |
 
 > 📖 中文文档：[查看中文 README](./README.zh_CN.md) | [快速开始](./QUICK_START.zh_CN.md) | [模块文档](./docs/zh/)

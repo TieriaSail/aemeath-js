@@ -17,6 +17,8 @@
 | **Module 4** | Upload Plugin | [View Docs](./en/4-upload-plugin.md) |
 | **Module 5** | Global Context | [View Docs](./en/5-global-context.md) |
 | **Module 6** | 🧪 Performance Monitoring (experimental) | [View Docs](./en/6-performance-monitoring.md) |
+| **Module 8** | 🧩 Plugin Ordering (priority field) | [View Docs](./en/8-plugin-ordering.md) |
+| **Module 9** | 🛡️ `beforeSend` — End-of-Pipeline Interceptor | [View Docs](./en/9-before-send.md) |
 
 ### 🔗 Links
 
@@ -39,6 +41,8 @@
 | **模块 4** | 上报插件 | [查看文档](./zh/4-upload-plugin.md) |
 | **模块 5** | 全局上下文 | [查看文档](./zh/5-global-context.md) |
 | **模块 6** | 🧪 性能监控（实验性） | [查看文档](./zh/6-performance-monitoring.md) |
+| **模块 8** | 🧩 插件执行顺序（priority 字段） | [查看文档](./zh/8-plugin-ordering.md) |
+| **模块 9** | 🛡️ `beforeSend` — 全链路最终拦截 | [查看文档](./zh/9-before-send.md) |
 
 ### 🔗 链接
 

@@ -23,6 +23,7 @@ export type {
   LogContext,
   BeforeLogResult,
   AfterLogResult,
+  BeforeSendHook,
   AemeathPlugin,
   LogListener,
   PluginMetadata,
@@ -32,7 +33,7 @@ export type {
   ContextValue,
 } from './types';
 
-export { LogLevel as LogLevelEnum, ErrorCategory } from './types';
+export { LogLevel as LogLevelEnum, ErrorCategory, PluginPriority } from './types';
 
 // ==================== Level 1 插件 ====================
 export { BrowserApiErrorsPlugin } from './plugins/BrowserApiErrorsPlugin';
@@ -75,6 +76,10 @@ export type {
   NetworkLogType,
 } from './plugins/NetworkPlugin';
 
+// ==================== BeforeSend 钩子（隐私脱敏 / 全链路过滤） ====================
+export { BeforeSendPlugin } from './plugins/BeforeSendPlugin';
+export type { BeforeSendPluginOptions } from './plugins/BeforeSendPlugin';
+
 // ==================== 构建插件（按需导入）====================
 // 使用方式：
 // import { ameathEarlyErrorPlugin } from 'aemeath-js/build-plugins/rsbuild';
@@ -97,6 +102,7 @@ export {
   getAemeath,
   resetAemeath,
   isAemeathInitialized,
+  setBeforeSend,
 } from './singleton';
 
 export type { AemeathInitOptions, RouteMatchConfig } from './singleton';

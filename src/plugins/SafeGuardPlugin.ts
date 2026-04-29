@@ -22,6 +22,7 @@ import type {
   LogLevel,
   LogOptions,
 } from '../types';
+import { PluginPriority } from '../types';
 
 // ==================== 类型定义 ====================
 
@@ -94,6 +95,7 @@ export interface SafeGuardHealth {
 export class SafeGuardPlugin implements AemeathPlugin {
   readonly name = 'safe-guard';
   readonly version = '1.2.0';
+  readonly priority: number = PluginPriority.EARLY;
   readonly description = '智能日志保护';
 
   private readonly config: SafeGuardConfig;

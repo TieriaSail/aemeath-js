@@ -9,6 +9,7 @@
  */
 
 import type { AemeathPlugin, AemeathInterface } from '../types';
+import { PluginPriority } from '../types';
 import { RouteMatcher, type RouteMatchConfig } from '../utils/routeMatcher';
 
 export interface WebVitalsOptions {
@@ -74,6 +75,7 @@ interface ResolvedConfig {
 export class PerformancePlugin implements AemeathPlugin {
   readonly name = 'performance';
   readonly version = '1.2.0';
+  readonly priority: number = PluginPriority.NORMAL;
   readonly description = 'Performance monitoring';
 
   private readonly config: ResolvedConfig;
