@@ -96,8 +96,22 @@ export function getEarlyErrorCaptureScript(options?: EarlyErrorScriptOptions): s
   'use strict';
   try {
 
-  window.__EARLY_ERRORS__ = [];
-  window.__LOGGER_INITIALIZED__ = false;
+  // 幂等 guard（v1.5.2+ Bug F 防御）：
+  // micro-frontend 场景下，主应用 + 多个子应用都可能在 build 时注入本脚本。
+  // 如果不防御，第二次注入会：
+  //   1. 重置 __EARLY_ERRORS__ = [] → 丢失第一份脚本已收集的所有错误
+  //   2. 覆盖 __flushEarlyErrors__ → 主 Logger 只能拿到最后一份脚本的 buffer
+  //   3. 启动第二个 fallback timer → 第一个 timer 仍然到点开火 → 双轨上报回归
+  // 因此：检测到已加载过就直接退出，保留全部既有状态。
+  if (window.__EARLY_ERROR_CAPTURE_LOADED__) {
+    return;
+  }
+  window.__EARLY_ERROR_CAPTURE_LOADED__ = true;
+
+  window.__EARLY_ERRORS__ = window.__EARLY_ERRORS__ || [];
+  if (typeof window.__LOGGER_INITIALIZED__ !== 'boolean') {
+    window.__LOGGER_INITIALIZED__ = false;
+  }
   var __FALLBACK_TIMER__ = null;
 
   var MAX_ERRORS = ${maxErrors};
@@ -145,6 +159,12 @@ ${autoRefresh ? `
           var hasRefreshed = sessionStorage.getItem('__chunk_refreshed__');
           if (!hasRefreshed) {
             sessionStorage.setItem('__chunk_refreshed__', '1');
+            // Bug G 防御：reload 前优先 fallback 上报一次。否则 reload 后整个
+            // window.__EARLY_ERRORS__ 被销毁，30s fallback timer 来不及开火，
+            // chunk error 永远丢失（即使配了 fallbackEndpoint）。
+            // doFallback 走 sendBeacon 路径不阻塞 reload；走 xhr 路径浏览器
+            // 也会等待请求至少注册到 network stack 后才执行 reload。
+            try { if (typeof doFallback === 'function') doFallback(); } catch (e) {}
             setTimeout(function() { location.reload(); }, 100);
           }
         } catch (e) {}
@@ -219,7 +239,8 @@ ${checkCompat ? `
     }
   };
 ${fallbackEndpoint ? generateFallbackBlock(fallbackEndpoint, fallbackTimeout, effectiveTransport, headers, formatPayload) : ''}
-  window.__EARLY_ERROR_CAPTURE_LOADED__ = true;
+  // __EARLY_ERROR_CAPTURE_LOADED__ 已在脚本顶部 set，无需在末尾重复。
+  // 如果走到这里，说明 listeners 都已注册成功，整个脚本初始化通过。
 
   } catch (__earlyErr__) {
     try { console.error('[EarlyErrorCapture] Script init error:', __earlyErr__); } catch (e) {}
@@ -244,24 +265,37 @@ function generateFallbackBlock(
   var FALLBACK_HEADERS = ${headersJson};
   var formatPayload = ${formatPayload ? formatPayload.toString() : 'null'};
 
-  // sendPayload 接收 errorsBatch 仅用于失败时的告警计数；不再尝试"重新入栈重传"。
+  // sendPayload 接收 maxLostCount 仅用于失败时的告警上界；不再尝试"重新入栈重传"。
   // 旧实现把 errors 写回 __EARLY_ERRORS__ 但 __LOGGER_INITIALIZED__ 已为 true，
   // 没人会再消费 → 等于静默丢失。同时旧实现里 xhr.onerror 引用了 sendPayload 作用域
   // 之外的 errors 变量，触发时直接 ReferenceError，让 fallback 通道彻底崩盘。
-  function sendPayload(data, errorsBatch) {
+  //
+  // maxLostCount 是「这次 fallback 周期内 doFallback 处理的 errors 总数上界」，
+  // 即使 formatPayload 返回多条 batch 共享同一份 errors，每条 send 失败都用相同的
+  // 上界报告。这样既不会少报（误导用户），也明确写明 "up to N" 是上界保守估计。
+  function sendPayload(data, maxLostCount) {
     var payloadStr = JSON.stringify(data);
-    var lostCount = (errorsBatch && errorsBatch.length) || 0;
+    var safeCount = typeof maxLostCount === 'number' && maxLostCount > 0 ? maxLostCount : 0;
 
-    if (FALLBACK_TRANSPORT === 'beacon' || (FALLBACK_TRANSPORT === 'auto' && typeof navigator.sendBeacon === 'function')) {
+    // R13.4：FALLBACK_TRANSPORT === 'beacon' 强制模式也必须先 detect。
+    // 旧实现仅在 'auto' 模式下 detect，'beacon' 强制下直接调用，在不支持 sendBeacon
+    // 的环境（极老 Safari / iOS PWA 隐私模式 / 某些被 polyfill 抹除的环境）
+    // 会抛 TypeError。虽外层 try/catch 兜住不会崩盘，但 graceful detection
+    // 更专业，且可在不支持时立即 fall through 到 xhr（auto 模式）或友好告警。
+    var hasBeacon = typeof navigator !== 'undefined' && typeof navigator.sendBeacon === 'function';
+    if (hasBeacon && (FALLBACK_TRANSPORT === 'beacon' || FALLBACK_TRANSPORT === 'auto')) {
       try {
         var blob = new Blob([payloadStr], { type: 'application/json' });
         var sent = navigator.sendBeacon(FALLBACK_ENDPOINT, blob);
         if (sent) return true;
       } catch (e) {}
       if (FALLBACK_TRANSPORT === 'beacon') {
-        try { console.warn('[EarlyErrorCapture] Fallback beacon failed; ' + lostCount + ' early errors are lost.'); } catch (e) {}
+        try { console.warn('[EarlyErrorCapture] Fallback beacon failed; up to ' + safeCount + ' early errors may be lost.'); } catch (e) {}
         return false;
       }
+    } else if (FALLBACK_TRANSPORT === 'beacon') {
+      try { console.warn('[EarlyErrorCapture] Fallback beacon unavailable in this environment; up to ' + safeCount + ' early errors may be lost.'); } catch (e) {}
+      return false;
     }
 
     if (FALLBACK_TRANSPORT === 'xhr' || FALLBACK_TRANSPORT === 'auto') {
@@ -285,18 +319,23 @@ function generateFallbackBlock(
           // 不再把 errors 重新写回 __EARLY_ERRORS__：__LOGGER_INITIALIZED__ 已为 true，
           // 早期脚本的 listener 全部 early-return，写回去也没人取，只是制造"重传幻觉"。
           // fallback 通道明确为 best-effort 一次性 send。
-          try { console.warn('[EarlyErrorCapture] Fallback XHR failed; ' + lostCount + ' early errors are lost.'); } catch (e) {}
+          try { console.warn('[EarlyErrorCapture] Fallback XHR failed; up to ' + safeCount + ' early errors may be lost.'); } catch (e) {}
         };
         xhr.send(payloadStr);
         return true;
       } catch (e) {}
     }
 
-    try { console.warn('[EarlyErrorCapture] Fallback transport unavailable; ' + lostCount + ' early errors are lost.'); } catch (e) {}
+    try { console.warn('[EarlyErrorCapture] Fallback transport unavailable; up to ' + safeCount + ' early errors may be lost.'); } catch (e) {}
     return false;
   }
 
   function doFallback() {
+    // 卫生：本函数被 setTimeout 触发后，__FALLBACK_TIMER__ 保存的 timer id 已失效，
+    // 立刻置 null。否则后续 __flushEarlyErrors__ 内的 timer 非空检查会进入
+    // 无意义的 clearTimeout（虽然无害）。
+    __FALLBACK_TIMER__ = null;
+
     if (window.__LOGGER_INITIALIZED__) return;
     if (window.__EARLY_ERRORS__.length === 0) return;
 
@@ -304,6 +343,7 @@ function generateFallbackBlock(
     console.warn('[EarlyErrorCapture] Logger not initialized after ' + FALLBACK_TIMEOUT + 'ms, using fallback endpoint');
 
     var errors = window.__EARLY_ERRORS__.slice();
+    var maxLost = errors.length;
     window.__EARLY_ERRORS__ = [];
 
     try {
@@ -322,12 +362,14 @@ function generateFallbackBlock(
       }
 
       if (Array.isArray(result)) {
-        // formatPayload 返回数组时 1:1 映射 errors[i]，落单的告警计数置 1
+        // formatPayload 返回数组时无论 1:1 还是 batch 聚合写法，每条 send 失败都报告
+        // 整个 fallback 周期的 errors 总数作为上界。这样 batch 聚合写法（典型：
+        // [{ batch: errors }]）不会少报丢失数量。
         for (var i = 0; i < result.length; i++) {
-          sendPayload(result[i], errors[i] ? [errors[i]] : []);
+          sendPayload(result[i], maxLost);
         }
       } else {
-        sendPayload(result, errors);
+        sendPayload(result, maxLost);
       }
     } catch (e) {
       // 同 sendPayload xhr.onerror 的修复：不再 reassign __EARLY_ERRORS__
