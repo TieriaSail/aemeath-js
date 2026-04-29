@@ -133,10 +133,15 @@ describe('EarlyErrorCapturePlugin', () => {
       expect(logListener).toHaveBeenCalledTimes(3);
     });
 
-    it('空错误数组不应记录日志', () => {
-      (window as any).__flushEarlyErrors__ = vi.fn((cb: Function) => {
+    it('空错误数组不应记录日志，但 flush 必须被调用以翻 __LOGGER_INITIALIZED__', () => {
+      // 升级回归保护（v2.2.0-beta.1 early-handoff bug）：
+      // 即使没有累计早期错误，flush() 也必须被调用——否则 __LOGGER_INITIALIZED__
+      // 永远不会被翻为 true，早期脚本继续在背景活着、fallback 定时器到点重复上报。
+      const flushFn = vi.fn((cb: Function) => {
+        (window as any).__LOGGER_INITIALIZED__ = true;
         cb([]);
       });
+      (window as any).__flushEarlyErrors__ = flushFn;
       (window as any).__EARLY_ERRORS__ = [];
 
       const logListener = vi.fn();
@@ -145,10 +150,28 @@ describe('EarlyErrorCapturePlugin', () => {
       const plugin = new EarlyErrorCapturePlugin();
       logger.use(plugin);
 
+      expect(flushFn).toHaveBeenCalledTimes(1);
+      expect((window as any).__LOGGER_INITIALIZED__).toBe(true);
       expect(logListener).not.toHaveBeenCalled();
     });
 
-    it('没有 __flushEarlyErrors__ 时应静默跳过', () => {
+    it('健康加载（脚本注入但无早期错误）也必须翻 __LOGGER_INITIALIZED__（升级回归 P0）', () => {
+      // Bug 1+2 的核心：绝大多数页面都是这条路径。
+      const flushFn = vi.fn((cb: Function) => {
+        (window as any).__LOGGER_INITIALIZED__ = true;
+        cb([]);
+      });
+      (window as any).__flushEarlyErrors__ = flushFn;
+      (window as any).__EARLY_ERRORS__ = [];
+
+      const plugin = new EarlyErrorCapturePlugin();
+      logger.use(plugin);
+
+      expect(flushFn).toHaveBeenCalledTimes(1);
+      expect((window as any).__LOGGER_INITIALIZED__).toBe(true);
+    });
+
+    it('没有 __flushEarlyErrors__ 时应静默跳过（脚本未注入）', () => {
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       const logListener = vi.fn();
       logger.on('log', logListener);
@@ -166,10 +189,22 @@ describe('EarlyErrorCapturePlugin', () => {
   // ==================== 路由匹配 ====================
 
   describe('路由匹配', () => {
-    it('excludeRoutes 匹配当前路由时不应刷新错误', () => {
+    it('excludeRoutes 匹配当前路由时不应记录日志，但 flush 仍必须被调用', () => {
+      // 升级回归：路由不匹配也要 flush（翻牌 + 清 timer），只是不上报错误。
       (window as any).location = { pathname: '/debug' };
 
-      const mockFlush = vi.fn();
+      const mockFlush = vi.fn((cb: Function) => {
+        (window as any).__LOGGER_INITIALIZED__ = true;
+        cb([
+          {
+            type: 'error',
+            message: 'test',
+            stack: null,
+            timestamp: Date.now(),
+            device: { ua: '', lang: '', screen: '', url: '', time: 0 },
+          },
+        ]);
+      });
       (window as any).__flushEarlyErrors__ = mockFlush;
       (window as any).__EARLY_ERRORS__ = [
         {
@@ -189,15 +224,20 @@ describe('EarlyErrorCapturePlugin', () => {
       });
       logger.use(plugin);
 
+      expect(mockFlush).toHaveBeenCalledTimes(1);
+      expect((window as any).__LOGGER_INITIALIZED__).toBe(true);
       expect(logListener).not.toHaveBeenCalled();
 
       (window as any).location = { pathname: '/' };
     });
 
-    it('includeRoutes 不匹配当前路由时不应刷新错误', () => {
+    it('includeRoutes 不匹配当前路由时不应记录日志，但 flush 仍必须被调用', () => {
       (window as any).location = { pathname: '/other' };
 
-      const mockFlush = vi.fn();
+      const mockFlush = vi.fn((cb: Function) => {
+        (window as any).__LOGGER_INITIALIZED__ = true;
+        cb([]);
+      });
       (window as any).__flushEarlyErrors__ = mockFlush;
       (window as any).__EARLY_ERRORS__ = [];
 
@@ -209,6 +249,8 @@ describe('EarlyErrorCapturePlugin', () => {
       });
       logger.use(plugin);
 
+      expect(mockFlush).toHaveBeenCalledTimes(1);
+      expect((window as any).__LOGGER_INITIALIZED__).toBe(true);
       expect(logListener).not.toHaveBeenCalled();
 
       (window as any).location = { pathname: '/' };

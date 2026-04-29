@@ -71,6 +71,10 @@ describe('createNoopAdapter', () => {
   });
 
   describe('earlyCapture', () => {
+    it('isInstalled 应返回 false', () => {
+      expect(adapter.earlyCapture.isInstalled()).toBe(false);
+    });
+
     it('hasEarlyErrors 应返回 false', () => {
       expect(adapter.earlyCapture.hasEarlyErrors()).toBe(false);
     });

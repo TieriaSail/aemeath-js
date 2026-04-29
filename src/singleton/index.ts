@@ -458,8 +458,13 @@ export function initAemeath(options: AemeathInitOptions = {}): AemeathLogger {
     );
   }
 
-  // 2. 早期错误捕获（如果构建时启用了）
-  if (platform.earlyCapture.hasEarlyErrors()) {
+  // 2. 早期错误捕获
+  //    判定依据：构建插件已注入早期脚本（即 __flushEarlyErrors__ 存在）。
+  //    旧版本曾用 hasEarlyErrors()（length > 0），导致绝大多数无错误的健康加载
+  //    根本不装载本插件 → __LOGGER_INITIALIZED__ 永远不被翻牌 → 早期脚本和
+  //    模块化 ErrorCapturePlugin 双轨捕获 + fallback 定时器到点重复上报。
+  //    详见 v2.2.0-beta.1 early-handoff-bug-report。
+  if (platform.earlyCapture.isInstalled()) {
     logger.use(
       new EarlyErrorCapturePlugin(),
     );

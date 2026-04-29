@@ -183,5 +183,40 @@ describe('createBrowserAdapter', () => {
 
       delete (window as any).__flushEarlyErrors__;
     });
+
+    // 升级回归（v2.2.0-beta.1 early-handoff bug Bug 1）：
+    // 必须用 isInstalled() 判定脚本是否已注入，而不是用 hasEarlyErrors()（看 length>0）
+    // ——后者在绝大多数无错误的健康加载上为 false，导致 EarlyErrorCapturePlugin 不被装载，
+    // __LOGGER_INITIALIZED__ 永远不被翻牌，早期脚本与模块化插件双轨重复上报。
+    it('isInstalled 在 __flushEarlyErrors__ 不存在时应返回 false', () => {
+      delete (window as any).__flushEarlyErrors__;
+      delete (window as any).__EARLY_ERRORS__;
+      const freshAdapter = createBrowserAdapter();
+      expect(freshAdapter.earlyCapture.isInstalled()).toBe(false);
+    });
+
+    it('isInstalled 在脚本已注入但无任何早期错误时也应返回 true', () => {
+      (window as any).__flushEarlyErrors__ = vi.fn();
+      (window as any).__EARLY_ERRORS__ = [];
+
+      const freshAdapter = createBrowserAdapter();
+      expect(freshAdapter.earlyCapture.isInstalled()).toBe(true);
+      expect(freshAdapter.earlyCapture.hasEarlyErrors()).toBe(false);
+
+      delete (window as any).__flushEarlyErrors__;
+      delete (window as any).__EARLY_ERRORS__;
+    });
+
+    it('isInstalled 在脚本已注入且有早期错误时也应返回 true', () => {
+      (window as any).__flushEarlyErrors__ = vi.fn();
+      (window as any).__EARLY_ERRORS__ = [{ message: 'test' }];
+
+      const freshAdapter = createBrowserAdapter();
+      expect(freshAdapter.earlyCapture.isInstalled()).toBe(true);
+      expect(freshAdapter.earlyCapture.hasEarlyErrors()).toBe(true);
+
+      delete (window as any).__flushEarlyErrors__;
+      delete (window as any).__EARLY_ERRORS__;
+    });
   });
 });

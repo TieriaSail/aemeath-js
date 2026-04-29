@@ -208,6 +208,10 @@ export function createMiniAppAdapter(
     },
 
     earlyCapture: {
+      isInstalled(): boolean {
+        // 小程序无 browser 早期错误脚本概念，永远 false
+        return false;
+      },
       hasEarlyErrors(): boolean {
         // Miniapp early errors are captured via App.onError before SDK init
         // The adapter stores them internally during the start() phase

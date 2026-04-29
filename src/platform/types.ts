@@ -93,6 +93,18 @@ export interface PlatformAdapter {
 
   /** Early error capture (EarlyErrorCapturePlugin) */
   earlyCapture: {
+    /**
+     * 早期错误捕获脚本是否已被注入到当前页面。
+     *
+     * 用作 `EarlyErrorCapturePlugin` 是否需要装载的判定依据：只要脚本注入了
+     * （即 `__flushEarlyErrors__` 已挂载），就必须装插件并 flush 一次，
+     * 把 `__LOGGER_INITIALIZED__` 翻为 `true`、清掉 fallback 定时器，
+     * 否则会出现"健康加载也走 fallback、错误被双轨上报"的回归。
+     *
+     * **不要**用 `hasEarlyErrors()`（看 length > 0）来代替这个判定——
+     * 那样在大多数无错误的健康路径上插件根本不会被装载。
+     */
+    isInstalled(): boolean;
     hasEarlyErrors(): boolean;
     flush(callback: (errors: EarlyError[]) => void): void;
   };

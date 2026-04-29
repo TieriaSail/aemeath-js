@@ -77,7 +77,7 @@ export interface EarlyErrorCaptureOptions {
 
 export class EarlyErrorCapturePlugin implements AemeathPlugin {
   readonly name = 'EarlyErrorCapture';
-  readonly version = '2.1.0';
+  readonly version = '2.4.0';
   readonly priority: number = PluginPriority.NORMAL;
   readonly description = 'Capture errors before React mounts';
 
@@ -130,17 +130,21 @@ export class EarlyErrorCapturePlugin implements AemeathPlugin {
   }
 
   private flushEarlyErrors(): void {
-    if (!this.routeMatcher.shouldCapture(this.platform.getCurrentPath())) {
-      this.platform.earlyCapture.flush(() => {});
+    // 不变量：只要早期脚本已被注入（isInstalled() === true），就**必须**调用一次
+    // flush()。flush() 内部会：
+    //   1. 把 window.__LOGGER_INITIALIZED__ 翻为 true（让早期脚本所有 listener 让位）
+    //   2. 清掉 __FALLBACK_TIMER__（避免 doFallback 重复上报）
+    //   3. 把累计的 __EARLY_ERRORS__ 通过 callback 交给主 Logger
+    // 上报与否（路由 / 错误数量）是 callback 内部的决定，**不能**用来跳过 flush 本身。
+    // 旧实现在「无早期错误」分支提前 return，导致 __LOGGER_INITIALIZED__ 永远不翻牌。
+    if (!this.platform.earlyCapture.isInstalled()) {
       return;
     }
 
-    if (!this.platform.earlyCapture.hasEarlyErrors()) {
-      return;
-    }
+    const shouldReport = this.routeMatcher.shouldCapture(this.platform.getCurrentPath());
 
     this.platform.earlyCapture.flush((errors) => {
-      if (!this.logger || errors.length === 0) {
+      if (!this.logger || !shouldReport || errors.length === 0) {
         return;
       }
 

@@ -100,6 +100,13 @@ export function createBrowserAdapter(): PlatformAdapter {
     },
 
     earlyCapture: {
+      isInstalled(): boolean {
+        return (
+          typeof window !== 'undefined' &&
+          typeof (window as { __flushEarlyErrors__?: unknown }).__flushEarlyErrors__ === 'function'
+        );
+      },
+
       hasEarlyErrors(): boolean {
         return (
           typeof window !== 'undefined' &&

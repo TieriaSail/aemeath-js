@@ -41,6 +41,9 @@ export function createNoopAdapter(): PlatformAdapter {
     },
 
     earlyCapture: {
+      isInstalled(): boolean {
+        return false;
+      },
       hasEarlyErrors(): boolean {
         return false;
       },
