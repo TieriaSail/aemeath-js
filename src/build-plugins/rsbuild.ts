@@ -7,6 +7,10 @@
 import type { RsbuildPlugin } from '@rsbuild/core';
 import { getEarlyErrorCaptureScript, type EarlyErrorScriptOptions } from './early-error-script';
 
+// R14.5: re-export EarlyErrorScriptOptions 让用户可从子路径直接 import，
+// 避免依赖内部路径 './early-error-script'。
+export type { EarlyErrorScriptOptions } from './early-error-script';
+
 export interface EarlyErrorCapturePluginOptions extends EarlyErrorScriptOptions {
   /**
    * 是否启用
