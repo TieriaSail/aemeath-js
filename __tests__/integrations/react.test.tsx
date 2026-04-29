@@ -15,7 +15,6 @@ import {
   useAemeath,
   useErrorCapture,
   withErrorBoundary,
-  AemeathContext,
 } from '../../src/integrations/react';
 import { AemeathLogger } from '../../src/core/Logger';
 import * as singletonModule from '../../src/singleton';
@@ -74,7 +73,7 @@ describe('React Integration', () => {
     vi.useFakeTimers();
     logger = new AemeathLogger({ enableConsole: false });
     logSpy = vi.fn();
-    logger.on('log', logSpy);
+    logger.on('log', logSpy as (...args: unknown[]) => void);
 
     // Mock getAemeath 以返回我们的测试 logger
     vi.spyOn(singletonModule, 'getAemeath').mockReturnValue(logger);

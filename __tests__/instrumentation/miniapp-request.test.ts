@@ -245,7 +245,6 @@ describe('instrumentMiniAppRequest', () => {
   // === shouldCapture filtering ===
 
   it('should skip requests where shouldCapture returns false', () => {
-    const originalRequest = api.request!;
     const events: NetworkEvent[] = [];
     const unsub = instrumentMiniAppRequest(
       api, (e) => events.push(e),

@@ -18,6 +18,7 @@ import { BrowserApiErrorsPlugin } from '../plugins/BrowserApiErrorsPlugin';
 import { UploadPlugin } from '../plugins/UploadPlugin';
 import { SafeGuardPlugin } from '../plugins/SafeGuardPlugin';
 import { detectPlatform } from '../platform/detect';
+import { PluginPriority } from '../types';
 import type { LogEntry, LogLevel, LogOptions } from '../types';
 
 // 全局单例
@@ -65,6 +66,9 @@ function init(options: BrowserLoggerOptions = {}): AemeathLogger {
   if (minOrder > 0) {
     logger.use({
       name: 'level-filter',
+      // 必须比 SafeGuard(EARLY=-100) 更早，保持 v1.x/v2.3 的语义：
+      // 低于阈值的 debug 日志在进入 SafeGuard 速率窗 / 去重表之前就被丢弃。
+      priority: PluginPriority.EARLIEST,
       install() {},
       beforeLog(level: LogLevel, _message: string, _options: LogOptions) {
         const order = LOG_LEVEL_ORDER[level as string] ?? 0;

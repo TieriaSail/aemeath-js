@@ -308,7 +308,6 @@ describe('SafeGuardPlugin', () => {
       for (let i = 0; i < 10; i++) {
         logger.info(`burst-${i}`);
       }
-      const countAfterBurst = listener.mock.calls.length;
 
       // 等待 1 秒，窗口滑过
       vi.advanceTimersByTime(1100);

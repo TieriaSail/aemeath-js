@@ -3,7 +3,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { AemeathLogger } from '../src/core/Logger';
-import type { AemeathPlugin, LogEntry } from '../src/types';
+import type { AemeathPlugin, ContextUpdater, LogEntry, LogLevel } from '../src/types';
 
 describe('AemeathLogger Core', () => {
   let logger: AemeathLogger;
@@ -236,6 +236,34 @@ describe('AemeathLogger Core', () => {
       expect(listener.mock.calls[0][0].context?.count).toBe(1);
       expect(listener.mock.calls[1][0].context?.count).toBe(2);
     });
+
+    it('动态上下文返回 Promise 时应被忽略，并仅 warn 一次', () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      logger.updateContext(
+        'asyncCtx',
+        // 模拟用户误用 async；运行时返回 Promise，应被丢弃
+        (() => Promise.resolve({ user: 'leak' })) as unknown as ContextUpdater,
+      );
+
+      const listener = vi.fn();
+      logger.on('log', listener);
+
+      logger.info('first');
+      logger.info('second');
+      logger.info('third');
+
+      expect(listener.mock.calls[0][0].context?.user).toBeUndefined();
+      expect(listener.mock.calls[1][0].context?.user).toBeUndefined();
+
+      const messages = warnSpy.mock.calls.map((c) => c.join(' ')).join('\n');
+      expect(messages).toMatch(/asyncCtx/);
+      expect(messages).toMatch(/Promise|thenable/i);
+      // 同一个 key 三条日志只 warn 一次
+      const occurrences = (messages.match(/asyncCtx/g) || []).length;
+      expect(occurrences).toBe(1);
+
+      warnSpy.mockRestore();
+    });
   });
 
   // ==================== 事件系统 ====================
@@ -399,8 +427,8 @@ describe('AemeathLogger Core', () => {
       const plugin: AemeathPlugin = {
         name: 'modifier',
         install: vi.fn(),
-        beforeLog: (level, message, options) => ({
-          level: 'warn',
+        beforeLog: (_level, message, options) => ({
+          level: 'warn' as LogLevel,
           message: `[modified] ${message}`,
           options,
         }),
@@ -510,6 +538,28 @@ describe('AemeathLogger Core', () => {
 
       expect(listener).toHaveBeenCalledTimes(1);
       expect(listener.mock.calls[0][0].message).toBe('unchanged');
+    });
+
+    it('afterLog 返回缺 logId/level 的畸形对象时，应忽略并 warn，监听器收到原 entry', () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const listener = vi.fn();
+      logger.on('log', listener);
+
+      const plugin: AemeathPlugin = {
+        name: 'malformed-after',
+        install: vi.fn(),
+        afterLog: () => ({ level: 'info', message: 'hijack' } as never),
+      };
+      logger.use(plugin);
+
+      logger.info('orig');
+
+      expect(listener).toHaveBeenCalledTimes(1);
+      expect(listener.mock.calls[0]![0].message).toBe('orig');
+      const msg = warnSpy.mock.calls.map((c) => c.join(' ')).join('\n');
+      expect(msg).toContain('malformed-after');
+      expect(msg).toContain('logId');
+      warnSpy.mockRestore();
     });
 
     it('beforeLog 和 afterLog 应协同工作', () => {

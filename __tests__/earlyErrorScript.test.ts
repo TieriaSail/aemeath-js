@@ -316,6 +316,8 @@ describe('getEarlyErrorCaptureScript', () => {
         checkCompatibility: true,
         fallbackTransport: 'auto',
         routeMatch: undefined as any,
+        fallbackHeaders: {},
+        formatPayload: (errors) => errors,
       });
       expect(script).toContain('FALLBACK_ENDPOINT');
       expect(script).toContain('__EARLY_ERRORS__');

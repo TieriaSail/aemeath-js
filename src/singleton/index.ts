@@ -14,7 +14,8 @@ import { EarlyErrorCapturePlugin } from '../plugins/EarlyErrorCapturePlugin';
 import { UploadPlugin, type UploadResult } from '../plugins/UploadPlugin';
 import { SafeGuardPlugin, type SafeGuardMode } from '../plugins/SafeGuardPlugin';
 import { NetworkPlugin, type NetworkLogType } from '../plugins/NetworkPlugin';
-import type { LogEntry } from '../types';
+import { BeforeSendPlugin } from '../plugins/BeforeSendPlugin';
+import type { BeforeSendHook, LogEntry } from '../types';
 import type { PlatformAdapter } from '../platform/types';
 import { detectPlatform } from '../platform/detect';
 import type { RouteMatchConfig } from '../utils/routeMatcher';
@@ -322,6 +323,45 @@ export interface AemeathInitOptions {
   };
 
   /**
+   * 全链路日志最终拦截钩子（隐私脱敏 / 业务过滤 / 字段补充）
+   *
+   * 在所有插件 `afterLog` 之后、listener（含 UploadPlugin）之前调用。
+   *
+   * 用户可以：
+   * - **修改字段**：返回新的 `LogEntry`（如脱敏 message / 删除敏感 context）
+   * - **完全丢弃**：返回 `null`（该条日志不会被任何 listener 接收，**也不会上报**）
+   * - **原样放行**：返回 `entry` 本身、`undefined` 或不返回
+   *
+   * **fail-safe**：钩子内部异常会被静默吞掉，原 entry 会按未修改状态继续传递。
+   *
+   * 详细文档参见 docs/{zh,en}/9-before-send.md
+   *
+   * @example 隐私脱敏
+   * ```ts
+   * initAemeath({
+   *   beforeSend: (entry) => {
+   *     if (entry.context?.user) {
+   *       return {
+   *         ...entry,
+   *         context: { ...entry.context, user: { id: entry.context.user.id } },
+   *       };
+   *     }
+   *     return entry;
+   *   },
+   * });
+   * ```
+   *
+   * @example 丢弃噪音日志
+   * ```ts
+   * initAemeath({
+   *   beforeSend: (entry) =>
+   *     entry.tags?.errorCategory === 'noise' ? null : entry,
+   * });
+   * ```
+   */
+  beforeSend?: BeforeSendHook;
+
+  /**
    * @deprecated 使用 context 代替
    */
   tags?: Record<string, unknown>;
@@ -354,6 +394,26 @@ export interface AemeathInitOptions {
  */
 export function initAemeath(options: AemeathInitOptions = {}): AemeathLogger {
   if (globalAemeath) {
+    // 兼容场景：用户在 initAemeath 之前先调了 getAemeath()（兜底创建了实例）。
+    // 整个 options 不会再被应用（避免重复 use 同名插件 / 改变已被使用的全局状态），
+    // 但单独把 options.beforeSend 转嫁到现有 BeforeSendPlugin 上 —— 否则用户传的
+    // beforeSend 钩子会被静默丢弃，这是 v2.4.0+ 最容易踩的坑。
+    if (options.beforeSend !== undefined) {
+      const existing = globalAemeath.getPluginInstance('before-send') as BeforeSendPlugin | undefined;
+      if (existing && typeof existing.setHook === 'function') {
+        existing.setHook(options.beforeSend);
+      }
+    }
+    if (typeof console !== 'undefined' && console.warn) {
+      const ignored = Object.keys(options).filter((k) => k !== 'beforeSend');
+      if (ignored.length > 0) {
+        console.warn(
+          '[Aemeath] initAemeath() called after the global instance already exists '
+            + '(probably because getAemeath() was used first). The following options '
+            + `were ignored: ${ignored.join(', ')}. Only beforeSend is honored.`,
+        );
+      }
+    }
     return globalAemeath;
   }
 
@@ -452,8 +512,55 @@ export function initAemeath(options: AemeathInitOptions = {}): AemeathLogger {
     );
   }
 
+  // 6. 全链路最终拦截 / 脱敏（PluginPriority.LATEST，永远在管道末端）
+  //    即使用户没传 beforeSend，也注入此插件，以便后续运行时通过
+  //    setBeforeSend(...) 动态启用。开销极小（无钩子时直接放行）。
+  logger.use(new BeforeSendPlugin({ beforeSend: options.beforeSend }));
+
   globalAemeath = logger;
   return logger;
+}
+
+/**
+ * 在运行时设置 / 替换 / 清除全链路日志拦截钩子（`beforeSend`）
+ *
+ * 适用于：
+ * - 用户登录后才能拿到完整的脱敏规则
+ * - 不同业务页面切换不同的过滤规则
+ *
+ * 必须在 `initAemeath()` 之后调用。
+ *
+ * @param hook 钩子函数（传 `null` 清除）
+ *
+ * @example
+ * ```ts
+ * setBeforeSend((entry) => ({
+ *   ...entry,
+ *   message: redact(entry.message),
+ * }));
+ * ```
+ */
+export function setBeforeSend(hook: BeforeSendHook | null): void {
+  if (!globalAemeath) {
+    if (typeof console !== 'undefined' && console.warn) {
+      console.warn(
+        '[Aemeath] setBeforeSend() was called before any Aemeath instance exists. '
+          + 'The hook is dropped. Call initAemeath()/getAemeath() first, '
+          + 'or pass `beforeSend` to initAemeath() directly.',
+      );
+    }
+    return;
+  }
+  const plugin = globalAemeath.getPluginInstance('before-send') as BeforeSendPlugin | undefined;
+  if (plugin && typeof plugin.setHook === 'function') {
+    plugin.setHook(hook);
+  } else if (typeof console !== 'undefined' && console.warn) {
+    console.warn(
+      '[Aemeath] setBeforeSend() called but BeforeSendPlugin is not installed on the '
+        + 'global instance. The hook is ignored. (This typically means the instance was '
+        + 'created without the singleton helpers.)',
+    );
+  }
 }
 
 /**
@@ -474,6 +581,8 @@ export function getAemeath(): AemeathLogger {
   if (!globalAemeath) {
     globalAemeath = new AemeathLogger({ platform: detectPlatform() });
     globalAemeath.use(new ErrorCapturePlugin());
+    // 兜底也要装 BeforeSendPlugin，否则后续 setBeforeSend(...) 会静默无效
+    globalAemeath.use(new BeforeSendPlugin());
   }
 
   return globalAemeath;

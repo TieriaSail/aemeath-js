@@ -6,6 +6,7 @@
  */
 
 import type { AemeathInterface, AemeathPlugin } from '../types';
+import { PluginPriority } from '../types';
 import type { PlatformAdapter } from '../platform/types';
 import { RouteMatcher, type RouteMatchConfig } from '../utils/routeMatcher';
 import { getEarlyErrorCaptureScript } from '../build-plugins/early-error-script';
@@ -75,9 +76,10 @@ export interface EarlyErrorCaptureOptions {
 }
 
 export class EarlyErrorCapturePlugin implements AemeathPlugin {
-  public name = 'EarlyErrorCapture';
-  public version = '2.1.0';
-  public description = 'Capture errors before React mounts';
+  readonly name = 'EarlyErrorCapture';
+  readonly version = '2.1.0';
+  readonly priority: number = PluginPriority.NORMAL;
+  readonly description = 'Capture errors before React mounts';
 
   private options: Omit<Required<EarlyErrorCaptureOptions>, 'routeMatch' | 'fallbackHeaders' | 'formatPayload' | 'fallbackTransport'> & {
     fallbackTransport: 'auto' | 'xhr' | 'beacon';

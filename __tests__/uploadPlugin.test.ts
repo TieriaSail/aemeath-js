@@ -2,22 +2,9 @@
  * UploadPlugin 上传插件测试
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { UploadPlugin } from '../src/plugins/UploadPlugin';
+import { UploadPlugin, type UploadCallback } from '../src/plugins/UploadPlugin';
 import { AemeathLogger } from '../src/core/Logger';
 import type { LogEntry } from '../src/types';
-
-// 创建一个假的 LogEntry
-function createLog(
-  level: 'debug' | 'info' | 'warn' | 'error' = 'info',
-  message = 'test',
-): LogEntry {
-  return {
-    logId: `test-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`,
-    level,
-    message,
-    timestamp: Date.now(),
-  };
-}
 
 describe('UploadPlugin', () => {
   let uploadFn: ReturnType<typeof vi.fn>;
@@ -28,7 +15,7 @@ describe('UploadPlugin', () => {
     vi.useFakeTimers();
     uploadFn = vi.fn().mockResolvedValue({ success: true });
     plugin = new UploadPlugin({
-      onUpload: uploadFn,
+      onUpload: uploadFn as unknown as UploadCallback,
       queue: { deduplicationDelay: 10, uploadInterval: 30000 },
       cache: { enabled: false }, // 测试中禁用缓存避免干扰
       saveOnUnload: false,
@@ -89,7 +76,7 @@ describe('UploadPlugin', () => {
   describe('优先级', () => {
     it('默认优先级: error > warn > info > debug', () => {
       const customPlugin = new UploadPlugin({
-        onUpload: uploadFn,
+        onUpload: uploadFn as unknown as UploadCallback,
         queue: { deduplicationDelay: 10 },
         cache: { enabled: false },
         saveOnUnload: false,
@@ -112,7 +99,7 @@ describe('UploadPlugin', () => {
 
     it('track 的默认优先级与 info 相同', () => {
       const customPlugin = new UploadPlugin({
-        onUpload: uploadFn,
+        onUpload: uploadFn as unknown as UploadCallback,
         queue: { deduplicationDelay: 10 },
         cache: { enabled: false },
         saveOnUnload: false,
@@ -129,7 +116,7 @@ describe('UploadPlugin', () => {
 
     it('自定义优先级回调应生效', async () => {
       const customPlugin = new UploadPlugin({
-        onUpload: uploadFn,
+        onUpload: uploadFn as unknown as UploadCallback,
         getPriority: (log) => (log.message === 'urgent' ? 999 : 1),
         queue: { deduplicationDelay: 10 },
         cache: { enabled: false },
@@ -242,7 +229,7 @@ describe('UploadPlugin', () => {
   describe('队列容量', () => {
     it('超过 maxSize 应移除低优先级日志', () => {
       const smallPlugin = new UploadPlugin({
-        onUpload: uploadFn,
+        onUpload: uploadFn as unknown as UploadCallback,
         queue: { maxSize: 3, deduplicationDelay: 10 },
         cache: { enabled: false },
         saveOnUnload: false,
@@ -267,7 +254,9 @@ describe('UploadPlugin', () => {
   describe('本地缓存', () => {
     it('启用缓存时应保存到 localStorage', async () => {
       const cachePlugin = new UploadPlugin({
-        onUpload: vi.fn().mockResolvedValue({ success: false, shouldRetry: false }),
+        onUpload: vi
+          .fn()
+          .mockResolvedValue({ success: false, shouldRetry: false }) as unknown as UploadCallback,
         cache: { enabled: true, key: '__test_cache__' },
         saveOnUnload: false,
         queue: { deduplicationDelay: 10 },
@@ -330,7 +319,7 @@ describe('UploadPlugin', () => {
     it('同一条日志的 logId 在重试时应保持不变', async () => {
       let callCount = 0;
       const retryPlugin = new UploadPlugin({
-        onUpload: async (log) => {
+        onUpload: async (_log) => {
           callCount++;
           if (callCount <= 1) {
             return { success: false, shouldRetry: true, error: 'retry' };

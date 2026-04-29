@@ -345,7 +345,7 @@ describe('SourceMap Upload', () => {
       const mockCompiler = {
         hooks: {
           afterEmit: {
-            tapAsync: (_name: string, cb: Function) => {
+            tapAsync: (_name: string, cb: (...args: any[]) => any) => {
               tapAsyncCallback.mockImplementation(cb);
             },
           },
@@ -389,7 +389,7 @@ describe('SourceMap Upload', () => {
       const mockCompiler = {
         hooks: {
           afterEmit: {
-            tapAsync: (_name: string, cb: Function) => {
+            tapAsync: (_name: string, cb: (...args: any[]) => any) => {
               tapAsyncCallback.mockImplementation(cb);
             },
           },
@@ -419,7 +419,7 @@ describe('SourceMap Upload', () => {
       const mockCompiler = {
         hooks: {
           afterEmit: {
-            tapAsync: (_name: string, cb: Function) => {
+            tapAsync: (_name: string, cb: (...args: any[]) => any) => {
               tapAsyncCallback.mockImplementation(cb);
             },
           },
@@ -460,7 +460,7 @@ describe('SourceMap Upload', () => {
       const mockCompiler = {
         hooks: {
           afterEmit: {
-            tapAsync: (_name: string, cb: Function) => {
+            tapAsync: (_name: string, cb: (...args: any[]) => any) => {
               tapAsyncCallback.mockImplementation(cb);
             },
           },

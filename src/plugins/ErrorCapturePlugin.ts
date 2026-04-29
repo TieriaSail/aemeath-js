@@ -3,6 +3,7 @@
  */
 
 import type { AemeathPlugin, AemeathInterface } from '../types';
+import { PluginPriority } from '../types';
 import type { PlatformAdapter } from '../platform/types';
 import { SYNTHETIC_STACK } from '../platform/constants';
 import { ErrorDeduplicator } from '../utils/errorDeduplicator';
@@ -48,6 +49,7 @@ export interface ErrorCapturePluginOptions {
 export class ErrorCapturePlugin implements AemeathPlugin {
   readonly name = 'error-capture';
   readonly version = '2.0.0';
+  readonly priority: number = PluginPriority.EARLY;
   readonly description = '自动错误捕获';
 
   private readonly config: {

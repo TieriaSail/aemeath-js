@@ -169,11 +169,74 @@ export type BeforeLogResult =
 export type AfterLogResult = false | LogEntry | void;
 
 /**
+ * `beforeSend` 钩子函数：日志管道末端的最后一道关卡
+ *
+ * 当某条日志即将被 listener 消费（包括 UploadPlugin 上报）前，会调用本函数。
+ * 用户可以：
+ *
+ * - **修改字段**：返回一个新的 / 修改后的 `LogEntry`
+ *   ```ts
+ *   beforeSend: (entry) => ({
+ *     ...entry,
+ *     message: redact(entry.message),
+ *   })
+ *   ```
+ *
+ * - **完全丢弃**：返回 `null`（该条日志不会再传给任何 listener，**也不会上报**）
+ *   ```ts
+ *   beforeSend: (entry) => entry.tags?.errorCategory === 'noise' ? null : entry
+ *   ```
+ *
+ * - **原样放行**：返回 `entry` 本身、`undefined` 或不返回
+ *
+ * **重要规则：**
+ * 1. 必须是**同步**函数。`async` 会返回 Promise，无法在此管道中等待，将被忽略并 `console.warn`。
+ * 2. `beforeSend` 是**全链路**钩子，对 `error` / `info` / `track` / `warn` / `debug`
+ *    以及所有 `NetworkPlugin` 自动捕获的日志**全部生效**。
+ * 3. `beforeSend` 在所有插件 `afterLog` 之后、listener 之前执行
+ *    （由 `BeforeSendPlugin` 以 `priority: PluginPriority.LATEST` 注入）。
+ * 4. **本函数本身的异常会被静默吞掉**（fail-safe），原 entry 会按未修改状态继续传递。
+ *    这是为了避免脱敏代码 bug 影响线上日志通道。
+ * 5. 不要在本函数内调用 `logger.error/info/...` 否则会导致无限递归
+ *    （`SafeGuardPlugin` 会拦截，但仍应避免）。
+ *
+ * @see docs/{zh,en}/9-before-send.md
+ */
+export type BeforeSendHook = (entry: LogEntry) => LogEntry | null | undefined | void;
+
+/**
+ * 预设的插件执行优先级常量
+ *
+ * 数值小的先执行；相同优先级按 use() 调用顺序执行（稳定排序）。
+ *
+ * 详见 docs/{zh,en}/8-plugin-ordering.md
+ */
+export const PluginPriority = {
+  /** 最先执行：必须最早 wrap 浏览器 API 的插件（如 BrowserApiErrorsPlugin） */
+  EARLIEST: -1000,
+  /** 较早执行：beforeLog 拦截类、错误捕获类（如 SafeGuardPlugin / ErrorCapturePlugin） */
+  EARLY: -100,
+  /** 默认：大多数功能类插件 */
+  NORMAL: 0,
+  /** 较晚执行：消费类、上传类（如 UploadPlugin） */
+  LATE: 100,
+  /** 最后执行：用户最终拦截类（如 BeforeSendPlugin） */
+  LATEST: 1000,
+} as const;
+
+/**
+ * 插件执行优先级类型
+ */
+export type PluginPriorityValue = number;
+
+/**
  * 插件接口
  *
  * 插件通过可选的 beforeLog / afterLog hook 参与日志管道：
  * - beforeLog：日志创建前调用，可拦截或修改参数
  * - afterLog：LogEntry 构建后、通知 listener 前调用，可拦截或修改 entry
+ *
+ * 插件之间的执行顺序由 priority 字段决定（详见 priority 字段说明）。
  */
 export interface AemeathPlugin {
   /** 插件名称（必须唯一） */
@@ -182,13 +245,28 @@ export interface AemeathPlugin {
   /** 插件版本 */
   version?: string;
 
+  /**
+   * 插件执行优先级（影响 install / beforeLog / afterLog / uninstall 顺序）
+   *
+   * - 数值小的先执行
+   * - 默认 0（即 PluginPriority.NORMAL）
+   * - 相同优先级按 use() 调用顺序执行（稳定排序）
+   * - 未声明 priority 的插件 = 0（与旧版本行为完全一致，向下兼容）
+   *
+   * 推荐使用 PluginPriority 常量而非魔法数字。
+   *
+   * @see PluginPriority
+   * @see docs/{zh,en}/8-plugin-ordering.md
+   */
+  priority?: number;
+
   /** 安装插件 */
   install(logger: AemeathInterface, options?: unknown): void;
 
   /** 卸载插件（可选） */
   uninstall?(logger: AemeathInterface): void;
 
-  /** 插件依赖（可选） */
+  /** 插件依赖（可选；只检查存在性，不影响顺序——顺序由 priority 决定） */
   dependencies?: string[];
 
   /** 插件描述（可选） */
@@ -233,6 +311,8 @@ export type EventListeners = Map<string, Set<(...args: unknown[]) => void>>;
 export interface PluginMetadata {
   name: string;
   version?: string;
+  /** 实际生效的执行优先级（未声明时为 0） */
+  priority: number;
   enabled: boolean;
   installedAt: number;
   options?: unknown;
@@ -272,6 +352,13 @@ export interface AemeathInterface {
   hasPlugin(name: string): boolean;
   uninstall(name: string): boolean;
   getPlugins(): PluginMetadata[];
+  /**
+   * 按 name 查找已安装的插件实例
+   *
+   * 主要用于运行时获取插件以调用其特有方法（如 BeforeSendPlugin.setHook）。
+   * 普通用户场景请优先使用 hasPlugin / getPlugins。
+   */
+  getPluginInstance(name: string): AemeathPlugin | undefined;
 
   // 配置
   setConsoleEnabled(enabled: boolean): void;

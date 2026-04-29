@@ -186,6 +186,22 @@ describe('Browser IIFE 入口', () => {
       expect(logListener).toHaveBeenCalledTimes(1);
       expect(logListener.mock.calls[0][0].level).toBe('track');
     });
+
+    // 升级回归保护：1.x → 1.5.0 / 2.3 → 2.4 引入 priority 后，level-filter 必须仍然
+    // 在 SafeGuard 之前执行——否则被丢弃的 debug/info 日志会先进入 SafeGuard 速率窗
+    // 与去重表，导致客户在大量低级别日志场景下命中 SafeGuard 熔断 / dedup 误判。
+    it('level-filter 必须比 SafeGuard 更早执行（升级兼容）', async () => {
+      const mod = await import('../src/browser/index');
+      const logger = mod.init({ level: 'warn', safeGuard: true, errorCapture: false });
+
+      const plugins = logger.getPlugins();
+      const levelFilter = plugins.find((p) => p.name === 'level-filter');
+      const safeGuard = plugins.find((p) => p.name === 'safe-guard');
+
+      expect(levelFilter).toBeDefined();
+      expect(safeGuard).toBeDefined();
+      expect(levelFilter!.priority).toBeLessThan(safeGuard!.priority);
+    });
   });
 
   // ==================== 早期错误刷新 ====================
@@ -202,7 +218,7 @@ describe('Browser IIFE 入口', () => {
       (window as any).__EARLY_ERRORS__ = earlyErrors;
 
       const mod = await import('../src/browser/index');
-      const logger = mod.init({ errorCapture: false, safeGuard: false });
+      mod.init({ errorCapture: false, safeGuard: false });
 
       expect((window as any).__flushEarlyErrors__).toHaveBeenCalled();
 

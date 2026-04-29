@@ -10,6 +10,7 @@
  */
 
 import type { AemeathPlugin, AemeathInterface } from '../types';
+import { PluginPriority } from '../types';
 import type { PlatformAdapter } from '../platform/types';
 import type { NetworkEvent, InstrumentOptions, Unsubscribe } from '../instrumentation/types';
 import { instrumentFetch } from '../instrumentation/fetch';
@@ -72,6 +73,7 @@ type NetworkPluginConfig = Required<
 export class NetworkPlugin implements AemeathPlugin {
   readonly name = 'network';
   readonly version = '2.0.0';
+  readonly priority: number = PluginPriority.NORMAL;
   readonly description = '网络请求监控';
 
   private readonly config: NetworkPluginConfig;

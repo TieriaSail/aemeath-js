@@ -56,7 +56,7 @@ describe('Vue Integration', () => {
     vi.useFakeTimers();
     logger = new AemeathLogger({ enableConsole: false });
     logSpy = vi.fn();
-    logger.on('log', logSpy);
+    logger.on('log', logSpy as (...args: unknown[]) => void);
 
     vi.spyOn(singletonModule, 'getAemeath').mockReturnValue(logger);
   });

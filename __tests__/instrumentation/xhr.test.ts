@@ -58,7 +58,13 @@ function sendXHR(
   Object.defineProperty(xhr, 'status', { value: status, writable: true, configurable: true });
   Object.defineProperty(xhr, 'statusText', { value: statusText, writable: true, configurable: true });
 
-  if (opts?.responseText !== undefined && (!opts?.responseType || opts?.responseType === '' || opts?.responseType === 'text')) {
+  const rt = opts?.responseType;
+  const isTextualResponseType =
+    rt === undefined
+    || rt === 'text'
+    // lib.dom 的 XMLHttpRequestResponseType 在部分版本不含 `''`，但运行时应视为默认 text
+    || (rt as string) === '';
+  if (opts?.responseText !== undefined && isTextualResponseType) {
     Object.defineProperty(xhr, 'responseText', { value: opts.responseText, writable: true, configurable: true });
   }
 

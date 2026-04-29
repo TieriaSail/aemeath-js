@@ -136,7 +136,7 @@ describe('SourceMapParser', () => {
       const stack =
         'Error: test\n' +
         '    at fn (http://localhost:3000/static/js/main.js:1:50)';
-      const result = await parser.parse(stack);
+      void (await parser.parse(stack));
 
       // 应尝试加载（即使最终失败），说明被当作本域资源
       expect(window.fetch).toHaveBeenCalled();

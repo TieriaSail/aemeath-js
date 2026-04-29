@@ -3,7 +3,7 @@
  *
  * Uses jsdom environment (default) to test browser-specific APIs.
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { createBrowserAdapter } from '../../src/platform/browser';
 import type { PlatformAdapter } from '../../src/platform/types';
 

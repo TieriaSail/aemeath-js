@@ -2,6 +2,8 @@
 
 > Fully customizable callback-based upload, simple and flexible
 
+> 💡 **Privacy tip**: UploadPlugin has no built-in redaction. To filter / strip sensitive fields per entry, use the [`beforeSend` hook](./9-before-send.md) (v2.4.0+), which runs **before** UploadPlugin receives the entry.
+
 ---
 
 ## 📦 Core Features

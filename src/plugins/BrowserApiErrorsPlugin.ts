@@ -13,6 +13,7 @@
  */
 
 import type { AemeathPlugin, AemeathInterface } from '../types';
+import { PluginPriority } from '../types';
 import { wrap, type WrappedFunction } from '../utils/wrap';
 
 // ==================== Configuration ====================
@@ -91,6 +92,7 @@ const XHR_CALLBACK_PROPS: (keyof XMLHttpRequest)[] = [
 export class BrowserApiErrorsPlugin implements AemeathPlugin {
   readonly name = 'browser-api-errors';
   readonly version = '2.0.0';
+  readonly priority: number = PluginPriority.EARLIEST;
   readonly description = 'Browser API callback wrapping for enhanced error capture';
 
   private readonly config: Required<Omit<BrowserApiErrorsPluginOptions, 'eventTargetObjects'>> & {

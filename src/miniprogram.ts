@@ -20,8 +20,9 @@ import { ErrorCapturePlugin } from './plugins/ErrorCapturePlugin';
 import { UploadPlugin, type UploadResult } from './plugins/UploadPlugin';
 import { SafeGuardPlugin, type SafeGuardMode } from './plugins/SafeGuardPlugin';
 import { NetworkPlugin, type NetworkLogType } from './plugins/NetworkPlugin';
+import { BeforeSendPlugin } from './plugins/BeforeSendPlugin';
 import { createMiniAppAdapter } from './platform/miniapp';
-import type { LogEntry } from './types';
+import type { BeforeSendHook, LogEntry } from './types';
 import type { PlatformAdapter } from './platform/types';
 import type { RouteMatchConfig } from './utils/routeMatcher';
 
@@ -39,6 +40,7 @@ export type {
   LogContext,
   BeforeLogResult,
   AfterLogResult,
+  BeforeSendHook,
   AemeathPlugin,
   LogListener,
   PluginMetadata,
@@ -48,7 +50,7 @@ export type {
   ContextValue,
 } from './types';
 
-export { LogLevel as LogLevelEnum, ErrorCategory } from './types';
+export { LogLevel as LogLevelEnum, ErrorCategory, PluginPriority } from './types';
 
 // ==================== 插件（仅小程序可用子集） ====================
 export { ErrorCapturePlugin };
@@ -75,6 +77,9 @@ export type {
   NetworkLog,
   NetworkLogType,
 } from './plugins/NetworkPlugin';
+
+export { BeforeSendPlugin };
+export type { BeforeSendPluginOptions } from './plugins/BeforeSendPlugin';
 
 // ==================== 平台适配器 ====================
 export { createMiniAppAdapter };
@@ -216,6 +221,13 @@ export interface AemeathInitOptions {
   };
 
   /**
+   * 全链路日志最终拦截钩子（隐私脱敏 / 业务过滤 / 字段补充）
+   *
+   * 详见 docs/{zh,en}/9-before-send.md
+   */
+  beforeSend?: BeforeSendHook;
+
+  /**
    * @deprecated 使用 context 代替
    */
   tags?: Record<string, unknown>;
@@ -255,6 +267,23 @@ export interface AemeathInitOptions {
  */
 export function initAemeath(options: AemeathInitOptions): AemeathLogger {
   if (globalAemeath) {
+    // 重复 init：整个 options 不会被再次应用，但允许单独转嫁 beforeSend，
+    // 避免用户传入的 hook 被静默吞掉（与 web 端入口保持对称）。
+    if (options && options.beforeSend !== undefined) {
+      const existing = globalAemeath.getPluginInstance('before-send') as BeforeSendPlugin | undefined;
+      if (existing && typeof existing.setHook === 'function') {
+        existing.setHook(options.beforeSend);
+      }
+    }
+    if (typeof console !== 'undefined' && console.warn) {
+      const ignored = options ? Object.keys(options).filter((k) => k !== 'beforeSend') : [];
+      if (ignored.length > 0) {
+        console.warn(
+          '[Aemeath] initAemeath() called twice. The following options were ignored: '
+            + `${ignored.join(', ')}. Only beforeSend is honored.`,
+        );
+      }
+    }
     return globalAemeath;
   }
 
@@ -337,8 +366,38 @@ export function initAemeath(options: AemeathInitOptions): AemeathLogger {
     );
   }
 
+  // 全链路最终拦截 / 脱敏（priority: LATEST）
+  logger.use(new BeforeSendPlugin({ beforeSend: options.beforeSend }));
+
   globalAemeath = logger;
   return logger;
+}
+
+/**
+ * 在运行时设置 / 替换 / 清除全链路日志拦截钩子（`beforeSend`）
+ *
+ * 详见 docs/{zh,en}/9-before-send.md
+ *
+ * @param hook 钩子函数（传 `null` 清除）
+ */
+export function setBeforeSend(hook: BeforeSendHook | null): void {
+  if (!globalAemeath) {
+    if (typeof console !== 'undefined' && console.warn) {
+      console.warn(
+        '[Aemeath] setBeforeSend() was called before initAemeath(). '
+          + 'The hook is dropped. Call initAemeath() first, or pass `beforeSend` to it directly.',
+      );
+    }
+    return;
+  }
+  const plugin = globalAemeath.getPluginInstance('before-send') as BeforeSendPlugin | undefined;
+  if (plugin && typeof plugin.setHook === 'function') {
+    plugin.setHook(hook);
+  } else if (typeof console !== 'undefined' && console.warn) {
+    console.warn(
+      '[Aemeath] setBeforeSend() called but BeforeSendPlugin is not installed. The hook is ignored.',
+    );
+  }
 }
 
 /**

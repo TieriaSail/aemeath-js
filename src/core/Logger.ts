@@ -46,6 +46,8 @@ export class AemeathLogger implements AemeathInterface {
   private destroyed = false;
   private staticContext: LogContext = {};
   private readonly dynamicContext: Map<string, ContextUpdater> = new Map();
+  /** 已经警告过的异步 dynamic-context key（避免每条日志都刷屏） */
+  private readonly asyncContextWarned: Set<string> = new Set();
   private readonly environment?: string;
   private readonly release?: string;
   private readonly debugEnabled: boolean;
@@ -159,8 +161,17 @@ export class AemeathLogger implements AemeathInterface {
         if (result === false) {
           return;
         }
-        if (result && typeof result === 'object' && 'level' in result) {
-          entry = result;
+        if (result && typeof result === 'object' && !Array.isArray(result)) {
+          const next = result as LogEntry;
+          if (typeof next.logId === 'string' && typeof next.level === 'string') {
+            entry = next;
+          } else if (typeof console !== 'undefined' && console.warn) {
+            // 与 beforeSend 非法返回值一致：始终 warn，避免生产环境静默坏数据
+            console.warn(
+              `[Aemeath] Plugin "${plugin.name}" afterLog returned an object without valid logId & level; `
+                + 'ignored. Return false to drop the log, void/undefined to keep the previous entry.',
+            );
+          }
         }
       } catch (err) {
         this.debugWarn(`Plugin "${plugin.name}" afterLog error:`, err);
@@ -315,11 +326,22 @@ export class AemeathLogger implements AemeathInterface {
       this.dynamicContext.forEach((updater, key) => {
         try {
           const result = updater(context, partialEntry);
-          if (
-            result && typeof result === 'object' &&
-            typeof (result as any).then !== 'function'
-          ) {
-            context = { ...context, ...result };
+          if (result && typeof result === 'object') {
+            // 拒绝异步 updater：thenable 会作为对象被 spread 进去，污染 context
+            const maybeThenable = result as { then?: unknown };
+            if (typeof maybeThenable.then === 'function') {
+              if (!this.asyncContextWarned.has(key)
+                  && typeof console !== 'undefined' && console.warn) {
+                this.asyncContextWarned.add(key);
+                console.warn(
+                  `[Aemeath] Dynamic context updater "${key}" returned a Promise / thenable; `
+                    + 'updaters must be synchronous. The async result was ignored. '
+                    + '(This warning is shown once per key.)',
+                );
+              }
+            } else {
+              context = { ...context, ...result };
+            }
           }
         } catch (err) {
           this.debugWarn(`Dynamic context "${key}" error:`, err);
@@ -435,15 +457,26 @@ export class AemeathLogger implements AemeathInterface {
 
     try {
       plugin.install(this, options);
-      this.pluginInstances.push(plugin);
+      const priority = plugin.priority ?? 0;
+      let insertAt = this.pluginInstances.length;
+      for (let i = this.pluginInstances.length - 1; i >= 0; i--) {
+        const existing = this.pluginInstances[i]!.priority ?? 0;
+        if (existing <= priority) {
+          insertAt = i + 1;
+          break;
+        }
+        insertAt = i;
+      }
+      this.pluginInstances.splice(insertAt, 0, plugin);
       this.plugins.set(plugin.name, {
         name: plugin.name,
         version: plugin.version,
+        priority,
         enabled: true,
         installedAt: Date.now(),
         options,
       });
-      this.debugLog(`Plugin "${plugin.name}" installed`);
+      this.debugLog(`Plugin "${plugin.name}" installed (priority=${priority})`);
     } catch (err) {
       this.debugWarn(`Failed to install plugin "${plugin.name}":`, err);
       return this;
@@ -454,6 +487,10 @@ export class AemeathLogger implements AemeathInterface {
 
   public hasPlugin(name: string): boolean {
     return this.plugins.has(name);
+  }
+
+  public getPluginInstance(name: string): AemeathPlugin | undefined {
+    return this.pluginInstances.find((p) => p.name === name);
   }
 
   public uninstall(name: string): boolean {
@@ -481,7 +518,12 @@ export class AemeathLogger implements AemeathInterface {
   }
 
   public getPlugins(): PluginMetadata[] {
-    return Array.from(this.plugins.values());
+    const result: PluginMetadata[] = [];
+    for (const plugin of this.pluginInstances) {
+      const meta = this.plugins.get(plugin.name);
+      if (meta) result.push(meta);
+    }
+    return result;
   }
 
   // ==================== 配置管理 ====================
@@ -495,20 +537,24 @@ export class AemeathLogger implements AemeathInterface {
   public setContext(context: ContextValue): void {
     if (typeof context === 'function') {
       this.dynamicContext.clear();
+      this.asyncContextWarned.clear();
       this.dynamicContext.set('__root__', context as ContextUpdater);
     } else {
       this.staticContext = { ...context };
       this.dynamicContext.delete('__root__');
+      this.asyncContextWarned.delete('__root__');
     }
   }
 
   public updateContext(key: string, value: unknown | ContextUpdater): void {
     if (typeof value === 'function') {
       this.dynamicContext.set(key, value as ContextUpdater);
+      this.asyncContextWarned.delete(key);
       delete this.staticContext[key];
     } else {
       this.staticContext[key] = value;
       this.dynamicContext.delete(key);
+      this.asyncContextWarned.delete(key);
     }
   }
 
@@ -520,17 +566,19 @@ export class AemeathLogger implements AemeathInterface {
     if (!keys || keys.length === 0) {
       this.staticContext = {};
       this.dynamicContext.clear();
+      this.asyncContextWarned.clear();
     } else {
       for (const key of keys) {
         delete this.staticContext[key];
         this.dynamicContext.delete(key);
+        this.asyncContextWarned.delete(key);
       }
     }
   }
 
   public destroy(): void {
     this.destroyed = true;
-    const pluginNames = Array.from(this.plugins.keys());
+    const pluginNames = this.pluginInstances.slice().reverse().map((p) => p.name);
     for (const name of pluginNames) {
       try {
         this.uninstall(name);
@@ -544,6 +592,7 @@ export class AemeathLogger implements AemeathInterface {
     this.pluginInstances.length = 0;
     this.staticContext = {};
     this.dynamicContext.clear();
+    this.asyncContextWarned.clear();
   }
 }
 
