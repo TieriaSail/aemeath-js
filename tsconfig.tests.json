@@ -1,0 +1,23 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "noEmit": true,
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false,
+    "types": ["vitest/globals", "node"]
+  },
+  "include": [
+    "src/**/*.ts",
+    "src/**/*.tsx",
+    "__tests__/plugin-priority.test.ts",
+    "__tests__/beforeSendPlugin.test.ts",
+    "__tests__/beforeSend.network.integration.test.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "dist-miniprogram"
+  ]
+}
