@@ -81,7 +81,7 @@ export interface EarlyErrorCaptureOptions {
 
 export class EarlyErrorCapturePlugin implements AemeathPlugin {
   readonly name = 'EarlyErrorCapture';
-  readonly version = '1.3.0';
+  readonly version = '1.5.1';
   readonly priority: number = PluginPriority.NORMAL;
   readonly description = 'Capture errors before React mounts';
 

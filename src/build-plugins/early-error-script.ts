@@ -244,8 +244,13 @@ function generateFallbackBlock(
   var FALLBACK_HEADERS = ${headersJson};
   var formatPayload = ${formatPayload ? formatPayload.toString() : 'null'};
 
-  function sendPayload(data) {
+  // sendPayload 接收 errorsBatch 仅用于失败时的告警计数；不再尝试"重新入栈重传"。
+  // 旧实现把 errors 写回 __EARLY_ERRORS__ 但 __LOGGER_INITIALIZED__ 已为 true，
+  // 没人会再消费 → 等于静默丢失。同时旧实现里 xhr.onerror 引用了 sendPayload 作用域
+  // 之外的 errors 变量，触发时直接 ReferenceError，让 fallback 通道彻底崩盘。
+  function sendPayload(data, errorsBatch) {
     var payloadStr = JSON.stringify(data);
+    var lostCount = (errorsBatch && errorsBatch.length) || 0;
 
     if (FALLBACK_TRANSPORT === 'beacon' || (FALLBACK_TRANSPORT === 'auto' && typeof navigator.sendBeacon === 'function')) {
       try {
@@ -253,7 +258,10 @@ function generateFallbackBlock(
         var sent = navigator.sendBeacon(FALLBACK_ENDPOINT, blob);
         if (sent) return true;
       } catch (e) {}
-      if (FALLBACK_TRANSPORT === 'beacon') return false;
+      if (FALLBACK_TRANSPORT === 'beacon') {
+        try { console.warn('[EarlyErrorCapture] Fallback beacon failed; ' + lostCount + ' early errors are lost.'); } catch (e) {}
+        return false;
+      }
     }
 
     if (FALLBACK_TRANSPORT === 'xhr' || FALLBACK_TRANSPORT === 'auto') {
@@ -274,13 +282,17 @@ function generateFallbackBlock(
           }
         }
         xhr.onerror = function() {
-          window.__EARLY_ERRORS__ = errors.concat(window.__EARLY_ERRORS__);
+          // 不再把 errors 重新写回 __EARLY_ERRORS__：__LOGGER_INITIALIZED__ 已为 true，
+          // 早期脚本的 listener 全部 early-return，写回去也没人取，只是制造"重传幻觉"。
+          // fallback 通道明确为 best-effort 一次性 send。
+          try { console.warn('[EarlyErrorCapture] Fallback XHR failed; ' + lostCount + ' early errors are lost.'); } catch (e) {}
         };
         xhr.send(payloadStr);
         return true;
       } catch (e) {}
     }
 
+    try { console.warn('[EarlyErrorCapture] Fallback transport unavailable; ' + lostCount + ' early errors are lost.'); } catch (e) {}
     return false;
   }
 
@@ -310,15 +322,16 @@ function generateFallbackBlock(
       }
 
       if (Array.isArray(result)) {
+        // formatPayload 返回数组时 1:1 映射 errors[i]，落单的告警计数置 1
         for (var i = 0; i < result.length; i++) {
-          sendPayload(result[i]);
+          sendPayload(result[i], errors[i] ? [errors[i]] : []);
         }
       } else {
-        sendPayload(result);
+        sendPayload(result, errors);
       }
     } catch (e) {
-      window.__EARLY_ERRORS__ = errors.concat(window.__EARLY_ERRORS__);
-      console.error('[EarlyErrorCapture] Fallback send error:', e);
+      // 同 sendPayload xhr.onerror 的修复：不再 reassign __EARLY_ERRORS__
+      try { console.error('[EarlyErrorCapture] Fallback send error:', e); } catch (ee) {}
     }
   }
 
