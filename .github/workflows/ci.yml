@@ -7,7 +7,7 @@ on:
     branches: [dev, v1.x]
 
 jobs:
-  test:
+  verify:
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -25,8 +25,7 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Build
-        run: npm run build
-
-      - name: Run tests
-        run: npm test
+      # Single quality gate identical to `prepublishOnly`:
+      # vitest run + tsc src/ + tsc __tests__/ + tsc examples/ + tsup build
+      - name: Verify (test + typecheck + build)
+        run: npm run verify

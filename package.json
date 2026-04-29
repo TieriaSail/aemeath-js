@@ -1,6 +1,6 @@
 {
   "name": "aemeath-js",
-  "version": "2.3.0-beta.0",
+  "version": "2.4.0-beta.0",
   "description": "A modular, type-safe logging system with plugin architecture",
   "keywords": [
     "logger",
@@ -175,12 +175,12 @@
   "scripts": {
     "build": "tsup",
     "dev": "tsup --watch",
-    "typecheck": "tsc --noEmit",
-    "lint": "eslint . --ext .ts,.tsx --ignore-pattern dist --ignore-pattern node_modules",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.tests.json && tsc --noEmit -p tsconfig.examples.json",
+    "verify": "npm test && npm run typecheck && npm run build",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
-    "prepublishOnly": "npm test && npm run build"
+    "prepublishOnly": "npm run verify"
   },
   "dependencies": {
     "source-map-js": "^1.2.0"
