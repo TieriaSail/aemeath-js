@@ -375,25 +375,43 @@ export function initAemeath(options: AemeathInitOptions = {}): AemeathLogger {
   if (globalAemeath) {
     // 兼容场景：用户在 initAemeath 之前先调了 getAemeath()（兜底创建了实例），
     // 或重复调用了 initAemeath()。整个 options 不会再被应用（避免重复 use 同名
-    // 插件 / 改变已被使用的全局状态），但单独把 options.beforeSend 转嫁到现有
-    // BeforeSendPlugin 上 —— 否则用户传的 beforeSend 钩子会被静默丢弃，这是
-    // v1.5.0+ 最容易踩的坑。
+    // 插件 / 改变已被使用的全局状态），但下面的「可挽救」选项会被增量应用：
+    //   - beforeSend：直接 setHook 到现有 BeforeSendPlugin
+    //   - upload：兜底实例不会装 UploadPlugin，这里**增量补装**，否则
+    //     getAemeath() 兜底路径的早期错误会一直只在 console 可见、无法上传到
+    //     服务端。这也让用户「先 getAemeath() 后 init({ upload })」的常见路径
+    //     真正生效。
+    const honored: string[] = [];
     if (options.beforeSend !== undefined) {
       const existing = globalAemeath.getPluginInstance('before-send') as BeforeSendPlugin | undefined;
       if (existing && typeof existing.setHook === 'function') {
         existing.setHook(options.beforeSend);
+        honored.push('beforeSend');
       }
     }
+    if (options.upload && !globalAemeath.hasPlugin('upload')) {
+      globalAemeath.use(
+        new UploadPlugin({
+          onUpload: options.upload,
+          getPriority: options.getPriority,
+          queue: options.queue,
+          cache: { enabled: true },
+        }),
+      );
+      honored.push('upload');
+    }
     if (typeof console !== 'undefined' && console.warn) {
-      const ignored = Object.keys(options).filter((k) => k !== 'beforeSend');
+      const ignored = Object.keys(options).filter((k) => !honored.includes(k));
       if (ignored.length > 0) {
+        const honoredText = honored.length > 0
+          ? ` Only the following were honored: ${honored.join(', ')}.`
+          : '';
         console.warn(
           '[Aemeath] initAemeath() called after the global instance already exists '
             + '(probably because getAemeath() was used first, or initAemeath was called '
-            + `twice). The following options were ignored: ${ignored.join(', ')}. `
-            + 'Only beforeSend is honored.',
+            + `twice). The following options were ignored: ${ignored.join(', ')}.${honoredText}`,
         );
-      } else {
+      } else if (honored.length === 0) {
         console.warn('[Aemeath] Already initialized, returning existing instance');
       }
     }
@@ -572,8 +590,17 @@ export function getAemeath(): AemeathLogger {
     // 如果构建插件已注入早期脚本，必须装 EarlyErrorCapturePlugin 完成接管，
     // 否则 __LOGGER_INITIALIZED__ 永远不被翻牌、fallback 定时器到点照样开火，
     // 与 initAemeath() 行为不一致。
+    //
+    // 注意：本兜底路径不装 UploadPlugin，所以早期错误虽然被接管并经过完整 pipeline
+    // （ErrorCapturePlugin、BeforeSendPlugin、console），但**不会上传到服务端**。
+    // 「接管 + console 可见」严格优于「不接管 + fallback 双轨上报」，所以仍要装。
     if (typeof window !== 'undefined' && (window as any).__EARLY_ERRORS__) {
       globalAemeath.use(new EarlyErrorCapturePlugin());
+      console.warn(
+        '[Aemeath] Took over the early-error script too, but this fallback path has no '
+          + 'UploadPlugin — early errors will appear in the console but will NOT be uploaded. '
+          + 'Call initAemeath({ upload: ... }) afterwards to incrementally enable upload.',
+      );
     }
   }
 
@@ -619,6 +646,25 @@ export function resetAemeath(): void {
     globalAemeath.destroy?.();
   }
   globalAemeath = null;
+  // R15.2: 清理早期错误脚本注入的 window globals，让 reset 真正彻底。
+  // 否则下次 initAemeath() 会受到 __LOGGER_INITIALIZED__ / __EARLY_ERRORS__ /
+  // __flushEarlyErrors__ / __EARLY_ERROR_CAPTURE_LOADED__ 残留状态影响：
+  //   - __LOGGER_INITIALIZED__=true 残留 → 下次 init 后早期脚本 listener 不再 addError
+  //   - __flushEarlyErrors__ 残留 → 下次 init 时 isInstalled() 仍 true 会重复 flush
+  //     （flush 第一次已清空 __EARLY_ERRORS__，第二次只是 no-op，但语义上不干净）
+  //   - __EARLY_ERROR_CAPTURE_LOADED__ 残留 → micro-frontend 二次注入 guard 不再生效
+  // SSR / Node 环境 typeof window === 'undefined' 时跳过，避免 ReferenceError。
+  if (typeof window !== 'undefined') {
+    try {
+      delete (window as { __EARLY_ERRORS__?: unknown[] }).__EARLY_ERRORS__;
+      delete (window as { __flushEarlyErrors__?: unknown }).__flushEarlyErrors__;
+      delete (window as { __LOGGER_INITIALIZED__?: boolean }).__LOGGER_INITIALIZED__;
+      delete (window as { __EARLY_ERROR_CAPTURE_LOADED__?: boolean }).__EARLY_ERROR_CAPTURE_LOADED__;
+    } catch {
+      // 某些受限环境（iframe sandbox / Object.freeze(window)）不允许 delete，
+      // 忽略错误避免破坏 reset 流程。
+    }
+  }
 }
 
 // ==================== 类型导出 ====================
