@@ -20,6 +20,7 @@ import { SafeGuardPlugin } from '../plugins/SafeGuardPlugin';
 import { detectPlatform } from '../platform/detect';
 import { PluginPriority } from '../types';
 import type { LogEntry, LogLevel, LogOptions } from '../types';
+import { forwardEarlyError } from '../utils/forwardEarlyError';
 
 // 全局单例
 let globalLogger: AemeathLogger | null = null;
@@ -146,31 +147,24 @@ function flushEarlyErrors(logger: AemeathLogger): void {
   // 双轨重复上报。详见 v2.2.0-beta.1 early-handoff-bug-report Bug 1+2。
   if (!platform.earlyCapture.isInstalled()) return;
 
+  // R17（v2.4.0-beta.3）：转发逻辑统一使用 src/utils/forwardEarlyError.ts，
+  // 与 npm 单例入口（singleton/index.ts via EarlyErrorCapturePlugin）共用同一份
+  // helper，输出完全相同的 LogEntry。
+  //
+  // ⚠️ 行为变更（仅影响 IIFE bundle 用户）：
+  //   - resource 错误的 `level` 由 `warn` → `error`
+  //   - `entry.message` 由 `err.message` → `"Early ${type} error"`
+  //     （原始文本仍保留在 `entry.error.value`）
+  //   - `entry.context` 不再被预填，扁平字段统一在 `entry.error.{...}`
+  //   - `compatibility` 类型现在也会被转发上报（与 singleton 行为对齐）
+  //     用户可通过 beforeSend 钩子过滤掉，例如：
+  //     `(entry) => entry.error?.type === 'compatibility' ? null : entry`
+  //
+  // 详见 helper 文档头部「历史背景 / 统一方案」与 v2.4.0-beta.3 changelog。
   platform.earlyCapture.flush((errors) => {
     if (errors.length === 0) return;
-    errors.forEach((err) => {
-      const context: Record<string, unknown> = {
-        errorType: err.type,
-        message: err.message,
-        stack: err.stack,
-        filename: err.filename,
-        lineno: err.lineno,
-        colno: err.colno,
-        source: err.source,
-        timestamp: err.timestamp,
-        device: err.device,
-      };
-      if (err.type === 'error' || err.type === 'unhandledrejection') {
-        logger.error(err.message || 'Unknown error', {
-          tags: { source: 'early-error' },
-          context,
-        });
-      } else if (err.type === 'resource') {
-        logger.warn('Resource loading failed', {
-          tags: { source: 'early-error' },
-          context,
-        });
-      }
+    errors.forEach((earlyError) => {
+      forwardEarlyError(logger, earlyError);
     });
   });
 }

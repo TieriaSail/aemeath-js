@@ -417,5 +417,110 @@ describe('Singleton (initAemeath / getAemeath)', () => {
       mod.resetAemeath();
     });
   });
+
+  // ==================== setUpload (R19 / 增强 #2) ====================
+  //
+  // setUpload 让 onUpload 回调可以在 logger 初始化之后再注入 / 替换 / 暂停。
+  // 典型场景：endpoint / authorization token 必须等到登录后才能拿到。
+  describe('setUpload (R19 / 增强 #2)', () => {
+    it('未 init 时 setUpload 应警告且 no-op，不抛错', async () => {
+      const mod = await import('../src/singleton/index');
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      mod.setUpload(async () => ({ success: true }));
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      expect(warnSpy.mock.calls[0][0]).toMatch(/setUpload\(\) was called before/);
+      warnSpy.mockRestore();
+    });
+
+    it('initAemeath() 没传 upload 时，setUpload 应懒装载 UploadPlugin', async () => {
+      const mod = await import('../src/singleton/index');
+      const logger = mod.initAemeath({});
+      expect(logger.hasPlugin('upload')).toBe(false);
+
+      mod.setUpload(async () => ({ success: true }));
+      expect(logger.hasPlugin('upload')).toBe(true);
+      mod.resetAemeath();
+    });
+
+    it('initAemeath({ upload }) 已经装了 UploadPlugin 时，setUpload 应替换内部 onUpload', async () => {
+      const mod = await import('../src/singleton/index');
+      const initialUpload = vi.fn(async () => ({ success: true }));
+      const logger = mod.initAemeath({ upload: initialUpload });
+      expect(logger.hasPlugin('upload')).toBe(true);
+
+      const replacementUpload = vi.fn(async () => ({ success: true }));
+      mod.setUpload(replacementUpload);
+
+      // 触发一条日志，验证走的是新回调
+      logger.error('after setUpload');
+      // 等队列 dedup + flush（默认 50ms dedup + 同步上传）
+      await new Promise((r) => setTimeout(r, 100));
+
+      expect(replacementUpload).toHaveBeenCalled();
+      expect(initialUpload).not.toHaveBeenCalled();
+      mod.resetAemeath();
+    });
+
+    it('setUpload(null)：替换为 no-op，队列里的日志 success 出队不残留', async () => {
+      const mod = await import('../src/singleton/index');
+      const initialUpload = vi.fn(async () => ({ success: true }));
+      const logger = mod.initAemeath({ upload: initialUpload });
+
+      mod.setUpload(null);
+      logger.error('after pause');
+      await new Promise((r) => setTimeout(r, 100));
+
+      // 旧回调没被触发（因为已被替换）
+      expect(initialUpload).not.toHaveBeenCalled();
+      // 没有 throw、没有未捕获 rejection
+      mod.resetAemeath();
+    });
+
+    it('setUpload 多次替换：每次都用最新回调', async () => {
+      const mod = await import('../src/singleton/index');
+      const logger = mod.initAemeath({ upload: vi.fn(async () => ({ success: true })) });
+
+      const v1 = vi.fn(async () => ({ success: true }));
+      const v2 = vi.fn(async () => ({ success: true }));
+      const v3 = vi.fn(async () => ({ success: true }));
+
+      mod.setUpload(v1);
+      logger.error('1');
+      await new Promise((r) => setTimeout(r, 100));
+      expect(v1).toHaveBeenCalledTimes(1);
+
+      mod.setUpload(v2);
+      logger.error('2');
+      await new Promise((r) => setTimeout(r, 100));
+      expect(v2).toHaveBeenCalledTimes(1);
+      expect(v1).toHaveBeenCalledTimes(1); // 没被再次调用
+
+      mod.setUpload(v3);
+      logger.error('3');
+      await new Promise((r) => setTimeout(r, 100));
+      expect(v3).toHaveBeenCalledTimes(1);
+
+      mod.resetAemeath();
+    });
+
+    it('setUpload 替换不应破坏 queue / cache 等其他配置', async () => {
+      const mod = await import('../src/singleton/index');
+      const logger = mod.initAemeath({
+        upload: async () => ({ success: true }),
+        queue: { uploadInterval: 1234, maxRetries: 7 },
+      });
+      const upload = logger.getPluginInstance('upload') as any;
+      expect(upload.config.queue.uploadInterval).toBe(1234);
+      expect(upload.config.queue.maxRetries).toBe(7);
+
+      mod.setUpload(async () => ({ success: true }));
+
+      // queue 配置原封不动
+      expect(upload.config.queue.uploadInterval).toBe(1234);
+      expect(upload.config.queue.maxRetries).toBe(7);
+
+      mod.resetAemeath();
+    });
+  });
 });
 

@@ -11,7 +11,7 @@ import { AemeathLogger } from '../core/Logger';
 import { ErrorCapturePlugin } from '../plugins/ErrorCapturePlugin';
 import { BrowserApiErrorsPlugin, type BrowserApiErrorsPluginOptions } from '../plugins/BrowserApiErrorsPlugin';
 import { EarlyErrorCapturePlugin } from '../plugins/EarlyErrorCapturePlugin';
-import { UploadPlugin, type UploadResult } from '../plugins/UploadPlugin';
+import { UploadPlugin, type UploadResult, type UploadCallback } from '../plugins/UploadPlugin';
 import { SafeGuardPlugin, type SafeGuardMode } from '../plugins/SafeGuardPlugin';
 import { NetworkPlugin, type NetworkLogType } from '../plugins/NetworkPlugin';
 import { BeforeSendPlugin } from '../plugins/BeforeSendPlugin';
@@ -586,6 +586,80 @@ export function setBeforeSend(hook: BeforeSendHook | null): void {
         + 'created without the singleton helpers.)',
     );
   }
+}
+
+/**
+ * 在运行时设置 / 替换 / 暂停 upload 回调
+ *
+ * 适用于：
+ * - upload endpoint / authorization token 必须等到登录后才能拿到
+ * - 多租户应用按租户切换 upload endpoint
+ * - 临时 "暂停上报"（传 `null`，等业务恢复时再传新回调）
+ *
+ * 行为：
+ * - 如果 `initAemeath()` 已经传过 `upload`：替换 UploadPlugin 内部的 onUpload，
+ *   保留原有的 queue / getPriority / cache 配置。
+ * - 如果 `initAemeath()` 没传 `upload`（即 UploadPlugin 不在）：使用默认 queue
+ *   配置**懒装载**一个 UploadPlugin。后续可以通过本函数继续替换 onUpload。
+ * - 如果传 `null`：用一个永远 `success: true` 的 no-op 回调替换。**注意**：
+ *   这是「排队项被当成成功上报而清空」，**不是**「失败并重试」，也不是
+ *   暂停磁盘缓存里的历史队列（仍会按 UploadPlugin 规则继续消化）。
+ *
+ * **与二次 `initAemeath` 的配合**：全局实例已存在时，仅在 `UploadPlugin`
+ * **尚未装载**的前提下，`initAemeath({ upload, queue })` 才会增量补装上传。
+ * 若你已用本函数做过懒装载，`upload`/`queue` 等二次 init 传入项可能被忽略，
+ * 并伴随 `console.warn`；此时应继续使用 `setUpload(...)` / 先 `resetAemeath()`
+ * 再完整 init。
+ *
+ * 必须在 `initAemeath()` 或 `getAemeath()` 之后调用，否则会输出警告并 no-op。
+ *
+ * @param callback 新的上传回调（传 `null` 暂停上报）
+ *
+ * @example
+ * ```ts
+ * // 启动时只装 ErrorCapture / SafeGuard，先不传 upload
+ * initAemeath({});
+ *
+ * // 登录成功后再绑定 upload
+ * await login();
+ * setUpload(async (log) => {
+ *   const res = await fetch(`/api/logs`, {
+ *     method: 'POST',
+ *     headers: { Authorization: `Bearer ${getToken()}` },
+ *     body: JSON.stringify(log),
+ *   });
+ *   return { success: res.ok };
+ * });
+ *
+ * // 退出登录时暂停上报
+ * setUpload(null);
+ * ```
+ */
+export function setUpload(callback: UploadCallback | null): void {
+  if (!globalAemeath) {
+    if (typeof console !== 'undefined' && console.warn) {
+      console.warn(
+        '[Aemeath] setUpload() was called before any Aemeath instance exists. '
+          + 'The callback is dropped. Call initAemeath()/getAemeath() first, '
+          + 'or pass `upload` to initAemeath() directly.',
+      );
+    }
+    return;
+  }
+  const existing = globalAemeath.getPluginInstance('upload') as UploadPlugin | undefined;
+  if (existing) {
+    existing.setOnUpload(callback);
+    return;
+  }
+  // 懒装载：UploadPlugin 不在，用默认 queue / cache 装一份。callback 为 null
+  // 时也装载一个 no-op upload —— 这样后续可以无缝再次 setUpload(real)。
+  const onUpload: UploadCallback = callback ?? (async () => ({ success: true }));
+  globalAemeath.use(
+    new UploadPlugin({
+      onUpload,
+      cache: { enabled: true },
+    }),
+  );
 }
 
 /**

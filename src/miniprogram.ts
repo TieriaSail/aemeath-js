@@ -17,7 +17,7 @@
 
 import { AemeathLogger } from './core/Logger';
 import { ErrorCapturePlugin } from './plugins/ErrorCapturePlugin';
-import { UploadPlugin, type UploadResult } from './plugins/UploadPlugin';
+import { UploadPlugin, type UploadResult, type UploadCallback } from './plugins/UploadPlugin';
 import { SafeGuardPlugin, type SafeGuardMode } from './plugins/SafeGuardPlugin';
 import { NetworkPlugin, type NetworkLogType } from './plugins/NetworkPlugin';
 import { BeforeSendPlugin } from './plugins/BeforeSendPlugin';
@@ -417,6 +417,69 @@ export function setBeforeSend(hook: BeforeSendHook | null): void {
       '[Aemeath] setBeforeSend() called but BeforeSendPlugin is not installed. The hook is ignored.',
     );
   }
+}
+
+/**
+ * 在运行时设置 / 替换 / 暂停 upload 回调
+ *
+ * 与 web 入口 `src/singleton/index.ts` 的 `setUpload` **语义对称**（懒装载 /
+ * `null` → no-op / 队列语义等）。
+ *
+ * 用户文档：`docs/zh/9-before-send.md` / `docs/en/9-before-send.md` 末节
+ * 「setUpload（运行时绑定上传）」。
+ *
+ * **与二次 `initAemeath` 的配合**：全局实例已存在且 `UploadPlugin` 已由 `setUpload`
+ * 懒装载后，后续 `initAemeath({ upload, queue })` 的 `upload`/`queue` 等可能不会被
+ * 采纳（见 `singleton` `setUpload` 与增量 init 的规则）；继续使用 `setUpload(...)`
+ * 或 `resetAemeath()` 后完整初始化。
+ *
+ * @param callback 新的上传回调（传 `null` 暂停上报）
+ *
+ * @example
+ * ```ts
+ * App({
+ *   onLaunch() {
+ *     initAemeath({ platform: createMiniAppAdapter('wechat', wx) });
+ *   },
+ *   onLogin(loginRes) {
+ *     setUpload(async (log) => {
+ *       return new Promise((resolve) => {
+ *         wx.request({
+ *           url: 'https://api.example.com/logs',
+ *           method: 'POST',
+ *           header: { Authorization: `Bearer ${loginRes.token}` },
+ *           data: log,
+ *           success: () => resolve({ success: true }),
+ *           fail: (e) => resolve({ success: false, shouldRetry: true, error: e.errMsg }),
+ *         });
+ *       });
+ *     });
+ *   },
+ * });
+ * ```
+ */
+export function setUpload(callback: UploadCallback | null): void {
+  if (!globalAemeath) {
+    if (typeof console !== 'undefined' && console.warn) {
+      console.warn(
+        '[Aemeath] setUpload() was called before initAemeath(). '
+          + 'The callback is dropped. Call initAemeath() first.',
+      );
+    }
+    return;
+  }
+  const existing = globalAemeath.getPluginInstance('upload') as UploadPlugin | undefined;
+  if (existing) {
+    existing.setOnUpload(callback);
+    return;
+  }
+  const onUpload: UploadCallback = callback ?? (async () => ({ success: true }));
+  globalAemeath.use(
+    new UploadPlugin({
+      onUpload,
+      cache: { enabled: true },
+    }),
+  );
 }
 
 /**

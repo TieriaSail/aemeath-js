@@ -10,17 +10,7 @@ import { PluginPriority } from '../types';
 import type { PlatformAdapter } from '../platform/types';
 import { RouteMatcher, type RouteMatchConfig } from '../utils/routeMatcher';
 import { getEarlyErrorCaptureScript } from '../build-plugins/early-error-script';
-
-interface EarlyErrorExtended extends Error {
-  type?: string;
-  filename?: string;
-  lineno?: number;
-  colno?: number;
-  source?: string;
-  earlyError?: boolean;
-  captureTimestamp?: number;
-  device?: unknown;
-}
+import { forwardEarlyError } from '../utils/forwardEarlyError';
 
 // 重新导出 RouteMatchConfig 以保持向后兼容
 export type { RouteMatchConfig } from '../utils/routeMatcher';
@@ -148,19 +138,11 @@ export class EarlyErrorCapturePlugin implements AemeathPlugin {
         return;
       }
 
+      // R17（v2.4.0-beta.3）：转发逻辑统一抽到 src/utils/forwardEarlyError.ts，
+      // 让本插件与 src/browser/index.ts 的独立 IIFE bundle 共用同一份 helper，
+      // 输出完全相同的 LogEntry。详见 helper 文档头部「历史背景 / 统一方案」。
       errors.forEach((earlyError) => {
-        const err = new Error(earlyError.message || 'Early error') as EarlyErrorExtended;
-        err.type = earlyError.type;
-        err.stack = earlyError.stack ?? undefined;
-        err.filename = earlyError.filename;
-        err.lineno = earlyError.lineno;
-        err.colno = earlyError.colno;
-        err.source = earlyError.source;
-        err.earlyError = true;
-        err.captureTimestamp = earlyError.timestamp;
-        err.device = earlyError.device;
-
-        this.logger!.error(`Early ${earlyError.type} error`, { error: err });
+        forwardEarlyError(this.logger!, earlyError);
       });
     });
   }

@@ -212,6 +212,56 @@ describe('src/miniprogram.ts 精简入口（源码）', () => {
     expect(logger.platform.type).toBe('miniapp');
     expect((logger.platform as { vendor?: string }).vendor).toBe('alipay');
   });
+
+  // ==================== setUpload (R19 / 增强 #2 - miniprogram 对称) ====================
+  describe('setUpload (R19 / 增强 #2)', () => {
+    it('未 init 时 setUpload 应警告且 no-op', async () => {
+      const mod = await import('../src/miniprogram');
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      mod.setUpload(async () => ({ success: true }));
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      expect(warnSpy.mock.calls[0][0]).toMatch(/setUpload\(\) was called before initAemeath/);
+      warnSpy.mockRestore();
+    });
+
+    it('initAemeath 没传 upload 时，setUpload 应懒装载 UploadPlugin', async () => {
+      const mod = await import('../src/miniprogram');
+      const platform = mod.createMiniAppAdapter('wechat', createFakeWx());
+      const logger = mod.initAemeath({ platform });
+      expect(logger.hasPlugin('upload')).toBe(false);
+      mod.setUpload(async () => ({ success: true }));
+      expect(logger.hasPlugin('upload')).toBe(true);
+    });
+
+    it('initAemeath({ upload }) 已经装了 UploadPlugin 时，setUpload 应替换内部 onUpload', async () => {
+      const mod = await import('../src/miniprogram');
+      const platform = mod.createMiniAppAdapter('wechat', createFakeWx());
+      const initialUpload = vi.fn(async () => ({ success: true }));
+      const logger = mod.initAemeath({ platform, upload: initialUpload });
+
+      const replacement = vi.fn(async () => ({ success: true }));
+      mod.setUpload(replacement);
+
+      logger.error('after setUpload');
+      await new Promise((r) => setTimeout(r, 100));
+
+      expect(replacement).toHaveBeenCalled();
+      expect(initialUpload).not.toHaveBeenCalled();
+    });
+
+    it('setUpload(null)：替换为 no-op', async () => {
+      const mod = await import('../src/miniprogram');
+      const platform = mod.createMiniAppAdapter('wechat', createFakeWx());
+      const initialUpload = vi.fn(async () => ({ success: true }));
+      const logger = mod.initAemeath({ platform, upload: initialUpload });
+
+      mod.setUpload(null);
+      logger.error('after pause');
+      await new Promise((r) => setTimeout(r, 100));
+
+      expect(initialUpload).not.toHaveBeenCalled();
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------

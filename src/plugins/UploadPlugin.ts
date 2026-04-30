@@ -254,6 +254,44 @@ export class UploadPlugin implements AemeathPlugin {
     };
   }
 
+  /**
+   * 在运行时替换 `onUpload` 回调
+   *
+   * 适用于：endpoint / token / authorization header 在 logger 初始化之后才能
+   * 拿到的场景（典型：用户登录后才能拿到 access token；多租户应用按租户切换
+   * upload endpoint）。
+   *
+   * **保留状态**：队列里已经在排队的日志会用新的回调上报；正在飞行的 in-flight
+   * 请求仍走旧回调（不打断它）。getPriority / queue / cache 等其他配置不变。
+   *
+ * 如果传 `null`，会替换成一个永远 `success: true` 的 no-op 回调（**注意**：
+ * 队列项以此被**成功**出队并被丢弃，并非「失败→重试」，也不等于冻结
+ * 整块持久化缓存 —— 这是 "暂停上报（吞掉）" 而不是 "上报失败"）。
+   *
+   * @param callback 新的上传回调（传 `null` 暂停上报）
+   *
+   * @example
+   * ```ts
+   * const upload = logger.getPluginInstance('upload') as UploadPlugin;
+   * upload.setOnUpload(async (log) => {
+   *   const res = await fetch(`${userEndpoint}/api/logs`, {
+   *     method: 'POST',
+   *     headers: { Authorization: `Bearer ${userToken}` },
+   *     body: JSON.stringify(log),
+   *   });
+   *   return { success: res.ok };
+   * });
+   * ```
+   */
+  public setOnUpload(callback: UploadCallback | null): void {
+    if (callback === null) {
+      // no-op：返回 success 让队列消化掉 → 不上报，也不残留 retry
+      this.config.onUpload = async () => ({ success: true });
+    } else {
+      this.config.onUpload = callback;
+    }
+  }
+
   /** 调试日志（仅在 debug 模式输出） */
   private log(...args: unknown[]): void {
     if (this.debugEnabled) {

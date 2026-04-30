@@ -134,6 +134,7 @@ export {
   resetAemeath,
   isAemeathInitialized,
   setBeforeSend,
+  setUpload,
 } from './singleton';
 
 export type { AemeathInitOptions, RouteMatchConfig } from './singleton';

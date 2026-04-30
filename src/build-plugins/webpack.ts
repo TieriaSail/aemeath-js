@@ -64,6 +64,27 @@ export interface AemeathEarlyErrorWebpackPluginOptions extends EarlyErrorScriptO
    * @default 'aemeath-early-error.js'
    */
   filename?: string;
+
+  /**
+   * CSP `nonce` 属性（Content-Security-Policy）
+   *
+   * 当应用启用了严格的 CSP（如 `script-src 'self' 'nonce-xxx'`）时，
+   * 内联脚本必须携带匹配的 `nonce` 属性才会被浏览器执行，否则会被 CSP 静默
+   * 拦截、整个早期错误捕获机制失能。
+   *
+   * 提供此选项后，注入的 `<script>` 标签会带上 `nonce="<value>"` 属性。
+   *
+   * **仅在 inject 模式下生效**（即通过 html-webpack-plugin 注入）。
+   * file 模式下脚本是独立的 .js 文件，由用户手动在 HTML 中引入，nonce
+   * 应由用户在 `<script src="aemeath-early-error.js" nonce="...">` 中
+   * 自行设置。
+   *
+   * @example
+   * ```js
+   * new AemeathEarlyErrorWebpackPlugin({ nonce: process.env.CSP_NONCE })
+   * ```
+   */
+  nonce?: string;
 }
 
 /**
@@ -89,15 +110,21 @@ export interface AemeathEarlyErrorWebpackPluginOptions extends EarlyErrorScriptO
  * ```
  */
 export class AemeathEarlyErrorWebpackPlugin {
-  private readonly pluginOptions: { enabled: boolean; mode: 'auto' | 'inject' | 'file'; filename: string };
+  private readonly pluginOptions: {
+    enabled: boolean;
+    mode: 'auto' | 'inject' | 'file';
+    filename: string;
+    nonce?: string;
+  };
   private readonly scriptOptions: EarlyErrorScriptOptions;
 
   constructor(options: AemeathEarlyErrorWebpackPluginOptions = {}) {
-    const { enabled, mode, filename, ...scriptOpts } = options;
+    const { enabled, mode, filename, nonce, ...scriptOpts } = options;
     this.pluginOptions = {
       enabled: enabled ?? true,
       mode: mode ?? 'auto',
       filename: filename ?? 'aemeath-early-error.js',
+      nonce,
     };
     this.scriptOptions = scriptOpts;
   }
@@ -155,10 +182,16 @@ export class AemeathEarlyErrorWebpackPlugin {
         data: HtmlWebpackPluginData,
         callback: (err: Error | null, data: HtmlWebpackPluginData) => void,
       ) => {
+        // nonce 仅在用户显式提供时附加。空字符串在 CSP 语义下等同于
+        // 「没有 nonce」，浏览器仍会拦截，所以也排除。
+        const attributes = this.pluginOptions.nonce
+          ? { nonce: this.pluginOptions.nonce }
+          : undefined;
         const scriptTag = {
           tagName: 'script',
           innerHTML: getEarlyErrorCaptureScript(this.scriptOptions),
           voidTag: false,
+          ...(attributes ? { attributes } : {}),
         };
 
         data.headTags.unshift(scriptTag);

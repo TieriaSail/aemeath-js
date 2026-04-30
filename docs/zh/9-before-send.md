@@ -423,3 +423,20 @@ class MyRedactPlugin implements AemeathPlugin {
 
 logger.use(new MyRedactPlugin());
 ```
+
+---
+
+## 十、`setUpload`（运行时绑定上传）
+
+与 `beforeSend` / `setBeforeSend` 对照阅读。从 **`aemeath-js` 主入口**导入：
+
+```ts
+import { initAemeath, setBeforeSend, setUpload } from 'aemeath-js';
+```
+
+在 Logger 已存在时再绑定或替换上传函数（例如登录后才拿到 token / endpoint）。
+
+- **小程序**：使用精简入口导出的 `setUpload`，语义与 Web 对称。
+- **传 `null`**：内部替换为「恒返回 `success: true`」的 no-op——队列里待上报项会以**成功**出队并被丢弃，**不是**失败重试；也不是整块冻结离线缓存。
+- **懒装载**：若尚未装有 `UploadPlugin`，`setUpload(fn)` 会安装一个带默认 queue 配置的 `UploadPlugin`。
+- **勿与增量 `initAemeath` 混搭踩坑**：若已通过 `setUpload` 装好 `UploadPlugin`，再次 `initAemeath({ upload, queue })` 时，`upload`/`queue` 等可能不会被采纳（见控制台告警）；请继续用 `setUpload(...)`，或先 `resetAemeath()` 再完整传入配置。

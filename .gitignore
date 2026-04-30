@@ -21,6 +21,7 @@ npm-debug.log*
 
 # Test
 coverage/
+.vite-e2e-fixtures/
 
 # Misc
 *.tgz

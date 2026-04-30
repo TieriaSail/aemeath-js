@@ -414,3 +414,20 @@ class MyRedactPlugin implements AemeathPlugin {
 
 logger.use(new MyRedactPlugin());
 ```
+
+---
+
+## 10. `setUpload` (bind/replace upload at runtime)
+
+Documented next to `beforeSend` so both runtime APIs are discoverable together:
+
+```ts
+import { initAemeath, setBeforeSend, setUpload } from 'aemeath-js';
+```
+
+Use `setUpload(callback)` once a logger exists to bind or replace the upload hook (e.g. token or endpoint known only after login).
+
+- **Mini-program**: export from the miniprogram entry; semantics match web.
+- **Passing `null`**: installs a noop that always `{ success: true }` — queued items **drain as successful uploads** and are dropped, **not** “failure + retry”; it does **not** mean “freeze the whole offline journal”.
+- **Lazy install**: if `UploadPlugin` is missing, `setUpload(fn)` installs one with default queue settings.
+- **Incremental `initAemeath` caveat**: after `UploadPlugin` exists via `setUpload`, a later `initAemeath({ upload, queue })` may **ignore** those fields (warnings in console); keep using `setUpload(...)`, or `resetAemeath()` and re-init fully when queue options must apply.
