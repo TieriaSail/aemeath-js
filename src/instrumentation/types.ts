@@ -7,6 +7,32 @@
  */
 
 /**
+ * Low-cardinality error classification following OpenTelemetry `error.type`
+ * semantic conventions. Designed for aggregation and alerting.
+ */
+export type NetworkErrorType =
+  | 'network.offline'
+  | 'network.timeout'
+  | 'network.aborted'
+  | 'network.connection_refused'
+  | 'network.unknown';
+
+/**
+ * Structured diagnostic detail attached to failed network events.
+ * Provides machine-readable evidence for root-cause analysis.
+ */
+export interface NetworkErrorDetail {
+  /** navigator.onLine value at the time of failure */
+  navigatorOnLine?: boolean;
+  /** XHR readyState at the time of failure (0-4) */
+  readyState?: number;
+  /** HTTP status code if one was received (typically 0 for network errors) */
+  statusCode?: number;
+  /** Browser-original error message or exception toString */
+  raw?: string;
+}
+
+/**
  * Normalized network request event emitted by all instrumentation modules.
  */
 export interface NetworkEvent {
@@ -17,7 +43,12 @@ export interface NetworkEvent {
   statusText?: string;
   duration: number;
   timestamp: number;
+  /** Human-readable error message (backward compatible) */
   error?: string;
+  /** Low-cardinality error classification for aggregation */
+  errorType?: NetworkErrorType;
+  /** Structured diagnostic evidence for debugging */
+  errorDetail?: NetworkErrorDetail;
   requestBody?: unknown;
   responseBody?: unknown;
   responseCode?: number | string;

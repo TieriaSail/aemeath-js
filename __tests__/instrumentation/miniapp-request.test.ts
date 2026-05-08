@@ -238,7 +238,7 @@ describe('instrumentMiniAppRequest', () => {
 
     api.request!({ url: '/api' });
 
-    expect(events[0]!.error).toBe('http status 500');
+    expect(events[0]!.error).toBe('Network Error: http status 500');
     unsub();
   });
 

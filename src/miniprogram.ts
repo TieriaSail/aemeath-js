@@ -97,6 +97,8 @@ export { instrumentMiniAppRequest } from './instrumentation/miniapp-request';
 export type { MiniAppRequestAPI } from './instrumentation/miniapp-request';
 export type {
   NetworkEvent,
+  NetworkErrorType,
+  NetworkErrorDetail,
   InstrumentOptions,
   NetworkHandler,
   Unsubscribe as NetworkUnsubscribe,

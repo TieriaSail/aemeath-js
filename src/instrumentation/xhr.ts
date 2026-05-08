@@ -9,7 +9,7 @@
  * - Cleans up event listeners on error/timeout/loadend to avoid leaks.
  */
 
-import type { NetworkEvent, NetworkHandler, InstrumentOptions, Unsubscribe } from './types';
+import type { NetworkEvent, NetworkHandler, InstrumentOptions, Unsubscribe, NetworkErrorType, NetworkErrorDetail } from './types';
 import { safeParseJSON, extractBusinessInfo, captureRequestBody } from './helpers';
 
 // ---------------------------------------------------------------------------
@@ -190,13 +190,26 @@ function installPatch(): boolean {
     const handleError = () => {
       if (isRecorded) return;
       isRecorded = true;
-      const isOnline = typeof navigator !== 'undefined' ? navigator.onLine : true;
-      let errorMessage = 'Network Error';
-      if (!isOnline) {
+      const navigatorOnLine = typeof navigator !== 'undefined' ? navigator.onLine : true;
+
+      let errorType: NetworkErrorType;
+      let errorMessage: string;
+      if (!navigatorOnLine) {
+        errorType = 'network.offline';
         errorMessage = 'Network Error: Device appears to be offline';
-      } else if (this.status === 0) {
-        errorMessage = `Network Error: No response received (readyState=${this.readyState})`;
+      } else if (this.readyState < 4 && this.status === 0) {
+        errorType = 'network.aborted';
+        errorMessage = `Network Error: Request aborted (readyState=${this.readyState})`;
+      } else {
+        errorType = 'network.connection_refused';
+        errorMessage = `Network Error: No response received (status=${this.status})`;
       }
+
+      const errorDetail: NetworkErrorDetail = {
+        navigatorOnLine,
+        readyState: this.readyState,
+        statusCode: this.status,
+      };
 
       notifyFiltered(info.url, {
         type: 'xhr',
@@ -208,6 +221,8 @@ function installPatch(): boolean {
         timestamp: info.startTime,
         requestBody: info.requestBody,
         error: errorMessage,
+        errorType,
+        errorDetail,
       });
       cleanup();
     };
@@ -216,6 +231,8 @@ function installPatch(): boolean {
       if (isRecorded) return;
       isRecorded = true;
       const duration = Date.now() - info.startTime;
+      const navigatorOnLine = typeof navigator !== 'undefined' ? navigator.onLine : true;
+
       notifyFiltered(info.url, {
         type: 'xhr',
         url: info.url,
@@ -226,6 +243,12 @@ function installPatch(): boolean {
         timestamp: info.startTime,
         requestBody: info.requestBody,
         error: `Request Timeout: No response within ${duration}ms`,
+        errorType: 'network.timeout',
+        errorDetail: {
+          navigatorOnLine,
+          readyState: this.readyState,
+          statusCode: 0,
+        },
       });
       cleanup();
     };

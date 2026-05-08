@@ -10,7 +10,7 @@
  * - Response body truncation via maxResponseBodySize.
  */
 
-import type { NetworkEvent, NetworkHandler, InstrumentOptions, Unsubscribe } from './types';
+import type { NetworkEvent, NetworkHandler, InstrumentOptions, Unsubscribe, NetworkErrorType, NetworkErrorDetail } from './types';
 import { safeParseJSON, extractBusinessInfo, captureRequestBody } from './helpers';
 
 // ---------------------------------------------------------------------------
@@ -138,11 +138,27 @@ function installPatch(): boolean {
       notifyFiltered(url, event);
       return response;
     } catch (error) {
-      const isOnline = typeof navigator !== 'undefined' ? navigator.onLine : true;
-      let errorMessage = error instanceof Error ? error.message : String(error);
-      if (!isOnline && !errorMessage.includes('offline')) {
-        errorMessage = `${errorMessage} (device appears to be offline)`;
+      const navigatorOnLine = typeof navigator !== 'undefined' ? navigator.onLine : true;
+      const rawMessage = error instanceof Error ? error.message : String(error);
+
+      let errorType: NetworkErrorType;
+      let errorMessage: string;
+      if (!navigatorOnLine) {
+        errorType = 'network.offline';
+        errorMessage = `Network Error: Device appears to be offline`;
+      } else if (rawMessage.toLowerCase().includes('abort')) {
+        errorType = 'network.aborted';
+        errorMessage = `Network Error: Request aborted`;
+      } else {
+        errorType = 'network.connection_refused';
+        errorMessage = `Network Error: ${rawMessage}`;
       }
+
+      const errorDetail: NetworkErrorDetail = {
+        navigatorOnLine,
+        statusCode: 0,
+        raw: rawMessage,
+      };
 
       const event: NetworkEvent = {
         type: 'fetch',
@@ -154,6 +170,8 @@ function installPatch(): boolean {
         timestamp: startTime,
         requestBody,
         error: errorMessage,
+        errorType,
+        errorDetail,
       };
 
       notifyFiltered(url, event);

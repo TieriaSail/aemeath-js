@@ -9,7 +9,7 @@
  * - Safe restoration: only restores if no third-party patch was applied after ours.
  */
 
-import type { NetworkEvent, NetworkHandler, InstrumentOptions, Unsubscribe } from './types';
+import type { NetworkEvent, NetworkHandler, InstrumentOptions, Unsubscribe, NetworkErrorType, NetworkErrorDetail } from './types';
 
 // ---------------------------------------------------------------------------
 // MiniApp request API shape (minimal)
@@ -121,6 +121,22 @@ function installPatch(api: MiniAppRequestAPI, state: PatchState): void {
       },
       fail: (err: Record<string, unknown>) => {
         const duration = Date.now() - startTime;
+        const rawMessage = String(err['errMsg'] || err['errorMessage'] || 'Request failed');
+
+        let errorType: NetworkErrorType;
+        if (rawMessage.includes('timeout')) {
+          errorType = 'network.timeout';
+        } else if (rawMessage.includes('abort')) {
+          errorType = 'network.aborted';
+        } else {
+          errorType = 'network.unknown';
+        }
+
+        const errorDetail: NetworkErrorDetail = {
+          statusCode: 0,
+          raw: rawMessage,
+        };
+
         notifyFiltered(state, url, {
           type: 'request',
           url,
@@ -130,7 +146,9 @@ function installPatch(api: MiniAppRequestAPI, state: PatchState): void {
           duration,
           timestamp: startTime,
           requestBody,
-          error: String(err['errMsg'] || err['errorMessage'] || 'Request failed'),
+          error: `Network Error: ${rawMessage}`,
+          errorType,
+          errorDetail,
         });
 
         if (typeof reqOptions['fail'] === 'function') {

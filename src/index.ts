@@ -97,6 +97,8 @@ export type {
 // ==================== Instrumentation 层 ====================
 export type {
   NetworkEvent,
+  NetworkErrorType,
+  NetworkErrorDetail,
   InstrumentOptions,
   NetworkHandler,
   Unsubscribe as NetworkUnsubscribe,
