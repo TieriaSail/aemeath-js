@@ -74,6 +74,8 @@ export type {
   NetworkPluginOptions,
   NetworkLog,
   NetworkLogType,
+  NetworkErrorType,
+  NetworkErrorDetail,
 } from './plugins/NetworkPlugin';
 
 // ==================== BeforeSend 钩子（隐私脱敏 / 全链路过滤） ====================

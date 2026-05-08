@@ -16,6 +16,31 @@ import { PluginPriority } from '../types';
 import { RouteMatcher, type RouteMatchConfig } from '../utils/routeMatcher';
 
 /**
+ * Low-cardinality error classification following OpenTelemetry `error.type`
+ * semantic conventions.
+ */
+export type NetworkErrorType =
+  | 'network.offline'
+  | 'network.timeout'
+  | 'network.aborted'
+  | 'network.connection_refused'
+  | 'network.unknown';
+
+/**
+ * Structured diagnostic detail for failed network events.
+ */
+export interface NetworkErrorDetail {
+  /** navigator.onLine value at the time of failure */
+  navigatorOnLine?: boolean;
+  /** XHR readyState at the time of failure (0-4) */
+  readyState?: number;
+  /** HTTP status code (typically 0 for network errors) */
+  statusCode?: number;
+  /** Browser-original error message or exception toString */
+  raw?: string;
+}
+
+/**
  * 网络请求日志
  */
 export interface NetworkLog {
@@ -35,6 +60,10 @@ export interface NetworkLog {
   timestamp: number;
   /** 错误信息（如果失败） */
   error?: string;
+  /** 低基数错误分类，用于聚合 */
+  errorType?: NetworkErrorType;
+  /** 结构化诊断证据 */
+  errorDetail?: NetworkErrorDetail;
   /** 请求体（如果配置捕获） */
   requestBody?: unknown;
   /** 响应体（如果配置捕获） */
@@ -416,6 +445,12 @@ export class NetworkPlugin implements AemeathPlugin {
     if (log.error) {
       context['error'] = log.error;
     }
+    if (log.errorType) {
+      context['errorType'] = log.errorType;
+    }
+    if (log.errorDetail) {
+      context['errorDetail'] = log.errorDetail;
+    }
 
     // 根据状态选择日志级别
     if (isError) {
@@ -521,27 +556,42 @@ export class NetworkPlugin implements AemeathPlugin {
 
         return response;
       } catch (error) {
-        // fetch 抛出异常时，通常是网络层错误（没有 HTTP 响应）
-        const isOnline =
+        const navigatorOnLine =
           typeof navigator !== 'undefined' ? navigator.onLine : true;
-        let errorMessage =
+        const rawMessage =
           error instanceof Error ? error.message : String(error);
 
-        // 补充离线状态信息
-        if (!isOnline && !errorMessage.includes('offline')) {
-          errorMessage = `${errorMessage} (device appears to be offline)`;
+        let errorType: NetworkErrorType;
+        let errorMessage: string;
+        if (!navigatorOnLine) {
+          errorType = 'network.offline';
+          errorMessage = 'Network Error: Device appears to be offline';
+        } else if (rawMessage.toLowerCase().includes('abort')) {
+          errorType = 'network.aborted';
+          errorMessage = 'Network Error: Request aborted';
+        } else {
+          errorType = 'network.connection_refused';
+          errorMessage = `Network Error: ${rawMessage}`;
         }
+
+        const errorDetail: NetworkErrorDetail = {
+          navigatorOnLine,
+          statusCode: 0,
+          raw: rawMessage,
+        };
 
         self.recordRequest({
           type: 'fetch',
           url,
           method,
-          status: 0, // 网络层错误，没有 HTTP 状态码
+          status: 0,
           statusText: 'Network Error',
           duration: Date.now() - startTime,
           timestamp: startTime,
           requestBody,
           error: errorMessage,
+          errorType,
+          errorDetail,
         });
 
         throw error;
@@ -679,60 +729,55 @@ export class NetworkPlugin implements AemeathPlugin {
 
       // 监听请求错误（网络层错误，不是 HTTP 4xx/5xx 错误）
       const handleError = () => {
-        // 防止重复记录
         if (isRecorded) return;
         isRecorded = true;
 
         const duration = Date.now() - info.startTime;
-
-        // 尝试获取更多诊断信息
-        // 当 error 事件触发时，status 通常是 0（表示网络层失败，没有收到 HTTP 响应）
-        const networkStatus = this.status; // 0 表示网络层错误，非 HTTP 错误
-        const isOnline =
+        const navigatorOnLine =
           typeof navigator !== 'undefined' ? navigator.onLine : true;
-        const readyState = this.readyState;
 
-        // 构建更详细的错误信息
-        // readyState: 0=UNSENT, 1=OPENED, 2=HEADERS_RECEIVED, 3=LOADING, 4=DONE
-        let errorMessage = 'Network Error';
-        const diagnosticInfo: string[] = [];
-
-        if (!isOnline) {
+        let errorType: NetworkErrorType;
+        let errorMessage: string;
+        if (!navigatorOnLine) {
+          errorType = 'network.offline';
           errorMessage = 'Network Error: Device appears to be offline';
+        } else if (this.readyState < 4 && this.status === 0) {
+          errorType = 'network.aborted';
+          errorMessage = `Network Error: Request aborted (readyState=${this.readyState})`;
         } else {
-          diagnosticInfo.push(`readyState=${readyState}`);
-          if (networkStatus === 0) {
-            diagnosticInfo.push('status=0 (no HTTP response)');
-            errorMessage = `Network Error: No response received (readyState=${readyState}, possible causes: CORS, DNS failure, connection refused, SSL error, server closed connection)`;
-          } else {
-            // 极少数情况下 error 事件时 status 不为 0
-            diagnosticInfo.push(`status=${networkStatus}`);
-            errorMessage = `Network Error: Unexpected error (status=${networkStatus}, readyState=${readyState})`;
-          }
+          errorType = 'network.connection_refused';
+          errorMessage = `Network Error: No response received (status=${this.status})`;
         }
+
+        const errorDetail: NetworkErrorDetail = {
+          navigatorOnLine,
+          readyState: this.readyState,
+          statusCode: this.status,
+        };
 
         self.recordRequest({
           type: 'xhr',
           url: info.url,
           method: info.method,
-          status: networkStatus, // 记录 status（通常是 0）
+          status: this.status,
           statusText: this.statusText || 'Network Error',
           duration,
           timestamp: info.startTime,
           requestBody: info.requestBody,
           error: errorMessage,
+          errorType,
+          errorDetail,
         });
-
-        // 注意：error 事件后 loadend 也会触发，cleanup 会在 loadend 中进行
       };
 
       // 监听请求超时
       const handleTimeout = () => {
-        // 防止重复记录
         if (isRecorded) return;
         isRecorded = true;
 
         const duration = Date.now() - info.startTime;
+        const navigatorOnLine =
+          typeof navigator !== 'undefined' ? navigator.onLine : true;
 
         self.recordRequest({
           type: 'xhr',
@@ -744,9 +789,13 @@ export class NetworkPlugin implements AemeathPlugin {
           timestamp: info.startTime,
           requestBody: info.requestBody,
           error: `Request Timeout: No response within ${duration}ms`,
+          errorType: 'network.timeout',
+          errorDetail: {
+            navigatorOnLine,
+            readyState: this.readyState,
+            statusCode: 0,
+          },
         });
-
-        // 注意：timeout 事件后 loadend 也会触发，cleanup 会在 loadend 中进行
       };
 
       this.addEventListener('readystatechange', handleReadyStateChange);
