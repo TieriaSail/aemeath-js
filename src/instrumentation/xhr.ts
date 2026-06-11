@@ -124,6 +124,7 @@ function installPatch(): boolean {
       this.removeEventListener('readystatechange', handleReadyStateChange);
       this.removeEventListener('loadend', handleLoadEnd);
       this.removeEventListener('error', handleError);
+      this.removeEventListener('abort', handleAbort);
       this.removeEventListener('timeout', handleTimeout);
     };
 
@@ -187,6 +188,9 @@ function installPatch(): boolean {
       cleanup();
     };
 
+    // Per WHATWG XHR spec, error / abort / timeout / load events are mutually
+    // exclusive. abort() fires the `abort` event, never `error` — so an
+    // `error` event always indicates a genuine network failure.
     const handleError = () => {
       if (isRecorded) return;
       isRecorded = true;
@@ -197,12 +201,11 @@ function installPatch(): boolean {
       if (!navigatorOnLine) {
         errorType = 'network.offline';
         errorMessage = 'Network Error: Device appears to be offline';
-      } else if (this.readyState < 4 && this.status === 0) {
-        errorType = 'network.aborted';
-        errorMessage = `Network Error: Request aborted (readyState=${this.readyState})`;
       } else {
-        errorType = 'network.connection_refused';
-        errorMessage = `Network Error: No response received (status=${this.status})`;
+        // The XHR error event does not expose the underlying cause
+        // (CORS / DNS / connection refused / SSL are indistinguishable).
+        errorType = 'network.unknown';
+        errorMessage = 'Network Error: No response received (possible causes: CORS, DNS failure, connection refused, SSL error)';
       }
 
       const errorDetail: NetworkErrorDetail = {
@@ -223,6 +226,34 @@ function installPatch(): boolean {
         error: errorMessage,
         errorType,
         errorDetail,
+      });
+      cleanup();
+    };
+
+    // The `abort` event is fired only by an explicit xhr.abort() call
+    // (spec-guaranteed, mutually exclusive with `error`), making this
+    // classification 100% reliable.
+    const handleAbort = () => {
+      if (isRecorded) return;
+      isRecorded = true;
+      const navigatorOnLine = typeof navigator !== 'undefined' ? navigator.onLine : true;
+
+      notifyFiltered(info.url, {
+        type: 'xhr',
+        url: info.url,
+        method: info.method,
+        status: 0,
+        statusText: 'Request Aborted',
+        duration: Date.now() - info.startTime,
+        timestamp: info.startTime,
+        requestBody: info.requestBody,
+        error: 'Network Error: Request aborted',
+        errorType: 'network.aborted',
+        errorDetail: {
+          navigatorOnLine,
+          readyState: this.readyState,
+          statusCode: 0,
+        },
       });
       cleanup();
     };
@@ -256,6 +287,7 @@ function installPatch(): boolean {
     this.addEventListener('readystatechange', handleReadyStateChange);
     this.addEventListener('loadend', handleLoadEnd);
     this.addEventListener('error', handleError);
+    this.addEventListener('abort', handleAbort);
     this.addEventListener('timeout', handleTimeout);
 
     return savedSend.call(this, body);

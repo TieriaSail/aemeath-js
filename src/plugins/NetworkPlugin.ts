@@ -12,11 +12,13 @@
 import type { AemeathPlugin, AemeathInterface } from '../types';
 import { PluginPriority } from '../types';
 import type { PlatformAdapter } from '../platform/types';
-import type { NetworkEvent, InstrumentOptions, Unsubscribe } from '../instrumentation/types';
+import type { NetworkEvent, NetworkErrorType, NetworkErrorDetail, InstrumentOptions, Unsubscribe } from '../instrumentation/types';
 import { instrumentFetch } from '../instrumentation/fetch';
 import { instrumentXHR } from '../instrumentation/xhr';
 import { instrumentMiniAppRequest } from '../instrumentation/miniapp-request';
 import { RouteMatcher, type RouteMatchConfig } from '../utils/routeMatcher';
+
+export type { NetworkErrorType, NetworkErrorDetail } from '../instrumentation/types';
 
 export interface NetworkLog {
   type: 'fetch' | 'xhr' | 'request';
@@ -27,6 +29,8 @@ export interface NetworkLog {
   duration: number;
   timestamp: number;
   error?: string;
+  errorType?: NetworkErrorType;
+  errorDetail?: NetworkErrorDetail;
   requestBody?: unknown;
   responseBody?: unknown;
   responseCode?: number | string;
@@ -45,6 +49,24 @@ export interface NetworkPluginOptions {
   maxResponseBodySize?: number;
   slowThreshold?: number;
   slowRequestExcludePatterns?: string[];
+  /**
+   * 不捕获这些 errorType 的网络错误。
+   * 匹配到的请求会在捕获层直接跳过（不记录、不上报、不产生 console 输出）。
+   *
+   * @example
+   * ignoreErrorTypes: ['network.aborted', 'network.offline']
+   *
+   * @default []
+   */
+  ignoreErrorTypes?: NetworkErrorType[];
+  /**
+   * 是否捕获主动取消（AbortController.abort()）的请求。
+   * 等价于 ignoreErrorTypes 中包含/不包含 'network.aborted' 的语法糖。
+   * 如果同时设置了 ignoreErrorTypes，两者取并集。
+   *
+   * @default false
+   */
+  captureAborted?: boolean;
   debug?: boolean;
   /**
    * 插件级路由匹配配置
@@ -62,12 +84,13 @@ export interface NetworkPluginOptions {
 type NetworkPluginConfig = Required<
   Omit<
     NetworkPluginOptions,
-    'urlFilter' | 'logTypes' | 'slowRequestExcludePatterns' | 'miniAppAPI' | 'routeMatch'
+    'urlFilter' | 'logTypes' | 'slowRequestExcludePatterns' | 'miniAppAPI' | 'routeMatch' | 'ignoreErrorTypes' | 'captureAborted'
   >
 > &
   Pick<NetworkPluginOptions, 'urlFilter' | 'miniAppAPI'> & {
     logTypes: Set<NetworkLogType>;
     slowRequestExcludePatterns: string[];
+    ignoreErrorTypes: Set<NetworkErrorType>;
   };
 
 export class NetworkPlugin implements AemeathPlugin {
@@ -93,6 +116,11 @@ export class NetworkPlugin implements AemeathPlugin {
       '.pdf', '.zip', '.rar',
     ];
 
+    const ignoreSet = new Set<NetworkErrorType>(options.ignoreErrorTypes ?? []);
+    if (!(options.captureAborted ?? false)) {
+      ignoreSet.add('network.aborted');
+    }
+
     this.config = {
       interceptFetch: options.interceptFetch ?? true,
       interceptXHR: options.interceptXHR ?? true,
@@ -106,6 +134,7 @@ export class NetworkPlugin implements AemeathPlugin {
         options.slowRequestExcludePatterns ?? defaultSlowExcludePatterns,
       debug: options.debug ?? false,
       miniAppAPI: options.miniAppAPI,
+      ignoreErrorTypes: ignoreSet,
     };
     this.pluginRouteMatch = options.routeMatch;
   }
@@ -164,6 +193,8 @@ export class NetworkPlugin implements AemeathPlugin {
       duration: event.duration,
       timestamp: event.timestamp,
       error: event.error,
+      errorType: event.errorType,
+      errorDetail: event.errorDetail,
       requestBody: event.requestBody,
       responseBody: event.responseBody,
       responseCode: event.responseCode,
@@ -265,6 +296,11 @@ export class NetworkPlugin implements AemeathPlugin {
   private recordRequest(log: NetworkLog): void {
     if (!this.logger) return;
 
+    if (log.errorType && this.config.ignoreErrorTypes.has(log.errorType)) {
+      this.log(`Ignored ${log.errorType}: ${log.method} ${log.url}`);
+      return;
+    }
+
     const isSlowExcluded = this.config.slowRequestExcludePatterns.some(
       (pattern) => log.url.toLowerCase().includes(pattern.toLowerCase()),
     );
@@ -286,6 +322,7 @@ export class NetworkPlugin implements AemeathPlugin {
     };
 
     if (log.status) tags['httpStatus'] = log.status;
+    if (log.errorType) tags['networkErrorType'] = log.errorType;
     if (isSlow) tags['slow'] = true;
 
     const context: Record<string, unknown> = {
@@ -307,6 +344,8 @@ export class NetworkPlugin implements AemeathPlugin {
       context['responseData'] = this.truncateData(log.responseBody, this.config.maxResponseBodySize);
     }
     if (log.error) context['error'] = log.error;
+    if (log.errorType) context['errorType'] = log.errorType;
+    if (log.errorDetail) context['errorDetail'] = log.errorDetail;
 
     if (isError) {
       this.logger.error(

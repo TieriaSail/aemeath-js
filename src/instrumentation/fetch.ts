@@ -139,18 +139,32 @@ function installPatch(): boolean {
       return response;
     } catch (error) {
       const navigatorOnLine = typeof navigator !== 'undefined' ? navigator.onLine : true;
-      const rawMessage = error instanceof Error ? error.message : String(error);
+      // Read `name` / `message` as plain properties instead of relying on
+      // `instanceof Error`: cross-realm errors (iframe / worker / jsdom)
+      // fail instanceof checks while still carrying the standard fields.
+      const errObj = error as { name?: unknown; message?: unknown } | null;
+      const rawMessage =
+        errObj != null && typeof errObj.message === 'string' ? errObj.message : String(error);
+      // Per WHATWG fetch spec, abort/timeout reject with a DOMException whose
+      // `name` is standardized ('AbortError' / 'TimeoutError'). `name` is
+      // locale-independent and reliable across browsers, unlike `message`.
+      const errName = errObj != null && typeof errObj.name === 'string' ? errObj.name : '';
 
       let errorType: NetworkErrorType;
       let errorMessage: string;
-      if (!navigatorOnLine) {
-        errorType = 'network.offline';
-        errorMessage = `Network Error: Device appears to be offline`;
-      } else if (rawMessage.toLowerCase().includes('abort')) {
+      if (errName === 'AbortError') {
         errorType = 'network.aborted';
-        errorMessage = `Network Error: Request aborted`;
+        errorMessage = 'Network Error: Request aborted';
+      } else if (errName === 'TimeoutError') {
+        errorType = 'network.timeout';
+        errorMessage = 'Network Error: Request timed out (AbortSignal.timeout)';
+      } else if (!navigatorOnLine) {
+        errorType = 'network.offline';
+        errorMessage = 'Network Error: Device appears to be offline';
       } else {
-        errorType = 'network.connection_refused';
+        // fetch TypeError does not expose the underlying cause
+        // (CORS / DNS / connection refused / SSL are indistinguishable).
+        errorType = 'network.unknown';
         errorMessage = `Network Error: ${rawMessage}`;
       }
 

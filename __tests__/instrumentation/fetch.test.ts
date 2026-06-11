@@ -89,6 +89,57 @@ describe('instrumentFetch', () => {
     unsub();
   });
 
+  // === errorType classification (W3C: DOMException name is standardized) ===
+
+  it('AbortError 应分类为 network.aborted（按 error.name 而非 message）', async () => {
+    const events: NetworkEvent[] = [];
+    // Real browsers reject with locale-dependent messages; only `name` is reliable
+    window.fetch = vi.fn().mockRejectedValue(new DOMException('The user aborted a request.', 'AbortError'));
+
+    const unsub = instrumentFetch((e) => events.push(e), defaultOptions());
+    await expect(window.fetch('/api/cancelled')).rejects.toThrow();
+
+    expect(events).toHaveLength(1);
+    expect(events[0]!.errorType).toBe('network.aborted');
+    expect(events[0]!.error).toBe('Network Error: Request aborted');
+    expect(events[0]!.errorDetail?.raw).toBe('The user aborted a request.');
+    unsub();
+  });
+
+  it('TimeoutError（AbortSignal.timeout）应分类为 network.timeout', async () => {
+    const events: NetworkEvent[] = [];
+    window.fetch = vi.fn().mockRejectedValue(new DOMException('The operation was aborted due to timeout', 'TimeoutError'));
+
+    const unsub = instrumentFetch((e) => events.push(e), defaultOptions());
+    await expect(window.fetch('/api/slow')).rejects.toThrow();
+
+    expect(events[0]!.errorType).toBe('network.timeout');
+    unsub();
+  });
+
+  it('TypeError（在线）应分类为 network.unknown', async () => {
+    const events: NetworkEvent[] = [];
+    window.fetch = vi.fn().mockRejectedValue(new TypeError('Failed to fetch'));
+
+    const unsub = instrumentFetch((e) => events.push(e), defaultOptions());
+    await expect(window.fetch('/api/fail')).rejects.toThrow();
+
+    expect(events[0]!.errorType).toBe('network.unknown');
+    unsub();
+  });
+
+  it('错误消息含 abort 字样但 name 非 AbortError 时不应误判为 aborted', async () => {
+    const events: NetworkEvent[] = [];
+    // e.g. a URL or server message that happens to contain "abort"
+    window.fetch = vi.fn().mockRejectedValue(new TypeError('connection to /api/abort-flow failed'));
+
+    const unsub = instrumentFetch((e) => events.push(e), defaultOptions());
+    await expect(window.fetch('/api/abort-flow')).rejects.toThrow();
+
+    expect(events[0]!.errorType).toBe('network.unknown');
+    unsub();
+  });
+
   // === Request body type branching (M-NEW-2) ===
 
   it('should capture string request body as parsed JSON', async () => {

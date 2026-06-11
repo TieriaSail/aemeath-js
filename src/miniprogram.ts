@@ -19,7 +19,7 @@ import { AemeathLogger } from './core/Logger';
 import { ErrorCapturePlugin } from './plugins/ErrorCapturePlugin';
 import { UploadPlugin, type UploadResult, type UploadCallback } from './plugins/UploadPlugin';
 import { SafeGuardPlugin, type SafeGuardMode } from './plugins/SafeGuardPlugin';
-import { NetworkPlugin, type NetworkLogType } from './plugins/NetworkPlugin';
+import { NetworkPlugin, type NetworkLogType, type NetworkErrorType } from './plugins/NetworkPlugin';
 import { BeforeSendPlugin } from './plugins/BeforeSendPlugin';
 import { createMiniAppAdapter } from './platform/miniapp';
 import type { BeforeSendHook, LogEntry } from './types';
@@ -220,6 +220,10 @@ export interface AemeathInitOptions {
     excludeUrls?: string[];
     slowRequestExcludePatterns?: string[];
     monitorAllSlowRequests?: boolean;
+    /** 不捕获这些 errorType 的网络错误（捕获层直接跳过） */
+    ignoreErrorTypes?: NetworkErrorType[];
+    /** 是否捕获主动取消的请求 @default false */
+    captureAborted?: boolean;
   };
 
   /**
@@ -383,6 +387,8 @@ export function initAemeath(options: AemeathInitOptions): AemeathLogger {
               )
           : undefined,
         routeMatch: options.network?.routeMatch,
+        ignoreErrorTypes: options.network?.ignoreErrorTypes,
+        captureAborted: options.network?.captureAborted,
       }),
     );
   }

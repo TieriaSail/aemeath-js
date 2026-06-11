@@ -40,7 +40,7 @@ function sendXHR(
     statusText?: string;
     responseText?: string;
     responseType?: XMLHttpRequestResponseType;
-    triggerEvent?: 'loadend' | 'error' | 'timeout';
+    triggerEvent?: 'loadend' | 'error' | 'timeout' | 'abort';
   },
 ): XMLHttpRequest {
   const xhr = new XMLHttpRequest();
@@ -147,6 +147,63 @@ describe('instrumentXHR', () => {
     xhr.dispatchEvent(new Event('loadend'));
     expect(events).toHaveLength(1);
 
+    unsub();
+  });
+
+  it('error 事件（在线）应分类为 network.unknown 而非 aborted', () => {
+    const events: NetworkEvent[] = [];
+    const unsub = instrumentXHR((e) => events.push(e), defaultOptions());
+
+    sendXHR('GET', '/api/fail', null, { status: 0, triggerEvent: 'error' });
+
+    expect(events).toHaveLength(1);
+    expect(events[0]!.errorType).toBe('network.unknown');
+    expect(events[0]!.errorDetail?.navigatorOnLine).toBe(true);
+    unsub();
+  });
+
+  it('error 事件（离线）应分类为 network.offline', () => {
+    const events: NetworkEvent[] = [];
+    vi.spyOn(navigator, 'onLine', 'get').mockReturnValue(false);
+    const unsub = instrumentXHR((e) => events.push(e), defaultOptions());
+
+    sendXHR('GET', '/api/fail', null, { status: 0, triggerEvent: 'error' });
+
+    expect(events[0]!.errorType).toBe('network.offline');
+    expect(events[0]!.errorDetail?.navigatorOnLine).toBe(false);
+    vi.restoreAllMocks();
+    unsub();
+  });
+
+  // === Abort event (spec: mutually exclusive with error) ===
+
+  it('abort 事件应分类为 network.aborted 且不与 loadend 重复记录', () => {
+    const events: NetworkEvent[] = [];
+    const unsub = instrumentXHR((e) => events.push(e), defaultOptions());
+
+    const xhr = sendXHR('GET', '/api/cancelled', null, { status: 0, triggerEvent: 'abort' });
+
+    expect(events).toHaveLength(1);
+    expect(events[0]!.errorType).toBe('network.aborted');
+    expect(events[0]!.error).toBe('Network Error: Request aborted');
+    expect(events[0]!.statusText).toBe('Request Aborted');
+    expect(events[0]!.status).toBe(0);
+
+    // Per spec, loadend fires after abort — must not produce a second event
+    xhr.dispatchEvent(new Event('loadend'));
+    expect(events).toHaveLength(1);
+
+    unsub();
+  });
+
+  it('timeout 事件应分类为 network.timeout', () => {
+    const events: NetworkEvent[] = [];
+    const unsub = instrumentXHR((e) => events.push(e), defaultOptions());
+
+    sendXHR('GET', '/api/slow', null, { status: 0, triggerEvent: 'timeout' });
+
+    expect(events).toHaveLength(1);
+    expect(events[0]!.errorType).toBe('network.timeout');
     unsub();
   });
 
