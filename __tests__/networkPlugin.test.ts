@@ -439,6 +439,167 @@ describe('NetworkPlugin', () => {
     });
   });
 
+  // ==================== abort 识别与 ignoreErrorTypes ====================
+
+  describe('abort 识别与 ignoreErrorTypes', () => {
+    let originalXHROpen: typeof XMLHttpRequest.prototype.open;
+    let originalXHRSend: typeof XMLHttpRequest.prototype.send;
+
+    beforeEach(() => {
+      originalXHROpen = XMLHttpRequest.prototype.open;
+      originalXHRSend = XMLHttpRequest.prototype.send;
+    });
+
+    afterEach(() => {
+      XMLHttpRequest.prototype.open = originalXHROpen;
+      XMLHttpRequest.prototype.send = originalXHRSend;
+    });
+
+    function dispatchXHRAbort() {
+      const xhr = new XMLHttpRequest();
+      xhr.open('GET', '/api/cancelled');
+      xhr.send(null);
+      Object.defineProperty(xhr, 'readyState', { value: 4, writable: true, configurable: true });
+      Object.defineProperty(xhr, 'status', { value: 0, writable: true, configurable: true });
+      Object.defineProperty(xhr, 'statusText', { value: '', writable: true, configurable: true });
+      xhr.dispatchEvent(new Event('abort'));
+      xhr.dispatchEvent(new Event('loadend'));
+      return xhr;
+    }
+
+    it('XHR abort 默认不应被记录（captureAborted 默认 false）', () => {
+      const logListener = vi.fn();
+      logger.on('log', logListener);
+
+      const plugin = new NetworkPlugin({ interceptXHR: true });
+      logger.use(plugin);
+
+      dispatchXHRAbort();
+
+      expect(logListener).not.toHaveBeenCalled();
+    });
+
+    it('captureAborted=true 时 XHR abort 应记录为 network.aborted', () => {
+      const logListener = vi.fn();
+      logger.on('log', logListener);
+
+      const plugin = new NetworkPlugin({ interceptXHR: true, captureAborted: true });
+      logger.use(plugin);
+
+      dispatchXHRAbort();
+
+      expect(logListener).toHaveBeenCalledTimes(1);
+      const entry = logListener.mock.calls[0][0];
+      expect(entry.tags?.networkErrorType).toBe('network.aborted');
+      expect(entry.context?.errorType).toBe('network.aborted');
+      expect(entry.context?.error).toBe('Network Error: Request aborted');
+    });
+
+    it('fetch AbortError 默认不应被记录', async () => {
+      const logListener = vi.fn();
+      logger.on('log', logListener);
+
+      window.fetch = vi.fn().mockRejectedValue(
+        new DOMException('The user aborted a request.', 'AbortError'),
+      );
+
+      const plugin = new NetworkPlugin();
+      logger.use(plugin);
+
+      try {
+        await window.fetch('/api/cancelled');
+      } catch {
+        // 预期抛出
+      }
+
+      expect(logListener).not.toHaveBeenCalled();
+    });
+
+    it('captureAborted=true 时 fetch AbortError 应记录为 network.aborted', async () => {
+      const logListener = vi.fn();
+      logger.on('log', logListener);
+
+      window.fetch = vi.fn().mockRejectedValue(
+        new DOMException('The user aborted a request.', 'AbortError'),
+      );
+
+      const plugin = new NetworkPlugin({ captureAborted: true });
+      logger.use(plugin);
+
+      try {
+        await window.fetch('/api/cancelled');
+      } catch {
+        // 预期抛出
+      }
+
+      expect(logListener).toHaveBeenCalledTimes(1);
+      const entry = logListener.mock.calls[0][0];
+      expect(entry.tags?.networkErrorType).toBe('network.aborted');
+    });
+
+    it('XHR error 事件应分类为 network.unknown 且不受 abort 过滤影响', () => {
+      const logListener = vi.fn();
+      logger.on('log', logListener);
+
+      const plugin = new NetworkPlugin({ interceptXHR: true });
+      logger.use(plugin);
+
+      const xhr = new XMLHttpRequest();
+      xhr.open('GET', '/api/fail');
+      xhr.send(null);
+      Object.defineProperty(xhr, 'readyState', { value: 4, writable: true, configurable: true });
+      Object.defineProperty(xhr, 'status', { value: 0, writable: true, configurable: true });
+      xhr.dispatchEvent(new Event('error'));
+
+      expect(logListener).toHaveBeenCalledTimes(1);
+      const entry = logListener.mock.calls[0][0];
+      expect(entry.tags?.networkErrorType).toBe('network.unknown');
+      expect(entry.level).toBe('error');
+    });
+
+    it('ignoreErrorTypes 应过滤指定类型（如 network.unknown）', () => {
+      const logListener = vi.fn();
+      logger.on('log', logListener);
+
+      const plugin = new NetworkPlugin({
+        interceptXHR: true,
+        ignoreErrorTypes: ['network.unknown'],
+      });
+      logger.use(plugin);
+
+      const xhr = new XMLHttpRequest();
+      xhr.open('GET', '/api/fail');
+      xhr.send(null);
+      Object.defineProperty(xhr, 'readyState', { value: 4, writable: true, configurable: true });
+      Object.defineProperty(xhr, 'status', { value: 0, writable: true, configurable: true });
+      xhr.dispatchEvent(new Event('error'));
+
+      expect(logListener).not.toHaveBeenCalled();
+    });
+
+    it('错误消息含 abort 字样但 name 非 AbortError 不应被误过滤', async () => {
+      const logListener = vi.fn();
+      logger.on('log', logListener);
+
+      window.fetch = vi.fn().mockRejectedValue(
+        new TypeError('connection to /api/abort-flow failed'),
+      );
+
+      const plugin = new NetworkPlugin();
+      logger.use(plugin);
+
+      try {
+        await window.fetch('/api/abort-flow');
+      } catch {
+        // 预期抛出
+      }
+
+      // 真实网络错误（network.unknown）不应被 abort 过滤吞掉
+      expect(logListener).toHaveBeenCalledTimes(1);
+      expect(logListener.mock.calls[0][0].tags?.networkErrorType).toBe('network.unknown');
+    });
+  });
+
   describe('业务码提取', () => {
     it('应从响应中提取 code 和 message', async () => {
       const logListener = vi.fn();

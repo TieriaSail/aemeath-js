@@ -13,7 +13,7 @@ import { ErrorCapturePlugin } from '../plugins/ErrorCapturePlugin';
 import { EarlyErrorCapturePlugin } from '../plugins/EarlyErrorCapturePlugin';
 import { UploadPlugin, type UploadResult } from '../plugins/UploadPlugin';
 import { SafeGuardPlugin, type SafeGuardMode } from '../plugins/SafeGuardPlugin';
-import { NetworkPlugin, type NetworkLogType } from '../plugins/NetworkPlugin';
+import { NetworkPlugin, type NetworkLogType, type NetworkErrorType } from '../plugins/NetworkPlugin';
 import { BeforeSendPlugin } from '../plugins/BeforeSendPlugin';
 import type { BeforeSendHook, LogEntry } from '../types';
 import type { RouteMatchConfig } from '../utils/routeMatcher';
@@ -301,6 +301,22 @@ export interface AemeathInitOptions {
      * @default false
      */
     monitorAllSlowRequests?: boolean;
+    /**
+     * 不捕获这些 errorType 的网络错误（捕获层直接跳过）
+     *
+     * @example
+     * ignoreErrorTypes: ['network.offline']
+     */
+    ignoreErrorTypes?: NetworkErrorType[];
+    /**
+     * 是否捕获主动取消（AbortController.abort() / xhr.abort()）的请求
+     *
+     * 路由切换、搜索防抖、缓存命中中止等场景产生的主动取消属于预期行为，
+     * 默认不捕获。需要观测时显式设为 true。
+     *
+     * @default false
+     */
+    captureAborted?: boolean;
   };
 
   /**
@@ -501,6 +517,8 @@ export function initAemeath(options: AemeathInitOptions = {}): AemeathLogger {
                 url.includes(pattern),
               )
           : undefined,
+        ignoreErrorTypes: options.network?.ignoreErrorTypes,
+        captureAborted: options.network?.captureAborted,
       }),
     );
   }

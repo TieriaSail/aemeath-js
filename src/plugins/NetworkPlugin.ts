@@ -149,6 +149,26 @@ export interface NetworkPluginOptions {
   slowRequestExcludePatterns?: string[];
 
   /**
+   * 不捕获这些 errorType 的网络错误。
+   * 匹配到的请求会在捕获层直接跳过（不记录、不上报、不产生 console 输出）。
+   *
+   * @example
+   * ignoreErrorTypes: ['network.aborted', 'network.offline']
+   *
+   * @default []
+   */
+  ignoreErrorTypes?: NetworkErrorType[];
+
+  /**
+   * 是否捕获主动取消（AbortController.abort()）的请求。
+   * 等价于 ignoreErrorTypes 中包含/不包含 'network.aborted' 的语法糖。
+   * 如果同时设置了 ignoreErrorTypes，两者取并集。
+   *
+   * @default false
+   */
+  captureAborted?: boolean;
+
+  /**
    * 是否启用调试模式
    * @default false
    */
@@ -164,12 +184,13 @@ export interface NetworkPluginOptions {
 type NetworkPluginConfig = Required<
   Omit<
     NetworkPluginOptions,
-    'urlFilter' | 'logTypes' | 'slowRequestExcludePatterns' | 'routeMatch'
+    'urlFilter' | 'logTypes' | 'slowRequestExcludePatterns' | 'routeMatch' | 'ignoreErrorTypes' | 'captureAborted'
   >
 > &
   Pick<NetworkPluginOptions, 'urlFilter'> & {
     logTypes: Set<NetworkLogType>;
     slowRequestExcludePatterns: string[];
+    ignoreErrorTypes: Set<NetworkErrorType>;
   };
 
 export class NetworkPlugin implements AemeathPlugin {
@@ -225,6 +246,11 @@ export class NetworkPlugin implements AemeathPlugin {
       '.rar',
     ];
 
+    const ignoreSet = new Set<NetworkErrorType>(options.ignoreErrorTypes ?? []);
+    if (!(options.captureAborted ?? false)) {
+      ignoreSet.add('network.aborted');
+    }
+
     this.config = {
       interceptFetch: options.interceptFetch ?? true,
       interceptXHR: options.interceptXHR ?? true,
@@ -237,6 +263,7 @@ export class NetworkPlugin implements AemeathPlugin {
       slowRequestExcludePatterns:
         options.slowRequestExcludePatterns ?? defaultSlowExcludePatterns,
       debug: options.debug ?? false,
+      ignoreErrorTypes: ignoreSet,
     };
     this.pluginRouteMatch = options.routeMatch;
   }
@@ -378,6 +405,11 @@ export class NetworkPlugin implements AemeathPlugin {
       return;
     }
 
+    if (log.errorType && this.config.ignoreErrorTypes.has(log.errorType)) {
+      this.log(`Ignored ${log.errorType}: ${log.method} ${log.url}`);
+      return;
+    }
+
     const isSlowExcluded = this.config.slowRequestExcludePatterns.some(
       (pattern) => log.url.toLowerCase().includes(pattern.toLowerCase()),
     );
@@ -404,6 +436,10 @@ export class NetworkPlugin implements AemeathPlugin {
 
     if (log.status) {
       tags['httpStatus'] = log.status;
+    }
+
+    if (log.errorType) {
+      tags['networkErrorType'] = log.errorType;
     }
 
     if (isSlow) {
@@ -558,19 +594,36 @@ export class NetworkPlugin implements AemeathPlugin {
       } catch (error) {
         const navigatorOnLine =
           typeof navigator !== 'undefined' ? navigator.onLine : true;
+        // Read `name` / `message` as plain properties instead of relying on
+        // `instanceof Error`: cross-realm errors (iframe / worker / jsdom)
+        // fail instanceof checks while still carrying the standard fields.
+        const errObj = error as { name?: unknown; message?: unknown } | null;
         const rawMessage =
-          error instanceof Error ? error.message : String(error);
+          errObj != null && typeof errObj.message === 'string'
+            ? errObj.message
+            : String(error);
+        // Per WHATWG fetch spec, abort/timeout reject with a DOMException
+        // whose `name` is standardized ('AbortError' / 'TimeoutError').
+        // `name` is locale-independent and reliable across browsers,
+        // unlike `message` which varies.
+        const errName =
+          errObj != null && typeof errObj.name === 'string' ? errObj.name : '';
 
         let errorType: NetworkErrorType;
         let errorMessage: string;
-        if (!navigatorOnLine) {
-          errorType = 'network.offline';
-          errorMessage = 'Network Error: Device appears to be offline';
-        } else if (rawMessage.toLowerCase().includes('abort')) {
+        if (errName === 'AbortError') {
           errorType = 'network.aborted';
           errorMessage = 'Network Error: Request aborted';
+        } else if (errName === 'TimeoutError') {
+          errorType = 'network.timeout';
+          errorMessage = 'Network Error: Request timed out (AbortSignal.timeout)';
+        } else if (!navigatorOnLine) {
+          errorType = 'network.offline';
+          errorMessage = 'Network Error: Device appears to be offline';
         } else {
-          errorType = 'network.connection_refused';
+          // fetch TypeError does not expose the underlying cause
+          // (CORS / DNS / connection refused / SSL are indistinguishable)
+          errorType = 'network.unknown';
           errorMessage = `Network Error: ${rawMessage}`;
         }
 
@@ -667,6 +720,7 @@ export class NetworkPlugin implements AemeathPlugin {
         this.removeEventListener('readystatechange', handleReadyStateChange);
         this.removeEventListener('loadend', handleLoadEnd);
         this.removeEventListener('error', handleError);
+        this.removeEventListener('abort', handleAbort);
         this.removeEventListener('timeout', handleTimeout);
       };
 
@@ -728,6 +782,8 @@ export class NetworkPlugin implements AemeathPlugin {
       };
 
       // 监听请求错误（网络层错误，不是 HTTP 4xx/5xx 错误）
+      // 依据 WHATWG XHR 规范：error / abort / timeout / load 四个事件互斥，
+      // 主动取消只会触发 abort 事件，因此 error 事件必然是真实网络故障。
       const handleError = () => {
         if (isRecorded) return;
         isRecorded = true;
@@ -741,12 +797,10 @@ export class NetworkPlugin implements AemeathPlugin {
         if (!navigatorOnLine) {
           errorType = 'network.offline';
           errorMessage = 'Network Error: Device appears to be offline';
-        } else if (this.readyState < 4 && this.status === 0) {
-          errorType = 'network.aborted';
-          errorMessage = `Network Error: Request aborted (readyState=${this.readyState})`;
         } else {
-          errorType = 'network.connection_refused';
-          errorMessage = `Network Error: No response received (status=${this.status})`;
+          // XHR error 事件不暴露底层原因（CORS / DNS / 连接拒绝 / SSL 均不可区分）
+          errorType = 'network.unknown';
+          errorMessage = `Network Error: No response received (possible causes: CORS, DNS failure, connection refused, SSL error)`;
         }
 
         const errorDetail: NetworkErrorDetail = {
@@ -767,6 +821,35 @@ export class NetworkPlugin implements AemeathPlugin {
           error: errorMessage,
           errorType,
           errorDetail,
+        });
+      };
+
+      // 监听主动取消（xhr.abort()）。
+      // 规范保证 abort 事件仅由主动取消触发，与 error 事件互斥，100% 可靠。
+      const handleAbort = () => {
+        if (isRecorded) return;
+        isRecorded = true;
+
+        const duration = Date.now() - info.startTime;
+        const navigatorOnLine =
+          typeof navigator !== 'undefined' ? navigator.onLine : true;
+
+        self.recordRequest({
+          type: 'xhr',
+          url: info.url,
+          method: info.method,
+          status: 0,
+          statusText: 'Request Aborted',
+          duration,
+          timestamp: info.startTime,
+          requestBody: info.requestBody,
+          error: 'Network Error: Request aborted',
+          errorType: 'network.aborted',
+          errorDetail: {
+            navigatorOnLine,
+            readyState: this.readyState,
+            statusCode: 0,
+          },
         });
       };
 
@@ -801,6 +884,7 @@ export class NetworkPlugin implements AemeathPlugin {
       this.addEventListener('readystatechange', handleReadyStateChange);
       this.addEventListener('loadend', handleLoadEnd);
       this.addEventListener('error', handleError);
+      this.addEventListener('abort', handleAbort);
       this.addEventListener('timeout', handleTimeout);
 
       return self.originalXHRSend!.call(this, body);

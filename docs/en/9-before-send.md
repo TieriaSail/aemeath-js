@@ -114,6 +114,9 @@ interface LogEntry {
     type: 'fetch' | 'xhr' | 'request',         // 'request' is for miniprogram wx.request
     method: 'GET',
     httpStatus: 200,                          // present only when status is set
+    networkErrorType: 'network.offline',      // present only for network-layer failures (low-cardinality):
+                                              // 'network.offline' | 'network.timeout' | 'network.aborted'
+                                              // | 'network.connection_refused' | 'network.unknown'
     slow: true,                               // present only for slow requests
   },
   context: {
@@ -132,11 +135,32 @@ interface LogEntry {
     // (see basic.ts / redact-network.ts examples).
     requestData: { password: 'secret' },      // field name is requestData (not requestBody)
     responseData: { token: 'jwt_xxx' },       // field name is responseData (not responseBody)
-    error: { /* ... */ },                     // present only when the request failed
+    error: 'Network Error: ...',              // present only when the request failed
+    errorType: 'network.offline',             // same value as tags.networkErrorType
+    errorDetail: {                            // structured diagnostic evidence
+      navigatorOnLine: false,                 // navigator.onLine at failure time
+      readyState: 4,                          // XHR only
+      statusCode: 0,
+      raw: 'Failed to fetch',                 // browser-original error message (fetch only)
+    },
   },
   // Note: `entry.error` is NOT set for network logs. Network errors live at `entry.context.error`.
 }
 ```
+
+### Filtering by `networkErrorType`
+
+`tags.networkErrorType` is a low-cardinality classification (aligned with OpenTelemetry `error.type`), so you can filter semantically instead of string-matching error messages:
+
+```ts
+beforeSend: (entry) => {
+  // e.g. drop offline noise (devices going through tunnels, elevators, ...)
+  if (entry.tags?.networkErrorType === 'network.offline') return null;
+  return entry;
+},
+```
+
+> 💡 **Aborted requests are not captured by default.** Route changes, search debouncing, and cache-hit short-circuiting all abort in-flight requests as expected behavior, so `NetworkPlugin` skips `network.aborted` at the capture layer (no log, no console output). To observe them, set `network: { captureAborted: true }`. To skip other types at the capture layer (cheaper than beforeSend), use `network: { ignoreErrorTypes: [...] }`.
 
 > 💡 **Redaction tip**: network logs often contain PII. At minimum, consider sanitizing `context.url`, `context.requestData`, and `context.responseData`.
 > NetworkPlugin currently does **not** capture request/response headers, so there's nothing to redact there.

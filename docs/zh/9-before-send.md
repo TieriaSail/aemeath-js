@@ -120,6 +120,9 @@ interface LogEntry {
     type: 'fetch' | 'xhr' | 'request',         // 'request' 用于小程序 wx.request
     method: 'GET',
     httpStatus: 200,                          // 仅当有 status 时存在
+    networkErrorType: 'network.offline',      // 仅网络层失败时存在（低基数枚举）：
+                                              // 'network.offline' | 'network.timeout' | 'network.aborted'
+                                              // | 'network.connection_refused' | 'network.unknown'
     slow: true,                               // 仅慢请求时存在
   },
   context: {
@@ -137,11 +140,32 @@ interface LogEntry {
     // 写脱敏规则时请同时处理 string / object 两种形态（见示例 basic.ts / redact-network.ts）。
     requestData: { password: 'secret' },      // 字段名是 requestData（不是 requestBody）
     responseData: { token: 'jwt_xxx' },       // 字段名是 responseData（不是 responseBody）
-    error: { /* ... */ },                     // 仅当请求失败时存在
+    error: 'Network Error: ...',              // 仅当请求失败时存在
+    errorType: 'network.offline',             // 与 tags.networkErrorType 相同
+    errorDetail: {                            // 结构化诊断证据
+      navigatorOnLine: false,                 // 失败时的 navigator.onLine
+      readyState: 4,                          // 仅 XHR
+      statusCode: 0,
+      raw: 'Failed to fetch',                 // 浏览器原始错误信息（仅 fetch）
+    },
   },
   // 注意：错误请求时 entry.error 字段并不存在，错误信息在 entry.context.error 上
 }
 ```
+
+### 按 `networkErrorType` 语义化过滤
+
+`tags.networkErrorType` 是低基数分类（对齐 OpenTelemetry `error.type`），可以语义化过滤，无需对错误文案做字符串匹配：
+
+```ts
+beforeSend: (entry) => {
+  // 例如：丢弃离线噪音（设备过隧道、进电梯等场景）
+  if (entry.tags?.networkErrorType === 'network.offline') return null;
+  return entry;
+},
+```
+
+> 💡 **主动取消的请求默认不会被捕获。** 路由切换、搜索防抖、缓存命中中止等场景产生的主动取消属于预期行为，`NetworkPlugin` 会在捕获层直接跳过 `network.aborted`（不记录、不产生 console 输出）。如需观测可设置 `network: { captureAborted: true }`；如需在捕获层跳过其他类型（比 beforeSend 更省），可用 `network: { ignoreErrorTypes: [...] }`。
 
 > 💡 **脱敏建议**：网络日志通常是隐私重灾区，建议至少处理 `context.url`、`context.requestData`、`context.responseData`。
 > NetworkPlugin 当前**不会抓 request/response headers**，因此无需在 `beforeSend` 内处理 headers。
