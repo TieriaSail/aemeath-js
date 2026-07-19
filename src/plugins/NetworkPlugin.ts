@@ -40,6 +40,197 @@ export interface NetworkErrorDetail {
   raw?: string;
 }
 
+/** Response metadata available before a Fetch body is read. */
+export interface ResponseBodyCaptureContext {
+  url: string;
+  method: string;
+  status: number;
+  headers: Headers;
+}
+
+interface ResponseBodyReadResult {
+  bytes: Uint8Array;
+  truncated: boolean;
+}
+
+interface ResponseBodyReadTask {
+  promise: Promise<ResponseBodyReadResult>;
+  cancel: () => void;
+}
+
+const DEFAULT_MAX_RESPONSE_BODY_SIZE = 10240;
+const DEFAULT_RESPONSE_BODY_CAPTURE_TIMEOUT = 2000;
+
+function normalizeNonNegativeInteger(
+  value: number | undefined,
+  fallback: number,
+): number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0
+    ? Math.floor(value)
+    : fallback;
+}
+
+function normalizePositiveInteger(
+  value: number | undefined,
+  fallback: number,
+): number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0
+    ? Math.max(1, Math.floor(value))
+    : fallback;
+}
+
+function defaultShouldCaptureResponseBody(
+  context: ResponseBodyCaptureContext,
+): boolean {
+  const disposition = context.headers.get('content-disposition') ?? '';
+  if (/\battachment\b/i.test(disposition)) return false;
+
+  const rawContentType = context.headers.get('content-type');
+  if (!rawContentType) return false;
+
+  const contentType = rawContentType.split(';', 1)[0]!.trim().toLowerCase();
+  if (contentType === 'text/event-stream') return false;
+  if (contentType.startsWith('text/')) return true;
+  if (
+    contentType === 'application/json' ||
+    (contentType.startsWith('application/') && contentType.endsWith('+json'))
+  ) {
+    return true;
+  }
+  if (
+    contentType === 'application/xml' ||
+    (contentType.startsWith('application/') && contentType.endsWith('+xml'))
+  ) {
+    return true;
+  }
+
+  return (
+    contentType === 'application/x-www-form-urlencoded' ||
+    contentType === 'application/javascript' ||
+    contentType === 'application/ecmascript' ||
+    contentType === 'application/x-javascript'
+  );
+}
+
+function parseContentLength(headers: Headers): number | undefined {
+  const value = headers.get('content-length');
+  if (!value) return undefined;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
+}
+
+function cancelReader(reader: ReadableStreamDefaultReader<Uint8Array>): void {
+  try {
+    void reader.cancel().catch(() => {
+      // Cancellation is best-effort and must never affect the business branch.
+    });
+  } catch {
+    // Non-standard stream implementations may throw synchronously.
+  }
+}
+
+function joinChunks(chunks: Uint8Array[], totalBytes: number): Uint8Array {
+  const joined = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    joined.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return joined;
+}
+
+function readResponseBodyAtMost(
+  response: Response,
+  maxBytes: number,
+  timeoutMs: number,
+): ResponseBodyReadTask {
+  if (!response.body) {
+    return {
+      promise: Promise.resolve({ bytes: new Uint8Array(), truncated: false }),
+      cancel: () => {},
+    };
+  }
+
+  const reader = response.body.getReader();
+  const declaredLength = parseContentLength(response.headers);
+  const byteLimit = normalizeNonNegativeInteger(maxBytes, 0);
+  const captureTimeout = normalizePositiveInteger(
+    timeoutMs,
+    DEFAULT_RESPONSE_BODY_CAPTURE_TIMEOUT,
+  );
+  let settled = false;
+  let cancellationReason: 'timeout' | 'cancelled' | undefined;
+  let resolveCancellation!: (reason: 'timeout' | 'cancelled') => void;
+  const cancellation = new Promise<'timeout' | 'cancelled'>((resolve) => {
+    resolveCancellation = resolve;
+  });
+
+  const cancel = (reason: 'timeout' | 'cancelled' = 'cancelled'): void => {
+    if (settled || cancellationReason) return;
+    cancellationReason = reason;
+    resolveCancellation(reason);
+    cancelReader(reader);
+  };
+
+  const timeoutId = setTimeout(() => cancel('timeout'), captureTimeout);
+  const promise = (async (): Promise<ResponseBodyReadResult> => {
+    const chunks: Uint8Array[] = [];
+    let bytesRead = 0;
+
+    if (byteLimit <= 0) {
+      cancelReader(reader);
+      return {
+        bytes: new Uint8Array(),
+        truncated: declaredLength !== 0,
+      };
+    }
+
+    while (true) {
+      const readOutcome = reader.read().then(
+        (result) => ({ kind: 'read' as const, result }),
+        (error: unknown) => ({ kind: 'error' as const, error }),
+      );
+      const outcome = await Promise.race([
+        readOutcome,
+        cancellation.then((reason) => ({ kind: 'cancel' as const, reason })),
+      ]);
+
+      if (outcome.kind === 'cancel') {
+        return { bytes: joinChunks(chunks, bytesRead), truncated: true };
+      }
+      if (outcome.kind === 'error') throw outcome.error;
+
+      const { done, value } = outcome.result;
+      if (done) {
+        return { bytes: joinChunks(chunks, bytesRead), truncated: false };
+      }
+      if (!value || value.byteLength === 0) continue;
+
+      const remaining = byteLimit - bytesRead;
+      const chunk =
+        value.byteLength > remaining ? value.subarray(0, remaining) : value;
+      chunks.push(chunk.slice());
+      bytesRead += chunk.byteLength;
+
+      if (value.byteLength > remaining || bytesRead >= byteLimit) {
+        cancelReader(reader);
+        return {
+          bytes: joinChunks(chunks, bytesRead),
+          truncated:
+            value.byteLength > remaining ||
+            declaredLength === undefined ||
+            declaredLength > bytesRead,
+        };
+      }
+    }
+  })().finally(() => {
+    settled = true;
+    clearTimeout(timeoutId);
+  });
+
+  return { promise, cancel: () => cancel('cancelled') };
+}
+
 /**
  * 网络请求日志
  */
@@ -68,6 +259,8 @@ export interface NetworkLog {
   requestBody?: unknown;
   /** 响应体（如果配置捕获） */
   responseBody?: unknown;
+  /** Fetch 响应体是否因达到字节上限或捕获超时而截断 */
+  responseBodyTruncated?: boolean;
   /** 业务响应码（如 response.data.code） */
   responseCode?: number | string;
   /** 业务响应消息（如 response.data.message） */
@@ -126,10 +319,22 @@ export interface NetworkPluginOptions {
   captureResponseBody?: boolean;
 
   /**
-   * 响应体最大记录大小（字节），超过则截断
+   * 按响应元数据决定是否捕获 Fetch 响应体。
+   * 默认只捕获明确的文本/JSON/XML 类型；二进制、附件、SSE 和无 Content-Type 响应会跳过 body。
+   */
+  shouldCaptureResponseBody?: (context: ResponseBodyCaptureContext) => boolean;
+
+  /**
+   * Fetch 响应体最大保留和解码大小（字节），超过则截断
    * @default 10240 (10KB)
    */
   maxResponseBodySize?: number;
+
+  /**
+   * Fetch 响应体后台捕获最长等待时间（毫秒），超时后取消捕获并记录已读取部分
+   * @default 2000
+   */
+  responseBodyCaptureTimeout?: number;
 
   /**
    * 慢请求阈值（毫秒），超过此值会标记为慢请求
@@ -184,10 +389,10 @@ export interface NetworkPluginOptions {
 type NetworkPluginConfig = Required<
   Omit<
     NetworkPluginOptions,
-    'urlFilter' | 'logTypes' | 'slowRequestExcludePatterns' | 'routeMatch' | 'ignoreErrorTypes' | 'captureAborted'
+    'urlFilter' | 'logTypes' | 'slowRequestExcludePatterns' | 'routeMatch' | 'ignoreErrorTypes' | 'captureAborted' | 'shouldCaptureResponseBody'
   >
 > &
-  Pick<NetworkPluginOptions, 'urlFilter'> & {
+  Pick<NetworkPluginOptions, 'urlFilter' | 'shouldCaptureResponseBody'> & {
     logTypes: Set<NetworkLogType>;
     slowRequestExcludePatterns: string[];
     ignoreErrorTypes: Set<NetworkErrorType>;
@@ -208,6 +413,7 @@ export class NetworkPlugin implements AemeathPlugin {
   private originalFetch: typeof fetch | null = null;
   private originalXHROpen: typeof XMLHttpRequest.prototype.open | null = null;
   private originalXHRSend: typeof XMLHttpRequest.prototype.send | null = null;
+  private readonly pendingFetchCaptures = new Set<ResponseBodyReadTask>();
 
   constructor(options: NetworkPluginOptions = {}) {
     // 默认记录全部类型
@@ -258,7 +464,15 @@ export class NetworkPlugin implements AemeathPlugin {
       logTypes: new Set(options.logTypes ?? defaultLogTypes),
       captureRequestBody: options.captureRequestBody ?? true,
       captureResponseBody: options.captureResponseBody ?? true,
-      maxResponseBodySize: options.maxResponseBodySize ?? 10240,
+      shouldCaptureResponseBody: options.shouldCaptureResponseBody,
+      maxResponseBodySize: normalizeNonNegativeInteger(
+        options.maxResponseBodySize,
+        DEFAULT_MAX_RESPONSE_BODY_SIZE,
+      ),
+      responseBodyCaptureTimeout: normalizePositiveInteger(
+        options.responseBodyCaptureTimeout,
+        DEFAULT_RESPONSE_BODY_CAPTURE_TIMEOUT,
+      ),
       slowThreshold: options.slowThreshold ?? 3000,
       slowRequestExcludePatterns:
         options.slowRequestExcludePatterns ?? defaultSlowExcludePatterns,
@@ -296,6 +510,9 @@ export class NetworkPlugin implements AemeathPlugin {
   }
 
   uninstall(): void {
+    for (const task of this.pendingFetchCaptures) task.cancel();
+    this.pendingFetchCaptures.clear();
+
     // 恢复原始 fetch
     if (this.originalFetch) {
       window.fetch = this.originalFetch;
@@ -395,13 +612,26 @@ export class NetworkPlugin implements AemeathPlugin {
     };
   }
 
+  private shouldCaptureFetchResponseBody(
+    context: ResponseBodyCaptureContext,
+  ): boolean {
+    if (!this.config.captureResponseBody) return false;
+    const filter =
+      this.config.shouldCaptureResponseBody ?? defaultShouldCaptureResponseBody;
+    try {
+      return filter(context);
+    } catch {
+      return false;
+    }
+  }
+
   /**
    * 记录网络请求
    */
-  private recordRequest(log: NetworkLog): void {
+  private recordRequest(log: NetworkLog, routeMatched?: boolean): void {
     if (!this.logger) return;
 
-    if (!this.routeMatcher.shouldCapture()) {
+    if (!(routeMatched ?? this.routeMatcher.shouldCapture())) {
       return;
     }
 
@@ -477,6 +707,9 @@ export class NetworkPlugin implements AemeathPlugin {
         this.config.maxResponseBodySize,
       );
     }
+    if (log.responseBodyTruncated) {
+      context['responseDataTruncated'] = true;
+    }
 
     if (log.error) {
       context['error'] = log.error;
@@ -536,18 +769,27 @@ export class NetworkPlugin implements AemeathPlugin {
           : input instanceof URL
             ? input.href
             : input.url;
-      const method = init?.method?.toUpperCase() || 'GET';
+      const isRequest =
+        typeof Request !== 'undefined' && input instanceof Request;
+      const method = (
+        init?.method ?? (isRequest ? input.method : 'GET')
+      ).toUpperCase();
+      const routeMatched = self.routeMatcher.shouldCapture();
 
       // 检查是否需要记录
-      if (!self.shouldCapture(url)) {
+      if (!routeMatched || !self.shouldCapture(url)) {
         return self.originalFetch!.call(window, input, init);
       }
 
       // 捕获请求体
       let requestBody: unknown;
-      if (self.config.captureRequestBody && init?.body) {
+      const body = init?.body ?? (isRequest ? input.body : null);
+      if (self.config.captureRequestBody && body) {
         try {
-          requestBody = self.safeParseJSON(init.body);
+          requestBody =
+            isRequest && init?.body == null
+              ? '[ReadableStream]'
+              : self.safeParseJSON(body);
         } catch {
           requestBody = '[Unable to parse request body]';
         }
@@ -555,41 +797,76 @@ export class NetworkPlugin implements AemeathPlugin {
 
       try {
         const response = await self.originalFetch!.call(window, input, init);
-
-        // 捕获响应体（需要 clone，因为 body 只能读取一次）
-        let responseBody: unknown;
-        let responseCode: number | string | undefined;
-        let responseMessage: string | undefined;
-
-        if (self.config.captureResponseBody) {
-          try {
-            const clonedResponse = response.clone();
-            const text = await clonedResponse.text();
-            responseBody = self.safeParseJSON(text);
-
-            // 提取业务码
-            const businessInfo = self.extractBusinessInfo(responseBody);
-            responseCode = businessInfo.code;
-            responseMessage = businessInfo.message;
-          } catch {
-            responseBody = '[Unable to read response body]';
-          }
-        }
-
-        self.recordRequest({
+        const duration = Date.now() - startTime;
+        const baseLog: NetworkLog = {
           type: 'fetch',
           url,
           method,
           status: response.status,
           statusText: response.statusText,
-          duration: Date.now() - startTime,
+          duration,
           timestamp: startTime,
           requestBody,
-          responseBody,
-          responseCode,
-          responseMessage,
-        });
+        };
 
+        const captureContext: ResponseBodyCaptureContext = {
+          url,
+          method,
+          status: response.status,
+          headers: response.headers,
+        };
+
+        if (self.shouldCaptureFetchResponseBody(captureContext)) {
+          try {
+            const clonedResponse = response.clone();
+            const task = readResponseBodyAtMost(
+              clonedResponse,
+              self.config.maxResponseBodySize,
+              self.config.responseBodyCaptureTimeout,
+            );
+            self.pendingFetchCaptures.add(task);
+            void task.promise
+              .then(({ bytes, truncated }) => {
+                const text = new TextDecoder().decode(bytes);
+                const responseBody = self.safeParseJSON(text);
+                const businessInfo = self.extractBusinessInfo(responseBody);
+                self.recordRequest(
+                  {
+                    ...baseLog,
+                    responseBody,
+                    responseBodyTruncated: truncated || undefined,
+                    responseCode: businessInfo.code,
+                    responseMessage: businessInfo.message,
+                  },
+                  routeMatched,
+                );
+              })
+              .catch(() => {
+                self.recordRequest(
+                  {
+                    ...baseLog,
+                    responseBody: '[Unable to read response body]',
+                  },
+                  routeMatched,
+                );
+              })
+              .finally(() => {
+                self.pendingFetchCaptures.delete(task);
+              });
+          } catch {
+            self.recordRequest(
+              {
+                ...baseLog,
+                responseBody: '[Unable to read response body]',
+              },
+              routeMatched,
+            );
+          }
+        } else {
+          self.recordRequest(baseLog, routeMatched);
+        }
+
+        // 响应体捕获与业务解耦：响应头可用后立即返回原始 Response。
         return response;
       } catch (error) {
         const navigatorOnLine =
@@ -633,19 +910,22 @@ export class NetworkPlugin implements AemeathPlugin {
           raw: rawMessage,
         };
 
-        self.recordRequest({
-          type: 'fetch',
-          url,
-          method,
-          status: 0,
-          statusText: 'Network Error',
-          duration: Date.now() - startTime,
-          timestamp: startTime,
-          requestBody,
-          error: errorMessage,
-          errorType,
-          errorDetail,
-        });
+        self.recordRequest(
+          {
+            type: 'fetch',
+            url,
+            method,
+            status: 0,
+            statusText: 'Network Error',
+            duration: Date.now() - startTime,
+            timestamp: startTime,
+            requestBody,
+            error: errorMessage,
+            errorType,
+            errorDetail,
+          },
+          routeMatched,
+        );
 
         throw error;
       }

@@ -19,8 +19,13 @@ describe('NetworkPlugin', () => {
     logger.destroy();
     // 确保 fetch 被恢复
     window.fetch = originalFetch;
+    window.history.pushState({}, '', '/');
     vi.useRealTimers();
   });
+
+  async function waitForLog(logListener: ReturnType<typeof vi.fn>): Promise<void> {
+    await vi.waitFor(() => expect(logListener).toHaveBeenCalled());
+  }
 
   // ==================== 安装与卸载 ====================
 
@@ -123,6 +128,7 @@ describe('NetworkPlugin', () => {
       logger.use(plugin);
 
       await window.fetch('/api/data', { method: 'GET' });
+      await waitForLog(logListener);
 
       expect(logListener).toHaveBeenCalled();
       const entry = logListener.mock.calls[0][0];
@@ -147,6 +153,7 @@ describe('NetworkPlugin', () => {
       logger.use(plugin);
 
       await window.fetch('/api/data', { method: 'POST' });
+      await waitForLog(logListener);
 
       expect(logListener).toHaveBeenCalled();
       const entry = logListener.mock.calls[0][0];
@@ -194,9 +201,32 @@ describe('NetworkPlugin', () => {
         method: 'POST',
         body: JSON.stringify({ name: 'test' }),
       });
+      await waitForLog(logListener);
 
       const entry = logListener.mock.calls[0][0];
       expect(entry.context?.requestData).toBeDefined();
+    });
+
+    it('Request 对象的请求体应在不消费 stream 的情况下记录占位信息', async () => {
+      const mockResponse = new Response('{"code":200}', {
+        headers: { 'content-type': 'application/json' },
+      });
+      window.fetch = vi.fn().mockResolvedValue(mockResponse);
+      const logListener = vi.fn();
+      logger.on('log', logListener);
+      logger.use(new NetworkPlugin({ captureRequestBody: true }));
+      const request = new Request('https://example.com/api', {
+        method: 'POST',
+        body: '{"name":"test"}',
+      });
+
+      await window.fetch(request);
+      await waitForLog(logListener);
+
+      expect(logListener.mock.calls[0][0].context?.requestData).toBe(
+        '[ReadableStream]',
+      );
+      expect(request.bodyUsed).toBe(false);
     });
 
     it('captureRequestBody=false 时不应捕获请求体', async () => {
@@ -217,9 +247,311 @@ describe('NetworkPlugin', () => {
         method: 'POST',
         body: JSON.stringify({ name: 'test' }),
       });
+      await waitForLog(logListener);
 
       const entry = logListener.mock.calls[0][0];
       expect(entry.context?.requestData).toBeUndefined();
+    });
+
+    it('文本响应体未完成时也应立即向业务返回 Response', async () => {
+      const logListener = vi.fn();
+      logger.on('log', logListener);
+      let streamController!: ReadableStreamDefaultController<Uint8Array>;
+      const response = new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            streamController = controller;
+          },
+        }),
+        { headers: { 'content-type': 'application/json' } },
+      );
+      window.fetch = vi.fn().mockResolvedValue(response);
+      logger.use(new NetworkPlugin());
+
+      const businessResponse = await window.fetch('/api/streamed-json');
+
+      expect(businessResponse).toBe(response);
+      expect(logListener).not.toHaveBeenCalled();
+
+      streamController.enqueue(
+        new TextEncoder().encode('{"code":200,"message":"ok"}'),
+      );
+      streamController.close();
+      await expect(businessResponse.text()).resolves.toBe(
+        '{"code":200,"message":"ok"}',
+      );
+      await waitForLog(logListener);
+      expect(logListener.mock.calls[0][0].context?.responseCode).toBe(200);
+    });
+
+    it('20 MB 音频错误响应应保留元数据且不 clone body', async () => {
+      const logListener = vi.fn();
+      logger.on('log', logListener);
+      let streamController!: ReadableStreamDefaultController<Uint8Array>;
+      const response = new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            streamController = controller;
+          },
+        }),
+        {
+          status: 500,
+          headers: {
+            'content-type': 'audio/mpeg',
+            'content-length': String(20 * 1024 * 1024),
+          },
+        },
+      );
+      const cloneSpy = vi.spyOn(response, 'clone');
+      window.fetch = vi.fn().mockResolvedValue(response);
+      logger.use(new NetworkPlugin({ logTypes: ['error'] }));
+
+      const businessResponse = await window.fetch('/media/audio');
+
+      expect(businessResponse).toBe(response);
+      expect(cloneSpy).not.toHaveBeenCalled();
+      expect(logListener).toHaveBeenCalledOnce();
+      const entry = logListener.mock.calls[0][0];
+      expect(entry.context?.status).toBe(500);
+      expect(entry.context?.responseData).toBeUndefined();
+      streamController.close();
+    });
+
+    it.each([
+      ['SSE', { 'content-type': 'text/event-stream' }],
+      [
+        'attachment',
+        {
+          'content-type': 'text/plain',
+          'content-disposition': 'attachment; filename="data.txt"',
+        },
+      ],
+    ])('默认应跳过 %s 响应体', async (_label, headers) => {
+      const logListener = vi.fn();
+      logger.on('log', logListener);
+      const response = new Response('data', { headers });
+      const cloneSpy = vi.spyOn(response, 'clone');
+      window.fetch = vi.fn().mockResolvedValue(response);
+      logger.use(new NetworkPlugin());
+
+      await window.fetch('/download');
+
+      expect(cloneSpy).not.toHaveBeenCalled();
+      expect(logListener).toHaveBeenCalledOnce();
+      expect(logListener.mock.calls[0][0].context?.responseData).toBeUndefined();
+    });
+
+    it('默认应跳过缺少 Content-Type 的响应体', async () => {
+      const logListener = vi.fn();
+      logger.on('log', logListener);
+      const response = new Response(new Uint8Array([1, 2, 3]));
+      const cloneSpy = vi.spyOn(response, 'clone');
+      window.fetch = vi.fn().mockResolvedValue(response);
+      logger.use(new NetworkPlugin());
+
+      await window.fetch('/unknown');
+
+      expect(cloneSpy).not.toHaveBeenCalled();
+      expect(logListener).toHaveBeenCalledOnce();
+    });
+
+    it('shouldCaptureResponseBody 应支持显式捕获自定义文本类型', async () => {
+      const logListener = vi.fn();
+      logger.on('log', logListener);
+      const filter = vi.fn().mockReturnValue(true);
+      const response = new Response('{"code":7}', {
+        headers: { 'content-type': 'application/octet-stream' },
+      });
+      window.fetch = vi.fn().mockResolvedValue(response);
+      logger.use(new NetworkPlugin({ shouldCaptureResponseBody: filter }));
+
+      await window.fetch(
+        new Request('https://example.com/custom-binary', { method: 'POST' }),
+      );
+      await waitForLog(logListener);
+
+      expect(filter).toHaveBeenCalledWith(
+        expect.objectContaining({
+          url: 'https://example.com/custom-binary',
+          method: 'POST',
+          status: 200,
+        }),
+      );
+      expect(logListener.mock.calls[0][0].context?.responseCode).toBe(7);
+    });
+
+    it('停滞响应体应按截止时间取消并释放业务 cancel', async () => {
+      const logListener = vi.fn();
+      logger.on('log', logListener);
+      const sourceCancel = vi.fn();
+      const response = new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode('{'));
+          },
+          cancel: sourceCancel,
+        }),
+        { headers: { 'content-type': 'application/json' } },
+      );
+      window.fetch = vi.fn().mockResolvedValue(response);
+      logger.use(new NetworkPlugin({ responseBodyCaptureTimeout: 20 }));
+
+      const businessResponse = await window.fetch('/api/stalled-json');
+      const businessCancel = businessResponse.body!.cancel();
+      await vi.advanceTimersByTimeAsync(20);
+      await waitForLog(logListener);
+
+      await expect(businessCancel).resolves.toBeUndefined();
+      expect(logListener.mock.calls[0][0].context?.responseData).toBe('{');
+      expect(
+        logListener.mock.calls[0][0].context?.responseDataTruncated,
+      ).toBe(true);
+      expect(sourceCancel).toHaveBeenCalledOnce();
+    });
+
+    it('卸载插件应取消待处理的响应体读取', async () => {
+      const logListener = vi.fn();
+      logger.on('log', logListener);
+      const sourceCancel = vi.fn();
+      const response = new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode('{'));
+          },
+          cancel: sourceCancel,
+        }),
+        { headers: { 'content-type': 'application/json' } },
+      );
+      window.fetch = vi.fn().mockResolvedValue(response);
+      logger.use(new NetworkPlugin({ responseBodyCaptureTimeout: 10_000 }));
+
+      const businessResponse = await window.fetch('/api/stalled-json');
+      logger.uninstall('network');
+
+      await expect(businessResponse.body!.cancel()).resolves.toBeUndefined();
+      await Promise.resolve();
+      expect(logListener).not.toHaveBeenCalled();
+      expect(sourceCancel).toHaveBeenCalledOnce();
+    });
+
+    it('应按请求开始时的路由归属记录后台响应体', async () => {
+      const logListener = vi.fn();
+      logger.on('log', logListener);
+      window.history.pushState({}, '', '/network-included');
+      let streamController!: ReadableStreamDefaultController<Uint8Array>;
+      const response = new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            streamController = controller;
+          },
+        }),
+        { headers: { 'content-type': 'application/json' } },
+      );
+      window.fetch = vi.fn().mockResolvedValue(response);
+      logger.use(
+        new NetworkPlugin({
+          routeMatch: { includeRoutes: ['/network-included'] },
+        }),
+      );
+
+      const businessResponse = await window.fetch('/api/route-snapshot');
+      window.history.pushState({}, '', '/network-excluded');
+      streamController.enqueue(new TextEncoder().encode('{"ok":true}'));
+      streamController.close();
+      await businessResponse.text();
+      await waitForLog(logListener);
+
+      expect(logListener).toHaveBeenCalledOnce();
+      expect(logListener.mock.calls[0][0].context?.url).toBe(
+        '/api/route-snapshot',
+      );
+    });
+
+    it('maxResponseBodySize 应限制实际读取并标记截断', async () => {
+      const logListener = vi.fn();
+      logger.on('log', logListener);
+      const response = new Response('business body', {
+        headers: {
+          'content-type': 'application/json',
+          'content-length': '100',
+        },
+      });
+      const cancel = vi.fn().mockResolvedValue(undefined);
+      const read = vi
+        .fn()
+        .mockResolvedValueOnce({
+          done: false,
+          value: new TextEncoder().encode('abcdefgh'),
+        })
+        .mockResolvedValueOnce({
+          done: false,
+          value: new TextEncoder().encode('ijklmnop'),
+        });
+      vi.spyOn(response, 'clone').mockReturnValue({
+        headers: response.headers,
+        body: { getReader: () => ({ read, cancel }) },
+      } as unknown as Response);
+      window.fetch = vi.fn().mockResolvedValue(response);
+      logger.use(new NetworkPlugin({ maxResponseBodySize: 10 }));
+
+      await window.fetch('/api/large-json');
+      await waitForLog(logListener);
+
+      const entry = logListener.mock.calls[0][0];
+      expect(read).toHaveBeenCalledTimes(2);
+      expect(cancel).toHaveBeenCalledOnce();
+      expect(entry.context?.responseData).toBe('abcdefghij');
+      expect(entry.context?.responseDataTruncated).toBe(true);
+    });
+
+    it('无效的响应体大小配置应回退到默认有限上限', async () => {
+      const logListener = vi.fn();
+      logger.on('log', logListener);
+      window.fetch = vi.fn().mockResolvedValue(
+        new Response('x'.repeat(11_000), {
+          headers: {
+            'content-type': 'text/plain',
+            'content-length': '11000',
+          },
+        }),
+      );
+      logger.use(
+        new NetworkPlugin({ maxResponseBodySize: Number.POSITIVE_INFINITY }),
+      );
+
+      await window.fetch('/api/invalid-size');
+      await waitForLog(logListener);
+
+      const entry = logListener.mock.calls[0][0];
+      expect(entry.context?.responseData).toBe('x'.repeat(10_240));
+      expect(entry.context?.responseDataTruncated).toBe(true);
+    });
+
+    it('后台响应体读取失败不应污染业务 Fetch Promise', async () => {
+      const logListener = vi.fn();
+      logger.on('log', logListener);
+      const response = new Response('business body');
+      vi.spyOn(response, 'clone').mockReturnValue({
+        headers: response.headers,
+        body: {
+          getReader: () => ({
+            read: () =>
+              Promise.reject(new DOMException('aborted', 'AbortError')),
+            cancel: vi.fn(),
+          }),
+        },
+      } as unknown as Response);
+      window.fetch = vi.fn().mockResolvedValue(response);
+      logger.use(new NetworkPlugin());
+
+      await expect(window.fetch('/api/aborted-body')).resolves.toBe(response);
+      await waitForLog(logListener);
+
+      const entry = logListener.mock.calls[0][0];
+      expect(entry.context?.error).toBeUndefined();
+      expect(entry.context?.responseData).toBe(
+        '[Unable to read response body]',
+      );
     });
   });
 
@@ -263,6 +595,7 @@ describe('NetworkPlugin', () => {
       logger.use(plugin3);
 
       await window.fetch('/api/error');
+      await waitForLog(logListener);
       expect(logListener).toHaveBeenCalled();
       expect(logListener.mock.calls[0][0].level).toBe('error');
     });
@@ -292,6 +625,7 @@ describe('NetworkPlugin', () => {
       const fetchPromise = window.fetch('/api/slow-data');
       await vi.advanceTimersByTimeAsync(200);
       await fetchPromise;
+      await waitForLog(logListener);
 
       expect(logListener).toHaveBeenCalled();
       const entry = logListener.mock.calls[0][0];
@@ -616,6 +950,7 @@ describe('NetworkPlugin', () => {
       logger.use(plugin);
 
       await window.fetch('/api/data');
+      await waitForLog(logListener);
 
       const entry = logListener.mock.calls[0][0];
       expect(entry.context?.responseCode).toBe(10001);
@@ -623,4 +958,3 @@ describe('NetworkPlugin', () => {
     });
   });
 });
-

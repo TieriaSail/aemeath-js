@@ -13,7 +13,12 @@ import { ErrorCapturePlugin } from '../plugins/ErrorCapturePlugin';
 import { EarlyErrorCapturePlugin } from '../plugins/EarlyErrorCapturePlugin';
 import { UploadPlugin, type UploadResult } from '../plugins/UploadPlugin';
 import { SafeGuardPlugin, type SafeGuardMode } from '../plugins/SafeGuardPlugin';
-import { NetworkPlugin, type NetworkLogType, type NetworkErrorType } from '../plugins/NetworkPlugin';
+import {
+  NetworkPlugin,
+  type NetworkLogType,
+  type NetworkErrorType,
+  type ResponseBodyCaptureContext,
+} from '../plugins/NetworkPlugin';
 import { BeforeSendPlugin } from '../plugins/BeforeSendPlugin';
 import type { BeforeSendHook, LogEntry } from '../types';
 import type { RouteMatchConfig } from '../utils/routeMatcher';
@@ -280,6 +285,15 @@ export interface AemeathInitOptions {
     captureRequestBody?: boolean;
     /** 是否记录响应体 @default true */
     captureResponseBody?: boolean;
+    /**
+     * 按响应元数据决定是否捕获 Fetch 响应体。
+     * 默认只捕获明确的文本/JSON/XML 类型；二进制、附件、SSE 和无 Content-Type 响应会跳过 body。
+     */
+    shouldCaptureResponseBody?: (context: ResponseBodyCaptureContext) => boolean;
+    /** Fetch 响应体最大保留和解码字节数 @default 10240 */
+    maxResponseBodySize?: number;
+    /** Fetch 响应体后台捕获最长等待时间（毫秒）@default 2000 */
+    responseBodyCaptureTimeout?: number;
     /** 慢请求阈值（毫秒）@default 3000 */
     slowThreshold?: number;
     /** 额外排除的 URL 模式（日志上报接口已自动排除） */
@@ -507,6 +521,9 @@ export function initAemeath(options: AemeathInitOptions = {}): AemeathLogger {
         logTypes: options.network?.logTypes,
         captureRequestBody: options.network?.captureRequestBody ?? true,
         captureResponseBody: options.network?.captureResponseBody ?? true,
+        shouldCaptureResponseBody: options.network?.shouldCaptureResponseBody,
+        maxResponseBodySize: options.network?.maxResponseBodySize,
+        responseBodyCaptureTimeout: options.network?.responseBodyCaptureTimeout,
         slowThreshold: options.network?.slowThreshold ?? 3000,
         slowRequestExcludePatterns: options.network?.monitorAllSlowRequests
           ? []

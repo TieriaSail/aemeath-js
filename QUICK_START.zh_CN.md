@@ -322,6 +322,42 @@ initAemeath({
 });
 ```
 
+#### Fetch 响应体安全捕获
+
+`captureResponseBody` 仍默认开启，但 Fetch 只会捕获明确的文本、JSON 和 XML 响应体。
+二进制响应、下载附件（`Content-Disposition: attachment`）、SSE 以及缺少 `Content-Type`
+的响应仍会记录网络元数据，但不会被 clone 或读取。响应头可用后，原始 `Response` 会立即
+交还业务；符合条件的响应体在后台捕获。
+
+`maxResponseBodySize` 限制实际保留和解码的字节数（默认 10 KB），不会再调用
+`response.text()` 读取完整响应体。底层单次 stream read 可能返回更大的数据块，但只保留配置
+范围内的前缀。`responseBodyCaptureTimeout` 默认 2 秒，停滞的捕获分支会被取消；达到大小或
+时间限制时会记录 `context.responseDataTruncated = true`。如果接口使用自定义文本类型，可通过
+`shouldCaptureResponseBody` 显式放行：
+
+```typescript
+initAemeath({
+  network: {
+    captureResponseBody: true,
+    maxResponseBodySize: 10_240,
+    responseBodyCaptureTimeout: 2_000,
+    shouldCaptureResponseBody: ({ url, headers }) => {
+      const contentType = headers.get('content-type') ?? '';
+      return (
+        contentType.startsWith('text/') ||
+        contentType.includes('json') ||
+        (url.startsWith('/api/custom-text') && contentType === 'application/octet-stream')
+      );
+    },
+  },
+});
+```
+
+该回调只作用于浏览器 Fetch instrumentation。返回 `false` 只跳过响应体，URL、method、status、
+duration 和错误元数据仍会保留。插件卸载时会取消尚未完成的 reader；Fetch 网络事件使用请求
+开始时确定的路由归属。`excludeUrls` 仍会排除整条网络事件；无效的大小或超时配置会回退到
+有限默认值。
+
 ### 路由作用域（可选）
 
 并非所有页面都需要监控。使用 `routeMatch` 控制哪些路由开启监控——对**所有**能力生效（错误捕获、网络监控、性能监控）。
@@ -511,4 +547,3 @@ logger.info('小程序已初始化');
 - [上报插件](./docs/zh/4-upload-plugin.md)
 - [性能监控](./docs/zh/6-performance-monitoring.md)（🌐🧪 仅浏览器可用，实验性）
 - [示例代码](./examples/)
-

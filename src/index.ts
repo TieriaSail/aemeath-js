@@ -76,6 +76,7 @@ export type {
   NetworkLogType,
   NetworkErrorType,
   NetworkErrorDetail,
+  ResponseBodyCaptureContext,
 } from './plugins/NetworkPlugin';
 
 // ==================== BeforeSend 钩子（隐私脱敏 / 全链路过滤） ====================
