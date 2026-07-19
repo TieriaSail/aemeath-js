@@ -321,6 +321,44 @@ initAemeath({
 });
 ```
 
+#### Safe Fetch response-body capture
+
+`captureResponseBody` remains enabled by default, but Fetch bodies are captured only for explicit
+text, JSON, and XML content types. Binary responses, downloads (`Content-Disposition: attachment`),
+SSE, and responses without `Content-Type` still produce network metadata, but their bodies are not
+cloned or read. Fetch returns the original `Response` as soon as headers are available; eligible body
+capture continues in the background.
+
+`maxResponseBodySize` limits retained and decoded bytes (10 KB by default); capture never calls
+`response.text()` for the full body. A stream read may yield a larger source chunk, but only the
+configured prefix is retained. `responseBodyCaptureTimeout` (2 seconds by default) cancels stalled
+capture branches. Size or deadline truncation is exposed as `context.responseDataTruncated = true`.
+Use `shouldCaptureResponseBody` when an API uses a custom textual content type:
+
+```typescript
+initAemeath({
+  network: {
+    captureResponseBody: true,
+    maxResponseBodySize: 10_240,
+    responseBodyCaptureTimeout: 2_000,
+    shouldCaptureResponseBody: ({ url, headers }) => {
+      const contentType = headers.get('content-type') ?? '';
+      return (
+        contentType.startsWith('text/') ||
+        contentType.includes('json') ||
+        (url.startsWith('/api/custom-text') && contentType === 'application/octet-stream')
+      );
+    },
+  },
+});
+```
+
+The callback applies to browser Fetch instrumentation only. Returning `false` skips the body while
+retaining URL, method, status, duration, and error metadata. Pending capture readers are cancelled on
+plugin teardown, and Fetch events retain the route ownership determined when the request started.
+`excludeUrls` still excludes the entire network event. Invalid size or timeout values fall back to the
+finite defaults.
+
 ### Route Scope (Optional)
 
 Not every page needs monitoring. Use `routeMatch` to control which routes are monitored — applies to **all** capabilities (error capture, network monitoring, performance monitoring).

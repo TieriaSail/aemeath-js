@@ -27,6 +27,10 @@ function makeResponse(body: string, init?: ResponseInit): Response {
   return new Response(body, { status: 200, statusText: 'OK', ...init });
 }
 
+async function waitForEvents(events: NetworkEvent[], count = 1): Promise<void> {
+  await vi.waitFor(() => expect(events).toHaveLength(count));
+}
+
 // ---------------------------------------------------------------------------
 // Test suite
 // ---------------------------------------------------------------------------
@@ -52,6 +56,7 @@ describe('instrumentFetch', () => {
 
     const unsub = instrumentFetch((e) => events.push(e), defaultOptions());
     await window.fetch('/api/data');
+    await waitForEvents(events);
 
     expect(events).toHaveLength(1);
     expect(events[0]!.type).toBe('fetch');
@@ -69,6 +74,7 @@ describe('instrumentFetch', () => {
 
     const unsub = instrumentFetch((e) => events.push(e), defaultOptions());
     await window.fetch('/api/missing');
+    await waitForEvents(events);
 
     expect(events[0]!.status).toBe(404);
     expect(events[0]!.statusText).toBe('Not Found');
@@ -148,6 +154,7 @@ describe('instrumentFetch', () => {
 
     const unsub = instrumentFetch((e) => events.push(e), defaultOptions());
     await window.fetch('/api', { method: 'POST', body: '{"key":"val"}' });
+    await waitForEvents(events);
 
     expect(events[0]!.requestBody).toEqual({ key: 'val' });
     unsub();
@@ -161,6 +168,7 @@ describe('instrumentFetch', () => {
     const fd = new FormData();
     fd.append('file', 'content');
     await window.fetch('/upload', { method: 'POST', body: fd });
+    await waitForEvents(events);
 
     expect(events[0]!.requestBody).toBe('[FormData]');
     unsub();
@@ -173,6 +181,7 @@ describe('instrumentFetch', () => {
     const unsub = instrumentFetch((e) => events.push(e), defaultOptions());
     const blob = new Blob(['hello'], { type: 'text/plain' });
     await window.fetch('/upload', { method: 'POST', body: blob });
+    await waitForEvents(events);
 
     expect(events[0]!.requestBody).toBe(`[Blob size=${blob.size}]`);
     unsub();
@@ -185,8 +194,26 @@ describe('instrumentFetch', () => {
     const unsub = instrumentFetch((e) => events.push(e), defaultOptions());
     const params = new URLSearchParams({ q: 'test' });
     await window.fetch('/search', { method: 'POST', body: params });
+    await waitForEvents(events);
 
     expect(events[0]!.requestBody).toBe('q=test');
+    unsub();
+  });
+
+  it('should capture a Request object body without consuming it', async () => {
+    const events: NetworkEvent[] = [];
+    window.fetch = vi.fn().mockResolvedValue(makeResponse('ok'));
+
+    const unsub = instrumentFetch((event) => events.push(event), defaultOptions());
+    const request = new Request('https://example.com/api', {
+      method: 'POST',
+      body: '{"name":"test"}',
+    });
+    await window.fetch(request);
+    await waitForEvents(events);
+
+    expect(events[0]!.requestBody).toBe('[ReadableStream]');
+    expect(request.bodyUsed).toBe(false);
     unsub();
   });
 
@@ -196,6 +223,7 @@ describe('instrumentFetch', () => {
 
     const unsub = instrumentFetch((e) => events.push(e), defaultOptions({ captureRequestBody: false }));
     await window.fetch('/api', { method: 'POST', body: '{"x":1}' });
+    await waitForEvents(events);
 
     expect(events[0]!.requestBody).toBeUndefined();
     unsub();
@@ -210,9 +238,236 @@ describe('instrumentFetch', () => {
 
     const unsub = instrumentFetch((e) => events.push(e), defaultOptions({ maxResponseBodySize: 100 }));
     await window.fetch('/api/big');
+    await waitForEvents(events);
 
     const body = events[0]!.responseBody as string;
     expect(body.length).toBeLessThanOrEqual(100);
+    expect(events[0]!.responseBodyTruncated).toBe(true);
+    unsub();
+  });
+
+  it('should return a text Response before background body capture completes', async () => {
+    const events: NetworkEvent[] = [];
+    let streamController!: ReadableStreamDefaultController<Uint8Array>;
+    const response = new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          streamController = controller;
+        },
+      }),
+      { headers: { 'content-type': 'application/json' } },
+    );
+    window.fetch = vi.fn().mockResolvedValue(response);
+
+    const unsub = instrumentFetch((e) => events.push(e), defaultOptions());
+    const businessResponse = await window.fetch('/api/streamed-json');
+
+    expect(businessResponse).toBe(response);
+    expect(events).toHaveLength(0);
+
+    const payload = new TextEncoder().encode('{"code":200,"message":"ok"}');
+    streamController.enqueue(payload);
+    streamController.close();
+
+    await expect(businessResponse.text()).resolves.toBe('{"code":200,"message":"ok"}');
+    await waitForEvents(events);
+    expect(events[0]!.responseCode).toBe(200);
+    unsub();
+  });
+
+  it('should time out a stalled body capture and release business cancellation', async () => {
+    const events: NetworkEvent[] = [];
+    const sourceCancel = vi.fn();
+    const response = new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('{'));
+        },
+        cancel: sourceCancel,
+      }),
+      { headers: { 'content-type': 'application/json' } },
+    );
+    window.fetch = vi.fn().mockResolvedValue(response);
+
+    const unsub = instrumentFetch(
+      (event) => events.push(event),
+      defaultOptions({ responseBodyCaptureTimeout: 20 }),
+    );
+    const businessResponse = await window.fetch('/api/stalled-json');
+    const businessCancel = businessResponse.body!.cancel();
+
+    await waitForEvents(events);
+    await expect(businessCancel).resolves.toBeUndefined();
+    expect(events[0]!.responseBody).toBe('{');
+    expect(events[0]!.responseBodyTruncated).toBe(true);
+    expect(sourceCancel).toHaveBeenCalledOnce();
+    unsub();
+  });
+
+  it('should cancel a pending capture when its last subscriber unsubscribes', async () => {
+    const events: NetworkEvent[] = [];
+    const sourceCancel = vi.fn();
+    const response = new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('{'));
+        },
+        cancel: sourceCancel,
+      }),
+      { headers: { 'content-type': 'application/json' } },
+    );
+    window.fetch = vi.fn().mockResolvedValue(response);
+
+    const unsub = instrumentFetch(
+      (event) => events.push(event),
+      defaultOptions({ responseBodyCaptureTimeout: 10_000 }),
+    );
+    const businessResponse = await window.fetch('/api/stalled-json');
+
+    unsub();
+    await expect(businessResponse.body!.cancel()).resolves.toBeUndefined();
+    await Promise.resolve();
+    expect(events).toHaveLength(0);
+    expect(sourceCancel).toHaveBeenCalledOnce();
+  });
+
+  it('should not clone a declared 20 MB audio response but still emit metadata', async () => {
+    const events: NetworkEvent[] = [];
+    let streamController!: ReadableStreamDefaultController<Uint8Array>;
+    const response = new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          streamController = controller;
+        },
+      }),
+      {
+        status: 206,
+        headers: {
+          'content-type': 'audio/mpeg',
+          'content-length': String(20 * 1024 * 1024),
+        },
+      },
+    );
+    const cloneSpy = vi.spyOn(response, 'clone');
+    window.fetch = vi.fn().mockResolvedValue(response);
+
+    const unsub = instrumentFetch((e) => events.push(e), defaultOptions());
+    const businessResponse = await window.fetch('/media/audio');
+
+    expect(businessResponse).toBe(response);
+    expect(cloneSpy).not.toHaveBeenCalled();
+    expect(events).toHaveLength(1);
+    expect(events[0]!.status).toBe(206);
+    expect(events[0]!.responseBody).toBeUndefined();
+
+    streamController.close();
+    unsub();
+  });
+
+  it.each([
+    ['SSE', { 'content-type': 'text/event-stream' }],
+    ['attachment', { 'content-type': 'text/plain', 'content-disposition': 'attachment; filename="data.txt"' }],
+  ])('should skip %s response bodies by default', async (_label, headers) => {
+    const events: NetworkEvent[] = [];
+    const response = makeResponse('data', { headers });
+    const cloneSpy = vi.spyOn(response, 'clone');
+    window.fetch = vi.fn().mockResolvedValue(response);
+
+    const unsub = instrumentFetch((e) => events.push(e), defaultOptions());
+    await window.fetch('/download');
+
+    expect(cloneSpy).not.toHaveBeenCalled();
+    expect(events).toHaveLength(1);
+    expect(events[0]!.responseBody).toBeUndefined();
+    unsub();
+  });
+
+  it('should skip a response without Content-Type by default', async () => {
+    const events: NetworkEvent[] = [];
+    const response = new Response(new Uint8Array([1, 2, 3]));
+    const cloneSpy = vi.spyOn(response, 'clone');
+    window.fetch = vi.fn().mockResolvedValue(response);
+
+    const unsub = instrumentFetch((e) => events.push(e), defaultOptions());
+    await window.fetch('/unknown');
+
+    expect(cloneSpy).not.toHaveBeenCalled();
+    expect(events).toHaveLength(1);
+    unsub();
+  });
+
+  it('should allow shouldCaptureResponseBody to opt a binary content type in', async () => {
+    const events: NetworkEvent[] = [];
+    const filter = vi.fn().mockReturnValue(true);
+    const response = makeResponse('{"code":7}', {
+      headers: { 'content-type': 'application/octet-stream' },
+    });
+    window.fetch = vi.fn().mockResolvedValue(response);
+
+    const unsub = instrumentFetch(
+      (e) => events.push(e),
+      defaultOptions({ shouldCaptureResponseBody: filter }),
+    );
+    await window.fetch('/custom-binary', { method: 'post' });
+    await waitForEvents(events);
+
+    expect(filter).toHaveBeenCalledWith(
+      expect.objectContaining({ url: '/custom-binary', method: 'POST', status: 200 }),
+    );
+    expect(events[0]!.responseCode).toBe(7);
+    unsub();
+  });
+
+  it('should enforce maxResponseBodySize while reading and cancel the capture branch', async () => {
+    const events: NetworkEvent[] = [];
+    const response = makeResponse('business body', {
+      headers: { 'content-type': 'application/json', 'content-length': '100' },
+    });
+    const cancel = vi.fn().mockResolvedValue(undefined);
+    const read = vi
+      .fn()
+      .mockResolvedValueOnce({ done: false, value: new TextEncoder().encode('abcdefgh') })
+      .mockResolvedValueOnce({ done: false, value: new TextEncoder().encode('ijklmnop') });
+    vi.spyOn(response, 'clone').mockReturnValue({
+      headers: response.headers,
+      body: { getReader: () => ({ read, cancel }) },
+    } as unknown as Response);
+    window.fetch = vi.fn().mockResolvedValue(response);
+
+    const unsub = instrumentFetch(
+      (e) => events.push(e),
+      defaultOptions({ maxResponseBodySize: 10 }),
+    );
+    await window.fetch('/api/large-json');
+    await waitForEvents(events);
+
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(events[0]!.responseBody).toBe('abcdefghij');
+    expect(events[0]!.responseBodyTruncated).toBe(true);
+    unsub();
+  });
+
+  it('should keep body capture errors out of the business Fetch promise', async () => {
+    const events: NetworkEvent[] = [];
+    const response = makeResponse('business body');
+    vi.spyOn(response, 'clone').mockReturnValue({
+      headers: response.headers,
+      body: {
+        getReader: () => ({
+          read: () => Promise.reject(new DOMException('aborted', 'AbortError')),
+          cancel: vi.fn(),
+        }),
+      },
+    } as unknown as Response);
+    window.fetch = vi.fn().mockResolvedValue(response);
+
+    const unsub = instrumentFetch((e) => events.push(e), defaultOptions());
+    await expect(window.fetch('/api/aborted-body')).resolves.toBe(response);
+    await waitForEvents(events);
+
+    expect(events[0]!.error).toBeUndefined();
+    expect(events[0]!.responseBody).toBe('[Unable to read response body]');
     unsub();
   });
 
@@ -227,16 +482,23 @@ describe('instrumentFetch', () => {
     unsub();
   });
 
-  it('should handle response.clone().text() failure gracefully', async () => {
+  it('should handle cloned response reader failure gracefully', async () => {
     const events: NetworkEvent[] = [];
     const badResponse = makeResponse('ok');
     vi.spyOn(badResponse, 'clone').mockReturnValue({
-      text: () => Promise.reject(new Error('clone failed')),
+      headers: badResponse.headers,
+      body: {
+        getReader: () => ({
+          read: () => Promise.reject(new Error('read failed')),
+          cancel: vi.fn(),
+        }),
+      },
     } as unknown as Response);
     window.fetch = vi.fn().mockResolvedValue(badResponse);
 
     const unsub = instrumentFetch((e) => events.push(e), defaultOptions());
     await window.fetch('/api');
+    await waitForEvents(events);
 
     expect(events[0]!.responseBody).toBe('[Unable to read response body]');
     unsub();
@@ -258,6 +520,7 @@ describe('instrumentFetch', () => {
     expect(events).toHaveLength(0);
 
     await window.fetch('/api/data');
+    await waitForEvents(events);
     expect(events).toHaveLength(1);
 
     unsub();
@@ -290,11 +553,72 @@ describe('instrumentFetch', () => {
 
     await window.fetch('/api');
 
-    expect(events1).toHaveLength(1);
-    expect(events2).toHaveLength(1);
+    await vi.waitFor(() => {
+      expect(events1).toHaveLength(1);
+      expect(events2).toHaveLength(1);
+    });
 
     unsub1();
     unsub2();
+  });
+
+  it('should only consider URL-matching subscribers when deciding to clone', async () => {
+    const skippedEvents: NetworkEvent[] = [];
+    const metadataEvents: NetworkEvent[] = [];
+    const response = makeResponse('text response');
+    const cloneSpy = vi.spyOn(response, 'clone');
+    window.fetch = vi.fn().mockResolvedValue(response);
+
+    const unsub1 = instrumentFetch(
+      (e) => skippedEvents.push(e),
+      defaultOptions({ shouldCapture: (url) => url.includes('/other') }),
+    );
+    const unsub2 = instrumentFetch(
+      (e) => metadataEvents.push(e),
+      defaultOptions({ captureResponseBody: false }),
+    );
+
+    await window.fetch('/api/data');
+
+    expect(cloneSpy).not.toHaveBeenCalled();
+    expect(skippedEvents).toHaveLength(0);
+    expect(metadataEvents).toHaveLength(1);
+    expect(metadataEvents[0]!.responseBody).toBeUndefined();
+
+    unsub1();
+    unsub2();
+  });
+
+  it('should enforce maxResponseBodySize independently for each subscriber', async () => {
+    const smallEvents: NetworkEvent[] = [];
+    const largeEvents: NetworkEvent[] = [];
+    window.fetch = vi.fn().mockResolvedValue(
+      makeResponse('abcdefghijk', {
+        headers: { 'content-type': 'text/plain', 'content-length': '11' },
+      }),
+    );
+
+    const unsubSmall = instrumentFetch(
+      (event) => smallEvents.push(event),
+      defaultOptions({ maxResponseBodySize: 3 }),
+    );
+    const unsubLarge = instrumentFetch(
+      (event) => largeEvents.push(event),
+      defaultOptions({ maxResponseBodySize: 10 }),
+    );
+
+    await window.fetch('/api/shared-body');
+    await vi.waitFor(() => {
+      expect(smallEvents).toHaveLength(1);
+      expect(largeEvents).toHaveLength(1);
+    });
+
+    expect(smallEvents[0]!.responseBody).toBe('abc');
+    expect(largeEvents[0]!.responseBody).toBe('abcdefghij');
+    expect(smallEvents[0]!.responseBodyTruncated).toBe(true);
+    expect(largeEvents[0]!.responseBodyTruncated).toBe(true);
+    unsubSmall();
+    unsubLarge();
   });
 
   it('should not restore fetch until the last subscriber unsubscribes', async () => {
@@ -347,6 +671,7 @@ describe('instrumentFetch', () => {
     const unsub = instrumentFetch((e) => events.push(e), defaultOptions());
     const req = new Request('https://example.com/api');
     await window.fetch(req);
+    await waitForEvents(events);
 
     expect(events[0]!.url).toBe('https://example.com/api');
     unsub();
@@ -358,6 +683,7 @@ describe('instrumentFetch', () => {
 
     const unsub = instrumentFetch((e) => events.push(e), defaultOptions());
     await window.fetch(new URL('https://example.com/data'));
+    await waitForEvents(events);
 
     expect(events[0]!.url).toBe('https://example.com/data');
     unsub();
@@ -371,6 +697,7 @@ describe('instrumentFetch', () => {
 
     const unsub = instrumentFetch((e) => events.push(e), defaultOptions());
     await window.fetch('/api');
+    await waitForEvents(events);
 
     expect(events[0]!.method).toBe('GET');
     unsub();
@@ -382,6 +709,19 @@ describe('instrumentFetch', () => {
 
     const unsub = instrumentFetch((e) => events.push(e), defaultOptions());
     await window.fetch('/api', { method: 'post' });
+    await waitForEvents(events);
+
+    expect(events[0]!.method).toBe('POST');
+    unsub();
+  });
+
+  it('should preserve the method from a Request object', async () => {
+    const events: NetworkEvent[] = [];
+    window.fetch = vi.fn().mockResolvedValue(makeResponse('ok'));
+
+    const unsub = instrumentFetch((event) => events.push(event), defaultOptions());
+    await window.fetch(new Request('https://example.com/api', { method: 'POST' }));
+    await waitForEvents(events);
 
     expect(events[0]!.method).toBe('POST');
     unsub();
@@ -397,6 +737,7 @@ describe('instrumentFetch', () => {
 
     const unsub = instrumentFetch((e) => events.push(e), defaultOptions());
     await window.fetch('/api/auth');
+    await waitForEvents(events);
 
     expect(events[0]!.responseCode).toBe(1001);
     expect(events[0]!.responseMessage).toBe('invalid token');
@@ -411,6 +752,7 @@ describe('instrumentFetch', () => {
 
     const unsub = instrumentFetch((e) => events.push(e), defaultOptions());
     await window.fetch('/api');
+    await waitForEvents(events);
 
     expect(events[0]!.duration).toBeGreaterThanOrEqual(0);
     expect(events[0]!.timestamp).toBeGreaterThan(0);
@@ -427,6 +769,7 @@ describe('instrumentFetch', () => {
     const unsub2 = instrumentFetch((e) => events.push(e), defaultOptions());
 
     await window.fetch('/api');
+    await waitForEvents(events);
     expect(events).toHaveLength(1);
 
     unsub1();

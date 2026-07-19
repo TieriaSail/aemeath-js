@@ -51,8 +51,18 @@ export interface NetworkEvent {
   errorDetail?: NetworkErrorDetail;
   requestBody?: unknown;
   responseBody?: unknown;
+  /** True when Fetch body capture stopped at its byte limit or deadline. */
+  responseBodyTruncated?: boolean;
   responseCode?: number | string;
   responseMessage?: string;
+}
+
+/** Response metadata available before a Fetch body is read. */
+export interface ResponseBodyCaptureContext {
+  url: string;
+  method: string;
+  status: number;
+  headers: Headers;
 }
 
 /**
@@ -63,8 +73,16 @@ export interface InstrumentOptions {
   shouldCapture: (url: string) => boolean;
   captureRequestBody: boolean;
   captureResponseBody: boolean;
-  /** Truncate response body text beyond this byte length. */
+  /**
+   * Decide whether an individual Fetch response body should be captured.
+   * When omitted, only explicit text/JSON/XML content types are eligible;
+   * attachments, SSE, binary, and missing content types are skipped.
+   */
+  shouldCaptureResponseBody?: (context: ResponseBodyCaptureContext) => boolean;
+  /** Maximum number of response-body bytes retained from Fetch stream chunks. */
   maxResponseBodySize: number;
+  /** Maximum time to wait for Fetch body capture before cancelling it. @default 2000 */
+  responseBodyCaptureTimeout?: number;
 }
 
 /** Callback receiving captured network events. */

@@ -99,6 +99,7 @@ export type {
   NetworkEvent,
   NetworkErrorType,
   NetworkErrorDetail,
+  ResponseBodyCaptureContext,
   InstrumentOptions,
   NetworkHandler,
   Unsubscribe as NetworkUnsubscribe,

@@ -31,11 +31,16 @@ describe('NetworkPlugin', () => {
     _resetFetchInstrumentation();
     _resetXHRInstrumentation();
     window.fetch = originalFetch;
+    window.history.pushState({}, '', '/');
   });
 
   function createLogger(): AemeathLogger {
     logger = new AemeathLogger({ enableConsole: false });
     return logger;
+  }
+
+  async function waitForLog(logListener: ReturnType<typeof vi.fn>): Promise<void> {
+    await vi.waitFor(() => expect(logListener).toHaveBeenCalled());
   }
 
   // ==================== 安装与卸载 ====================
@@ -135,6 +140,7 @@ describe('NetworkPlugin', () => {
       l.use(plugin);
 
       await window.fetch('/api/data', { method: 'GET' });
+      await waitForLog(logListener);
 
       expect(logListener).toHaveBeenCalled();
       const entry = logListener.mock.calls[0][0];
@@ -160,6 +166,7 @@ describe('NetworkPlugin', () => {
       l.use(plugin);
 
       await window.fetch('/api/data', { method: 'POST' });
+      await waitForLog(logListener);
 
       expect(logListener).toHaveBeenCalled();
       const entry = logListener.mock.calls[0][0];
@@ -209,6 +216,7 @@ describe('NetworkPlugin', () => {
         method: 'POST',
         body: JSON.stringify({ name: 'test' }),
       });
+      await waitForLog(logListener);
 
       const entry = logListener.mock.calls[0][0];
       expect(entry.context?.requestData).toBeDefined();
@@ -233,9 +241,105 @@ describe('NetworkPlugin', () => {
         method: 'POST',
         body: JSON.stringify({ name: 'test' }),
       });
+      await waitForLog(logListener);
 
       const entry = logListener.mock.calls[0][0];
       expect(entry.context?.requestData).toBeUndefined();
+    });
+
+    it('二进制 HTTP 错误应保留元数据但不克隆响应体', async () => {
+      const response = new Response(new Uint8Array([1, 2, 3]), {
+        status: 500,
+        headers: { 'content-type': 'audio/mpeg' },
+      });
+      const cloneSpy = vi.spyOn(response, 'clone');
+      window.fetch = vi.fn().mockResolvedValue(response);
+
+      const l = createLogger();
+      const logListener = vi.fn();
+      l.on('log', logListener);
+      l.use(new NetworkPlugin({ logTypes: ['error'] }));
+
+      await window.fetch('/media/error');
+      await waitForLog(logListener);
+
+      const entry = logListener.mock.calls[0][0];
+      expect(cloneSpy).not.toHaveBeenCalled();
+      expect(entry.context?.status).toBe(500);
+      expect(entry.context?.responseData).toBeUndefined();
+    });
+
+    it('截断 Fetch 响应体时应记录 responseDataTruncated', async () => {
+      window.fetch = vi.fn().mockResolvedValue(
+        new Response('x'.repeat(100), {
+          headers: { 'content-type': 'text/plain', 'content-length': '100' },
+        }),
+      );
+
+      const l = createLogger();
+      const logListener = vi.fn();
+      l.on('log', logListener);
+      l.use(new NetworkPlugin({ maxResponseBodySize: 10 }));
+
+      await window.fetch('/api/large-text');
+      await waitForLog(logListener);
+
+      const entry = logListener.mock.calls[0][0];
+      expect(entry.context?.responseData).toBe('x'.repeat(10));
+      expect(entry.context?.responseDataTruncated).toBe(true);
+    });
+
+    it('无效的响应体大小配置应回退到默认有限上限', async () => {
+      window.fetch = vi.fn().mockResolvedValue(
+        new Response('x'.repeat(11_000), {
+          headers: { 'content-type': 'text/plain', 'content-length': '11000' },
+        }),
+      );
+
+      const l = createLogger();
+      const logListener = vi.fn();
+      l.on('log', logListener);
+      l.use(new NetworkPlugin({ maxResponseBodySize: Number.POSITIVE_INFINITY }));
+
+      await window.fetch('/api/invalid-size');
+      await waitForLog(logListener);
+
+      const entry = logListener.mock.calls[0][0];
+      expect(entry.context?.responseData).toBe('x'.repeat(10_240));
+      expect(entry.context?.responseDataTruncated).toBe(true);
+    });
+
+    it('应按请求开始时的路由归属记录后台响应体', async () => {
+      window.history.pushState({}, '', '/network-included');
+      let streamController!: ReadableStreamDefaultController<Uint8Array>;
+      const response = new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            streamController = controller;
+          },
+        }),
+        { headers: { 'content-type': 'application/json' } },
+      );
+      window.fetch = vi.fn().mockResolvedValue(response);
+
+      const l = createLogger();
+      const logListener = vi.fn();
+      l.on('log', logListener);
+      l.use(
+        new NetworkPlugin({
+          routeMatch: { includeRoutes: ['/network-included'] },
+        }),
+      );
+
+      const businessResponse = await window.fetch('/api/route-snapshot');
+      window.history.pushState({}, '', '/network-excluded');
+      streamController.enqueue(new TextEncoder().encode('{"ok":true}'));
+      streamController.close();
+      await businessResponse.text();
+      await waitForLog(logListener);
+
+      expect(logListener).toHaveBeenCalledOnce();
+      expect(logListener.mock.calls[0][0].context?.url).toBe('/api/route-snapshot');
     });
   });
 
@@ -264,6 +368,7 @@ describe('NetworkPlugin', () => {
       expect(logListener).not.toHaveBeenCalled();
 
       await window.fetch('/api/error');
+      await waitForLog(logListener);
       expect(logListener).toHaveBeenCalled();
       expect(logListener.mock.calls[0][0].level).toBe('error');
     });
@@ -352,6 +457,7 @@ describe('NetworkPlugin', () => {
       l.use(plugin);
 
       await window.fetch('/api/data');
+      await waitForLog(logListener);
 
       const entry = logListener.mock.calls[0][0];
       expect(entry.context?.responseCode).toBe(10001);
@@ -513,6 +619,7 @@ describe('NetworkPlugin', () => {
       l.use(plugin);
 
       await window.fetch('/api/data');
+      await waitForLog(logListener);
       expect(logListener).toHaveBeenCalled();
     });
 

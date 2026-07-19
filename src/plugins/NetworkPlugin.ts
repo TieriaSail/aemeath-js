@@ -12,7 +12,14 @@
 import type { AemeathPlugin, AemeathInterface } from '../types';
 import { PluginPriority } from '../types';
 import type { PlatformAdapter } from '../platform/types';
-import type { NetworkEvent, NetworkErrorType, NetworkErrorDetail, InstrumentOptions, Unsubscribe } from '../instrumentation/types';
+import type {
+  NetworkEvent,
+  NetworkErrorType,
+  NetworkErrorDetail,
+  ResponseBodyCaptureContext,
+  InstrumentOptions,
+  Unsubscribe,
+} from '../instrumentation/types';
 import { instrumentFetch } from '../instrumentation/fetch';
 import { instrumentXHR } from '../instrumentation/xhr';
 import { instrumentMiniAppRequest } from '../instrumentation/miniapp-request';
@@ -33,11 +40,27 @@ export interface NetworkLog {
   errorDetail?: NetworkErrorDetail;
   requestBody?: unknown;
   responseBody?: unknown;
+  responseBodyTruncated?: boolean;
   responseCode?: number | string;
   responseMessage?: string;
 }
 
 export type NetworkLogType = 'success' | 'error' | 'slow';
+
+const DEFAULT_MAX_RESPONSE_BODY_SIZE = 10240;
+const DEFAULT_RESPONSE_BODY_CAPTURE_TIMEOUT = 2000;
+
+function normalizeNonNegativeInteger(value: number | undefined, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0
+    ? Math.floor(value)
+    : fallback;
+}
+
+function normalizePositiveInteger(value: number | undefined, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0
+    ? Math.max(1, Math.floor(value))
+    : fallback;
+}
 
 export interface NetworkPluginOptions {
   interceptFetch?: boolean;
@@ -46,7 +69,12 @@ export interface NetworkPluginOptions {
   logTypes?: NetworkLogType[];
   captureRequestBody?: boolean;
   captureResponseBody?: boolean;
+  /** Browser Fetch only. Defaults to explicit text/JSON/XML response types. */
+  shouldCaptureResponseBody?: (context: ResponseBodyCaptureContext) => boolean;
+  /** Maximum number of Fetch response-body bytes to retain. @default 10240 */
   maxResponseBodySize?: number;
+  /** Maximum time to wait for Fetch body capture before cancellation. @default 2000 */
+  responseBodyCaptureTimeout?: number;
   slowThreshold?: number;
   slowRequestExcludePatterns?: string[];
   /**
@@ -84,10 +112,10 @@ export interface NetworkPluginOptions {
 type NetworkPluginConfig = Required<
   Omit<
     NetworkPluginOptions,
-    'urlFilter' | 'logTypes' | 'slowRequestExcludePatterns' | 'miniAppAPI' | 'routeMatch' | 'ignoreErrorTypes' | 'captureAborted'
+    'urlFilter' | 'logTypes' | 'slowRequestExcludePatterns' | 'miniAppAPI' | 'routeMatch' | 'ignoreErrorTypes' | 'captureAborted' | 'shouldCaptureResponseBody'
   >
 > &
-  Pick<NetworkPluginOptions, 'urlFilter' | 'miniAppAPI'> & {
+  Pick<NetworkPluginOptions, 'urlFilter' | 'miniAppAPI' | 'shouldCaptureResponseBody'> & {
     logTypes: Set<NetworkLogType>;
     slowRequestExcludePatterns: string[];
     ignoreErrorTypes: Set<NetworkErrorType>;
@@ -128,7 +156,15 @@ export class NetworkPlugin implements AemeathPlugin {
       logTypes: new Set(options.logTypes ?? defaultLogTypes),
       captureRequestBody: options.captureRequestBody ?? true,
       captureResponseBody: options.captureResponseBody ?? true,
-      maxResponseBodySize: options.maxResponseBodySize ?? 10240,
+      shouldCaptureResponseBody: options.shouldCaptureResponseBody,
+      maxResponseBodySize: normalizeNonNegativeInteger(
+        options.maxResponseBodySize,
+        DEFAULT_MAX_RESPONSE_BODY_SIZE,
+      ),
+      responseBodyCaptureTimeout: normalizePositiveInteger(
+        options.responseBodyCaptureTimeout,
+        DEFAULT_RESPONSE_BODY_CAPTURE_TIMEOUT,
+      ),
       slowThreshold: options.slowThreshold ?? 3000,
       slowRequestExcludePatterns:
         options.slowRequestExcludePatterns ?? defaultSlowExcludePatterns,
@@ -172,18 +208,20 @@ export class NetworkPlugin implements AemeathPlugin {
 
   private buildInstrumentOptions(): InstrumentOptions {
     return {
-      shouldCapture: (url: string) => this.shouldCapture(url),
+      // Route ownership is fixed when the request starts. Fetch instrumentation
+      // keeps that subscriber snapshot until the response event is emitted.
+      shouldCapture: (url: string) =>
+        this.routeMatcher.shouldCapture(this.platform.getCurrentPath()) &&
+        this.shouldCapture(url),
       captureRequestBody: this.config.captureRequestBody,
       captureResponseBody: this.config.captureResponseBody,
+      shouldCaptureResponseBody: this.config.shouldCaptureResponseBody,
       maxResponseBodySize: this.config.maxResponseBodySize,
+      responseBodyCaptureTimeout: this.config.responseBodyCaptureTimeout,
     };
   }
 
   private handleNetworkEvent = (event: NetworkEvent): void => {
-    if (!this.routeMatcher.shouldCapture(this.platform.getCurrentPath())) {
-      return;
-    }
-
     this.recordRequest({
       type: event.type,
       url: event.url,
@@ -197,6 +235,7 @@ export class NetworkPlugin implements AemeathPlugin {
       errorDetail: event.errorDetail,
       requestBody: event.requestBody,
       responseBody: event.responseBody,
+      responseBodyTruncated: event.responseBodyTruncated,
       responseCode: event.responseCode,
       responseMessage: event.responseMessage,
     });
@@ -342,6 +381,9 @@ export class NetworkPlugin implements AemeathPlugin {
     }
     if (this.config.captureResponseBody && log.responseBody !== undefined) {
       context['responseData'] = this.truncateData(log.responseBody, this.config.maxResponseBodySize);
+    }
+    if (log.responseBodyTruncated) {
+      context['responseDataTruncated'] = true;
     }
     if (log.error) context['error'] = log.error;
     if (log.errorType) context['errorType'] = log.errorType;
