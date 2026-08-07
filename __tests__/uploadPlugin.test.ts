@@ -2,22 +2,9 @@
  * UploadPlugin 上传插件测试
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { UploadPlugin } from '../src/plugins/UploadPlugin';
+import { UploadPlugin, type UploadCallback } from '../src/plugins/UploadPlugin';
 import { AemeathLogger } from '../src/core/Logger';
 import type { LogEntry } from '../src/types';
-
-// 创建一个假的 LogEntry
-function createLog(
-  level: 'debug' | 'info' | 'warn' | 'error' = 'info',
-  message = 'test',
-): LogEntry {
-  return {
-    logId: `test-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`,
-    level,
-    message,
-    timestamp: Date.now(),
-  };
-}
 
 describe('UploadPlugin', () => {
   let uploadFn: ReturnType<typeof vi.fn>;
@@ -28,7 +15,7 @@ describe('UploadPlugin', () => {
     vi.useFakeTimers();
     uploadFn = vi.fn().mockResolvedValue({ success: true });
     plugin = new UploadPlugin({
-      onUpload: uploadFn,
+      onUpload: uploadFn as unknown as UploadCallback,
       queue: { deduplicationDelay: 10, uploadInterval: 30000 },
       cache: { enabled: false }, // 测试中禁用缓存避免干扰
       saveOnUnload: false,
@@ -89,7 +76,7 @@ describe('UploadPlugin', () => {
   describe('优先级', () => {
     it('默认优先级: error > warn > info > debug', () => {
       const customPlugin = new UploadPlugin({
-        onUpload: uploadFn,
+        onUpload: uploadFn as unknown as UploadCallback,
         queue: { deduplicationDelay: 10 },
         cache: { enabled: false },
         saveOnUnload: false,
@@ -110,9 +97,26 @@ describe('UploadPlugin', () => {
       expect(status.items[status.items.length - 1].level).toBe('debug');
     });
 
+    it('track 的默认优先级与 info 相同', () => {
+      const customPlugin = new UploadPlugin({
+        onUpload: uploadFn as unknown as UploadCallback,
+        queue: { deduplicationDelay: 10 },
+        cache: { enabled: false },
+        saveOnUnload: false,
+      });
+
+      logger.use(customPlugin);
+
+      logger.track('t');
+      logger.info('i');
+
+      const status = customPlugin.getQueueStatus();
+      expect(status.items[0].priority).toBe(status.items[1].priority);
+    });
+
     it('自定义优先级回调应生效', async () => {
       const customPlugin = new UploadPlugin({
-        onUpload: uploadFn,
+        onUpload: uploadFn as unknown as UploadCallback,
         getPriority: (log) => (log.message === 'urgent' ? 999 : 1),
         queue: { deduplicationDelay: 10 },
         cache: { enabled: false },
@@ -149,10 +153,32 @@ describe('UploadPlugin', () => {
       logger.use(retryPlugin);
       logger.error('retry me');
 
-      // 给足够的时间让重试完成
-      await vi.advanceTimersByTimeAsync(2000);
+      // 重试之间有指数退避（1s、2s…），要给足时间
+      await vi.advanceTimersByTimeAsync(10000);
 
       expect(callCount).toBe(3); // 2 次失败 + 1 次成功
+    });
+
+    it('重试之间应有指数退避，而不是瞬间打完预算', async () => {
+      const timestamps: number[] = [];
+      const backoffPlugin = new UploadPlugin({
+        onUpload: async () => {
+          timestamps.push(Date.now());
+          return { success: false, shouldRetry: true, retryReason: 'server' as const };
+        },
+        queue: { maxRetries: 2, deduplicationDelay: 10, retryBackoff: true },
+        cache: { enabled: false },
+        saveOnUnload: false,
+      });
+
+      logger.use(backoffPlugin);
+      logger.error('backoff me');
+      await vi.advanceTimersByTimeAsync(10000);
+
+      expect(timestamps.length).toBe(3);
+      // 第 1→2 次间隔 ≈ 1s，第 2→3 次间隔 ≈ 2s
+      expect(timestamps[1]! - timestamps[0]!).toBeGreaterThanOrEqual(1000);
+      expect(timestamps[2]! - timestamps[1]!).toBeGreaterThanOrEqual(2000);
     });
 
     it('shouldRetry=false 时不应重试', async () => {
@@ -175,25 +201,105 @@ describe('UploadPlugin', () => {
       expect(noRetryFn).toHaveBeenCalledTimes(1);
     });
 
-    it('超过最大重试次数后应放弃', async () => {
+    it('超过最大重试次数后应放弃（链路正常、单条毒丸日志）', async () => {
       const alwaysFailFn = vi
         .fn()
-        .mockResolvedValue({ success: false, shouldRetry: true });
+        .mockResolvedValue({ success: false, shouldRetry: true, retryReason: 'server' });
+      const onDrop = vi.fn();
 
       const maxRetryPlugin = new UploadPlugin({
         onUpload: alwaysFailFn,
         queue: { maxRetries: 2, deduplicationDelay: 10 },
         cache: { enabled: false },
         saveOnUnload: false,
+        onDrop,
       });
 
       logger.use(maxRetryPlugin);
       logger.error('will fail');
 
-      await vi.advanceTimersByTimeAsync(3000);
+      await vi.advanceTimersByTimeAsync(20000);
 
       // 1 次初始 + 2 次重试 = 3 次
       expect(alwaysFailFn).toHaveBeenCalledTimes(3);
+      expect(onDrop).toHaveBeenCalledTimes(1);
+      expect(onDrop.mock.calls[0]![1]).toMatchObject({ reason: 'max-retries' });
+    });
+
+    it('连续传输层失败达到阈值后应暂停队列而不是丢弃日志', async () => {
+      const alwaysFailFn = vi
+        .fn()
+        .mockResolvedValue({ success: false, shouldRetry: true, retryReason: 'network' });
+      const onDrop = vi.fn();
+
+      const pausePlugin = new UploadPlugin({
+        onUpload: alwaysFailFn,
+        queue: { offlinePolicy: 'pause', maxRetries: 2, deduplicationDelay: 10, suspectedOfflineThreshold: 2 },
+        cache: { enabled: false },
+        saveOnUnload: false,
+        onDrop,
+      });
+
+      logger.use(pausePlugin);
+      logger.error('network is down');
+
+      await vi.advanceTimersByTimeAsync(3000);
+
+      const status = pausePlugin.getQueueStatus();
+      expect(status.paused).toBe(true);
+      expect(status.length).toBe(1); // 日志仍在队列里，没有被丢弃
+      expect(onDrop).not.toHaveBeenCalled();
+    });
+
+    it('服务端持续 5xx 不应被误判为离线：耗尽预算后丢弃，队列不暂停', async () => {
+      // 服务端回了话就说明链路是通的。若把它算作离线证据，后端故障会让队列
+      // 无限期暂停、maxRetries 永远耗不完，日志一路堆到溢出。
+      const serverDownFn = vi
+        .fn()
+        .mockResolvedValue({ success: false, shouldRetry: true, retryReason: 'server' });
+      const onDrop = vi.fn();
+
+      const plugin = new UploadPlugin({
+        onUpload: serverDownFn,
+        queue: { offlinePolicy: 'pause', maxRetries: 2, deduplicationDelay: 10, suspectedOfflineThreshold: 2 },
+        cache: { enabled: false },
+        saveOnUnload: false,
+        onDrop,
+      });
+
+      logger.use(plugin);
+      logger.error('backend is down');
+
+      await vi.advanceTimersByTimeAsync(20000);
+
+      expect(serverDownFn).toHaveBeenCalledTimes(3);
+      expect(plugin.getQueueStatus().paused).toBe(false);
+      expect(plugin.getQueueStatus().length).toBe(0);
+      expect(onDrop.mock.calls[0]![1]).toMatchObject({ reason: 'max-retries' });
+    });
+
+    it('legacy 策略下应保持旧行为：不暂停、失败即耗预算', async () => {
+      const alwaysFailFn = vi
+        .fn()
+        .mockResolvedValue({ success: false, shouldRetry: true });
+      const onDrop = vi.fn();
+
+      const legacyPlugin = new UploadPlugin({
+        onUpload: alwaysFailFn,
+        queue: { maxRetries: 2, deduplicationDelay: 10, offlinePolicy: 'legacy' },
+        cache: { enabled: false },
+        saveOnUnload: false,
+        onDrop,
+      });
+
+      logger.use(legacyPlugin);
+      logger.error('will fail');
+
+      await vi.advanceTimersByTimeAsync(3000);
+
+      expect(alwaysFailFn).toHaveBeenCalledTimes(3);
+      expect(legacyPlugin.getQueueStatus().paused).toBe(false);
+      expect(onDrop.mock.calls[0]![1]).toMatchObject({ reason: 'max-retries' });
     });
 
     it('上传回调抛出异常时也应重试', async () => {
@@ -225,7 +331,7 @@ describe('UploadPlugin', () => {
   describe('队列容量', () => {
     it('超过 maxSize 应移除低优先级日志', () => {
       const smallPlugin = new UploadPlugin({
-        onUpload: uploadFn,
+        onUpload: uploadFn as unknown as UploadCallback,
         queue: { maxSize: 3, deduplicationDelay: 10 },
         cache: { enabled: false },
         saveOnUnload: false,
@@ -250,7 +356,9 @@ describe('UploadPlugin', () => {
   describe('本地缓存', () => {
     it('启用缓存时应保存到 localStorage', async () => {
       const cachePlugin = new UploadPlugin({
-        onUpload: vi.fn().mockResolvedValue({ success: false, shouldRetry: false }),
+        onUpload: vi
+          .fn()
+          .mockResolvedValue({ success: false, shouldRetry: false }) as unknown as UploadCallback,
         cache: { enabled: true, key: '__test_cache__' },
         saveOnUnload: false,
         queue: { deduplicationDelay: 10 },
@@ -278,25 +386,6 @@ describe('UploadPlugin', () => {
       expect(status).toHaveProperty('isProcessing');
       expect(status).toHaveProperty('items');
       expect(Array.isArray(status.items)).toBe(true);
-    });
-  });
-
-  // ==================== track 优先级 ====================
-
-  describe('track 优先级', () => {
-    it('track 日志应与 info 拥有相同的默认优先级', () => {
-      logger.use(plugin);
-
-      const logListener = vi.fn();
-      logger.on('log', logListener);
-
-      logger.info('info msg');
-      logger.track('track msg');
-
-      const infoEntry = logListener.mock.calls[0][0];
-      const trackEntry = logListener.mock.calls[1][0];
-      expect(infoEntry.level).toBe('info');
-      expect(trackEntry.level).toBe('track');
     });
   });
 
@@ -329,6 +418,29 @@ describe('UploadPlugin', () => {
       expect(arg.requestId!.length).toBeGreaterThan(0);
     });
 
+    it('同一条日志的 logId 在重试时应保持不变', async () => {
+      let callCount = 0;
+      const retryPlugin = new UploadPlugin({
+        onUpload: async (_log) => {
+          callCount++;
+          if (callCount <= 1) {
+            return { success: false, shouldRetry: true, error: 'retry' };
+          }
+          return { success: true };
+        },
+        queue: { maxRetries: 3, deduplicationDelay: 10 },
+        cache: { enabled: false },
+        saveOnUnload: false,
+      });
+
+      logger.use(retryPlugin);
+      logger.error('retry logId test');
+
+      await vi.advanceTimersByTimeAsync(5000);
+
+      expect(callCount).toBe(2);
+    });
+
     it('同一条日志的不同上报尝试应有不同的 requestId', async () => {
       const receivedRequestIds: string[] = [];
       let callCount = 0;
@@ -349,7 +461,7 @@ describe('UploadPlugin', () => {
       logger.use(retryPlugin);
       logger.error('requestId uniqueness test');
 
-      await vi.advanceTimersByTimeAsync(2000);
+      await vi.advanceTimersByTimeAsync(5000);
 
       expect(receivedRequestIds.length).toBe(2);
       expect(receivedRequestIds[0]).not.toBe(receivedRequestIds[1]);

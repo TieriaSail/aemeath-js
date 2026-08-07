@@ -123,8 +123,14 @@ All plugins are optional. Only import what you need — unused plugins are tree-
 | `NetworkPlugin` | Monitor fetch/XHR requests (errors, slow requests) | ~3KB |
 | `SafeGuardPlugin` | Rate limiting, recursion guard, error budget | ~3KB |
 | `BeforeSendPlugin` | 🛡️ End-of-pipeline interceptor for redaction / filtering ([docs](./docs/en/9-before-send.md)) | <1KB |
+| `PayloadSanitizePlugin` | 🧼 Opt-in — Data URL / Blob placeholders, oversized payload split ([docs](./docs/en/10-payload-sanitize.md)) | ~2KB |
+| `OfflinePersistencePlugin` | 📴 Opt-in — persist offline (IndexedDB), replay when back online ([docs](./docs/en/11-offline-persistence.md)) | ~4KB |
 
 > Need to control plugin execution order? See [Plugin Ordering](./docs/en/8-plugin-ordering.md) (priority field).
+
+### Reliability (1.10, conservative defaults)
+
+`UploadPlugin` keeps **`offlinePolicy: 'legacy'`** by default. Opt into `queue: { offlinePolicy: 'pause' }`, `payloadSanitize: true`, and/or `offlinePersistence: true` when you want the stronger reliability path. See [Upload Plugin](./docs/en/4-upload-plugin.md).
 
 ### `beforeSend` — privacy & redaction
 
@@ -354,6 +360,8 @@ logger.use(new MyPlugin());
 | **[Performance Monitoring](./docs/en/6-performance-monitoring.md)** | 🧪 Web Vitals performance monitoring (experimental) |
 | **[Plugin Ordering](./docs/en/8-plugin-ordering.md)** | 🧩 Control plugin execution order via `priority` |
 | **[`beforeSend` Hook](./docs/en/9-before-send.md)** | 🛡️ End-of-pipeline interceptor for redaction / filtering |
+| **[Payload Sanitize](./docs/en/10-payload-sanitize.md)** | 🧼 Opt-in Data URL / oversized payload handling |
+| **[Offline Persistence](./docs/en/11-offline-persistence.md)** | 📴 Opt-in offline persist + replay |
 | **[Browser Usage](./docs/en/0-browser-usage.md)** | Script tag usage (no build tools) |
 
 > 📖 中文文档：[查看中文 README](./README.zh_CN.md) | [快速开始](./QUICK_START.zh_CN.md) | [模块文档](./docs/zh/)

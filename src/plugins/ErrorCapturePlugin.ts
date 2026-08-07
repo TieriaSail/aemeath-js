@@ -316,6 +316,10 @@ export class ErrorCapturePlugin implements AemeathPlugin {
         '[NetworkPlugin]',
         '[BrowserApiErrors]',
         '[AemeathJs]',
+        // 新插件用的是 `[Aemeath]` / `[Aemeath:xxx]` 前缀，漏掉它们意味着
+        // ErrorCapture 会把 SDK 自己的 warn/throw 再当成宿主错误上报
+        '[Aemeath]',
+        '[Aemeath:',
       ];
 
       if (loggerMessages.some((pattern) => message.includes(pattern))) {

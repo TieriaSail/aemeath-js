@@ -11,7 +11,19 @@ import { AemeathLogger } from '../core/Logger';
 import { BrowserApiErrorsPlugin, type BrowserApiErrorsPluginOptions } from '../plugins/BrowserApiErrorsPlugin';
 import { ErrorCapturePlugin } from '../plugins/ErrorCapturePlugin';
 import { EarlyErrorCapturePlugin } from '../plugins/EarlyErrorCapturePlugin';
-import { UploadPlugin, type UploadResult } from '../plugins/UploadPlugin';
+import {
+  UploadPlugin,
+  type UploadResult,
+  type UploadDropCallback,
+} from '../plugins/UploadPlugin';
+import {
+  PayloadSanitizePlugin,
+  type PayloadSanitizePluginOptions,
+} from '../plugins/PayloadSanitizePlugin';
+import {
+  OfflinePersistencePlugin,
+  type OfflinePersistencePluginOptions,
+} from '../plugins/OfflinePersistencePlugin';
 import { SafeGuardPlugin, type SafeGuardMode } from '../plugins/SafeGuardPlugin';
 import {
   NetworkPlugin,
@@ -162,7 +174,85 @@ export interface AemeathInitOptions {
     concurrency?: number;
     /** 最大重试次数 @default 3 */
     maxRetries?: number;
+    /**
+     * 网络不可用时的策略
+     *
+     * - `'legacy'`（1.10 默认）：与 1.9 一致，失败即消耗重试预算
+     * - `'pause'`：判定离线时暂停队列，不消耗重试预算（opt-in）
+     *
+     * @default 'legacy'
+     */
+    offlinePolicy?: 'pause' | 'legacy';
+    /** 重试退避；`legacy` 默认关，`pause` 默认开 */
+    retryBackoff?: boolean | { baseMs?: number; maxMs?: number };
+    /** 连续失败多少次判定为疑似离线 @default 3 */
+    suspectedOfflineThreshold?: number;
+    /**
+     * 单次 `onUpload` 等待上限（毫秒）
+     * @default 0（不限制，与 1.9 一致）
+     */
+    uploadTimeoutMs?: number;
   };
+
+  /**
+   * 本地缓存配置
+   *
+   * ⚠️ 只解决页面重载导致的队列丢失，**不提供断网续传**（那是 `offlinePersistence`）。
+   */
+  cache?: {
+    /** 是否启用 @default true */
+    enabled?: boolean;
+    /** 缓存 key @default '__logger_upload_queue__' */
+    key?: string;
+    /** 有效期（毫秒），从写入缓存时刻算起 @default 3600000 */
+    ttl?: number;
+  };
+
+  /**
+   * 日志被丢弃时的回调
+   *
+   * @example
+   * ```javascript
+   * onDrop: (log, info) => {
+   *   console.warn('log dropped', info.reason, log.logId);
+   * }
+   * ```
+   */
+  onDrop?: UploadDropCallback;
+
+  /**
+   * 载荷清洗（1.x 默认关闭）
+   *
+   * - Data URL / Blob / ArrayBuffer → 简短占位符
+   * - 单字段超过上限 → 整条丢弃并 `console.error`
+   * - 整包超过上限 → 按字段拆成多条上报，内容不丢
+   *
+   * 需显式开启；关闭时超大日志会原样进入上传队列与本地缓存。
+   *
+   * @default false
+   * @example
+   * ```javascript
+   * initAemeath({ upload, payloadSanitize: true });
+   * initAemeath({ upload, payloadSanitize: { maxBytes: 60000 } });
+   * ```
+   */
+  payloadSanitize?: boolean | PayloadSanitizePluginOptions;
+
+  /**
+   * 断网续传（默认关闭）
+   *
+   * 开启后，断网期间的日志会落盘（IndexedDB，不可用时降级到 localStorage），
+   * 网络恢复后自动补传；补传只进上传队列，不会重放业务侧的日志监听。
+   *
+   * 需要同时提供 `upload`；这是**尽力而为**的持久化。
+   *
+   * @default false
+   * @example
+   * ```javascript
+   * initAemeath({ upload, offlinePersistence: true });
+   * ```
+   */
+  offlinePersistence?: boolean | OfflinePersistencePluginOptions;
 
   /**
    * 是否启用控制台输出
@@ -419,16 +509,40 @@ export function initAemeath(options: AemeathInitOptions = {}): AemeathLogger {
         honored.push('beforeSend');
       }
     }
+    if (options.payloadSanitize === false) {
+      if (globalAemeath.uninstall('payload-sanitize')) honored.push('payloadSanitize');
+    } else if (options.payloadSanitize && !globalAemeath.hasPlugin('payload-sanitize')) {
+      globalAemeath.use(
+        new PayloadSanitizePlugin(
+          typeof options.payloadSanitize === 'object' ? options.payloadSanitize : {},
+        ),
+      );
+      honored.push('payloadSanitize');
+    }
     if (options.upload && !globalAemeath.hasPlugin('upload')) {
       globalAemeath.use(
         new UploadPlugin({
           onUpload: options.upload,
           getPriority: options.getPriority,
           queue: options.queue,
-          cache: { enabled: true },
+          cache: { enabled: options.cache?.enabled !== false, ...options.cache },
+          onDrop: options.onDrop,
         }),
       );
-      honored.push('upload');
+      // 随 UploadPlugin 一起生效的选项要记入 honored，否则会被误报成「已忽略」
+      honored.push('upload', 'getPriority', 'queue', 'cache', 'onDrop');
+    }
+    if (
+      options.offlinePersistence &&
+      globalAemeath.hasPlugin('upload') &&
+      !globalAemeath.hasPlugin('offline-persistence')
+    ) {
+      globalAemeath.use(
+        new OfflinePersistencePlugin(
+          typeof options.offlinePersistence === 'object' ? options.offlinePersistence : {},
+        ),
+      );
+      honored.push('offlinePersistence');
     }
     if (typeof console !== 'undefined' && console.warn) {
       const ignored = Object.keys(options).filter((k) => !honored.includes(k));
@@ -508,9 +622,24 @@ export function initAemeath(options: AemeathInitOptions = {}): AemeathLogger {
       onUpload: options.upload,
       getPriority: options.getPriority,
       queue: options.queue,
-      cache: { enabled: true },
+      cache: { enabled: options.cache?.enabled !== false, ...options.cache },
+      onDrop: options.onDrop,
     });
     logger.use(uploadPlugin);
+
+    // 4b. 断网续传（可选，必须在 UploadPlugin 之后安装）
+    if (options.offlinePersistence) {
+      logger.use(
+        new OfflinePersistencePlugin(
+          typeof options.offlinePersistence === 'object' ? options.offlinePersistence : {},
+        ),
+      );
+    }
+  } else if (options.offlinePersistence && typeof console !== 'undefined' && console.warn) {
+    console.warn(
+      '[Aemeath] `offlinePersistence` was enabled but no `upload` callback was provided. '
+        + 'There is nothing to persist or replay; the option is ignored.',
+    );
   }
 
   // 5. 网络请求监控（默认启用）
@@ -540,7 +669,16 @@ export function initAemeath(options: AemeathInitOptions = {}): AemeathLogger {
     );
   }
 
-  // 6. 全链路最终拦截 / 脱敏（priority: LATEST）
+  // 6. 载荷清洗（1.x 默认关闭；启用后位于采集插件之后、beforeSend 之前）
+  if (options.payloadSanitize) {
+    logger.use(
+      new PayloadSanitizePlugin(
+        typeof options.payloadSanitize === 'object' ? options.payloadSanitize : {},
+      ),
+    );
+  }
+
+  // 7. 全链路最终拦截 / 脱敏（priority: LATEST）
   // 始终安装（即便没传 beforeSend 钩子也安装，便于运行时通过 setBeforeSend 动态设置）
   logger.use(new BeforeSendPlugin({ beforeSend: options.beforeSend }));
 

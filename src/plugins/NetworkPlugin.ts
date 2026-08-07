@@ -13,6 +13,7 @@
 
 import type { AemeathPlugin, AemeathInterface } from '../types';
 import { PluginPriority } from '../types';
+import { shouldIgnoreNetworkCapture } from '../utils/ignoreNetworkCapture';
 import { RouteMatcher, type RouteMatchConfig } from '../utils/routeMatcher';
 
 /**
@@ -776,8 +777,12 @@ export class NetworkPlugin implements AemeathPlugin {
       ).toUpperCase();
       const routeMatched = self.routeMatcher.shouldCapture();
 
-      // 检查是否需要记录
-      if (!routeMatched || !self.shouldCapture(url)) {
+      // 上报回调窗口内发起的请求一律放行（避免自反馈环）
+      if (
+        shouldIgnoreNetworkCapture() ||
+        !routeMatched ||
+        !self.shouldCapture(url)
+      ) {
         return self.originalFetch!.call(window, input, init);
       }
 
@@ -977,7 +982,11 @@ export class NetworkPlugin implements AemeathPlugin {
     ): void {
       const info = (this as any)._networkInfo;
 
-      if (!info || !self.shouldCapture(info.url)) {
+      if (
+        !info ||
+        shouldIgnoreNetworkCapture() ||
+        !self.shouldCapture(info.url)
+      ) {
         return self.originalXHRSend!.call(this, body);
       }
 

@@ -56,7 +56,32 @@ export type {
   UploadResult,
   UploadCallback,
   PriorityCallback,
+  UploadDropReason,
+  UploadDropInfo,
+  UploadDropCallback,
+  UploadRetryReason,
 } from './plugins/UploadPlugin';
+
+// ==================== PayloadSanitize（可选，1.x 默认关闭） ====================
+export { PayloadSanitizePlugin } from './plugins/PayloadSanitizePlugin';
+export type {
+  PayloadSanitizePluginOptions,
+  PayloadSanitizeStats,
+} from './plugins/PayloadSanitizePlugin';
+export { sanitizeLogEntry, utf8Bytes, DEFAULT_MAX_BYTES } from './utils/payloadSanitize';
+export type {
+  PayloadSanitizeOptions,
+  PayloadSanitizeResult,
+  PayloadStrip,
+  StripKind,
+} from './utils/payloadSanitize';
+
+// ==================== OfflinePersistence（可选，opt-in） ====================
+export { OfflinePersistencePlugin } from './plugins/OfflinePersistencePlugin';
+export type {
+  OfflinePersistencePluginOptions,
+  OfflinePersistenceStatus,
+} from './plugins/OfflinePersistencePlugin';
 
 // ==================== 可选插件 ====================
 export { PerformancePlugin } from './plugins/PerformancePlugin';

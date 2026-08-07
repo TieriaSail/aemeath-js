@@ -123,19 +123,18 @@ describe('Browser IIFE 入口', () => {
   // ==================== 日志级别过滤 ====================
 
   describe('日志级别过滤', () => {
-    it("level='warn' 时 debug 和 info 应被替换为 noop", async () => {
+    it("level='warn' 时 debug/info/track 应被替换为 noop", async () => {
       const mod = await import('../src/browser/index');
       const logger = mod.init({ level: 'warn', errorCapture: false, safeGuard: false });
 
       const logListener = vi.fn();
       logger.on('log', logListener);
 
-      // debug 和 info 被替换为 noop，不应触发
       logger.debug('d');
       logger.info('i');
+      logger.track('t');
       expect(logListener).not.toHaveBeenCalled();
 
-      // warn 和 error 应正常
       logger.warn('w');
       expect(logListener).toHaveBeenCalledTimes(1);
     });
@@ -149,6 +148,7 @@ describe('Browser IIFE 入口', () => {
 
       logger.debug('d');
       logger.info('i');
+      logger.track('t');
       logger.warn('w');
       expect(logListener).not.toHaveBeenCalled();
 
@@ -165,17 +165,29 @@ describe('Browser IIFE 入口', () => {
 
       logger.debug('d');
       logger.info('i');
+      logger.track('t');
       logger.warn('w');
       logger.error('e');
 
-      expect(logListener).toHaveBeenCalledTimes(4);
+      expect(logListener).toHaveBeenCalledTimes(5);
     });
-  });
 
-  // ==================== track 级别过滤 ====================
+    it("level='info' 时 track 也应生效（track 与 info 同级）", async () => {
+      const mod = await import('../src/browser/index');
+      const logger = mod.init({ level: 'info', errorCapture: false, safeGuard: false });
 
-  describe('track 级别过滤', () => {
-    it("level='warn' 时 track 应被替换为 noop", async () => {
+      const logListener = vi.fn();
+      logger.on('log', logListener);
+
+      logger.debug('d');
+      expect(logListener).not.toHaveBeenCalled();
+
+      logger.track('t');
+      expect(logListener).toHaveBeenCalledTimes(1);
+      expect(logListener.mock.calls[0][0].level).toBe('track');
+    });
+
+    it("level='warn' 时 track 应被替换为 noop（1.x browser 入口）", async () => {
       const mod = await import('../src/browser/index');
       const logger = mod.init({
         level: 'warn',
@@ -183,39 +195,10 @@ describe('Browser IIFE 入口', () => {
         safeGuard: false,
       });
 
-      expect(logger.track).toBeDefined();
       const logListener = vi.fn();
       logger.on('log', logListener);
       logger.track('should be noop');
       expect(logListener).not.toHaveBeenCalled();
-    });
-
-    it("level='info' 时 track 应生效", async () => {
-      const mod = await import('../src/browser/index');
-      const logger = mod.init({
-        level: 'info',
-        errorCapture: false,
-        safeGuard: false,
-      });
-
-      const logListener = vi.fn();
-      logger.on('log', logListener);
-      logger.track('should work');
-      expect(logListener).toHaveBeenCalledTimes(1);
-    });
-
-    it("level='debug' 时 track 应生效", async () => {
-      const mod = await import('../src/browser/index');
-      const logger = mod.init({
-        level: 'debug',
-        errorCapture: false,
-        safeGuard: false,
-      });
-
-      const logListener = vi.fn();
-      logger.on('log', logListener);
-      logger.track('should work');
-      expect(logListener).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -233,13 +216,91 @@ describe('Browser IIFE 入口', () => {
       (window as any).__EARLY_ERRORS__ = earlyErrors;
 
       const mod = await import('../src/browser/index');
-      const logger = mod.init({ errorCapture: false, safeGuard: false });
+      mod.init({ errorCapture: false, safeGuard: false });
 
       expect((window as any).__flushEarlyErrors__).toHaveBeenCalled();
 
-      // 清理
       delete (window as any).__flushEarlyErrors__;
       delete (window as any).__EARLY_ERRORS__;
+    });
+
+    // 升级回归（v2.2.0-beta.1 early-handoff bug — Bug A）：
+    // 健康加载（脚本注入但无累计早期错误）也必须调 __flushEarlyErrors__，
+    // 否则 __LOGGER_INITIALIZED__ 永远不被翻牌、fallback 定时器到点开火、
+    // 早期脚本 listener 与模块化 ErrorCapturePlugin 双轨重复上报。
+    it('健康加载（脚本注入但无早期错误）也必须调 __flushEarlyErrors__ 翻牌', async () => {
+      const flushFn = vi.fn((callback: Function) => {
+        (window as any).__LOGGER_INITIALIZED__ = true;
+        callback([]);
+      });
+      (window as any).__flushEarlyErrors__ = flushFn;
+      (window as any).__EARLY_ERRORS__ = [];
+
+      const mod = await import('../src/browser/index');
+      mod.init({ errorCapture: false, safeGuard: false });
+
+      expect(flushFn).toHaveBeenCalledTimes(1);
+      expect((window as any).__LOGGER_INITIALIZED__).toBe(true);
+
+      delete (window as any).__flushEarlyErrors__;
+      delete (window as any).__EARLY_ERRORS__;
+      delete (window as any).__LOGGER_INITIALIZED__;
+    });
+
+    it('脚本未注入时不应调用 flush，也不应抛错', async () => {
+      delete (window as any).__flushEarlyErrors__;
+      delete (window as any).__EARLY_ERRORS__;
+
+      const mod = await import('../src/browser/index');
+      expect(() => {
+        mod.init({ errorCapture: false, safeGuard: false });
+      }).not.toThrow();
+
+      expect((window as any).__LOGGER_INITIALIZED__).toBeUndefined();
+    });
+  });
+
+  // ==================== 1.10 browser 入口保守默认 ====================
+
+  describe('1.10 browser 入口保守默认', () => {
+    it('默认不安装 PayloadSanitizePlugin（sanitize 走 npm/singleton opt-in）', async () => {
+      const mod = await import('../src/browser/index');
+      const logger = mod.init({
+        errorCapture: false,
+        safeGuard: false,
+        enableConsole: false,
+        upload: () => {},
+      });
+
+      expect(logger.hasPlugin('payload-sanitize')).toBe(false);
+    });
+
+    it('upload 抛异常时保持 legacy：不暂停、消耗重试预算', async () => {
+      // browser 入口未接线 queue.offlinePolicy；1.10 默认 legacy
+      const mod = await import('../src/browser/index');
+      const logger = mod.init({
+        errorCapture: false,
+        safeGuard: false,
+        enableConsole: false,
+        upload: async () => {
+          throw new TypeError('Failed to fetch');
+        },
+      });
+
+      vi.useFakeTimers();
+      try {
+        logger.error('stranded');
+        await vi.advanceTimersByTimeAsync(20000);
+
+        const upload = logger.getPluginInstance('upload') as any;
+        const status = upload.getQueueStatus();
+        expect(status.paused).toBe(false);
+        expect(status.length).toBe(0);
+        expect(status.drops.total).toBeGreaterThan(0);
+      } finally {
+        vi.useRealTimers();
+        logger.destroy();
+      }
     });
   });
 });

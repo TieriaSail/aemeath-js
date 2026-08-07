@@ -123,8 +123,14 @@ logger.updateContext('userId', '67890');
 | `NetworkPlugin` | 监控 fetch/XHR 请求（错误、慢请求） | ~3KB |
 | `SafeGuardPlugin` | 频率限制、递归保护、错误预算 | ~3KB |
 | `BeforeSendPlugin` | 🛡️ 全链路最终拦截，用于隐私脱敏 / 过滤（[文档](./docs/zh/9-before-send.md)） | <1KB |
+| `PayloadSanitizePlugin` | 🧼 可选 — Data URL / Blob 占位、超大日志拆分（[文档](./docs/zh/10-payload-sanitize.md)） | ~2KB |
+| `OfflinePersistencePlugin` | 📴 可选 — 断网落盘（IndexedDB），联网补传（[文档](./docs/zh/11-offline-persistence.md)） | ~4KB |
 
 > 想精确控制插件执行顺序？请看 [插件执行顺序](./docs/zh/8-plugin-ordering.md)（priority 字段）。
+
+### 可靠性（1.10，保守默认）
+
+`UploadPlugin` 默认仍是 **`offlinePolicy: 'legacy'`**。需要更强保障时再显式开启 `queue: { offlinePolicy: 'pause' }`、`payloadSanitize: true` 和/或 `offlinePersistence: true`。详见 [上报插件](./docs/zh/4-upload-plugin.md)。
 
 ### `beforeSend` — 隐私保护与脱敏
 
@@ -354,6 +360,8 @@ logger.use(new MyPlugin());
 | **[性能监控](./docs/zh/6-performance-monitoring.md)** | 🧪 Web Vitals 性能监控（实验性） |
 | **[插件执行顺序](./docs/zh/8-plugin-ordering.md)** | 🧩 通过 `priority` 控制插件执行顺序 |
 | **[`beforeSend` 钩子](./docs/zh/9-before-send.md)** | 🛡️ 全链路最终拦截，用于隐私脱敏 / 过滤 |
+| **[载荷清洗](./docs/zh/10-payload-sanitize.md)** | 🧼 可选：Data URL / 超大日志处理 |
+| **[断网续传](./docs/zh/11-offline-persistence.md)** | 📴 可选：离线落盘 + 联网补传 |
 | **[浏览器直接使用](./docs/zh/0-browser-usage.md)** | Script 标签引入（无需构建工具） |
 
 > 📖 English docs: [README](./README.md) | [Quick Start](./QUICK_START.md) | [Module Docs](./docs/en/)

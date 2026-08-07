@@ -238,6 +238,9 @@ logger.use(
 | `queue.concurrency`    | `number`                           | `1`                       | Concurrent uploads   |
 | `queue.maxRetries`     | `number`                           | `3`                       | Max retry count      |
 | `queue.uploadInterval` | `number`                           | `30000`                   | Upload interval (ms) |
+| `queue.offlinePolicy`  | `'pause' \| 'legacy'`              | `'legacy'`                | Offline strategy (1.10.0+; `pause` is opt-in) |
+| `queue.retryBackoff`   | `boolean \| { baseMs, maxMs }`     | follows `offlinePolicy`   | Exponential backoff (`legacy` off / `pause` on by default) |
+| `onDrop`               | `(log, info) => void`              | —                         | Called when a log is dropped (1.10.0+) |
 | `cache.enabled`        | `boolean`                          | `true`                    | Enable cache         |
 | `cache.key`            | `string`                           | `__logger_upload_queue__` | Cache key            |
 | `saveOnUnload`         | `boolean`                          | `true`                    | Save queue on unload |
@@ -325,5 +328,36 @@ See `examples/5-upload-plugin/` directory for complete examples:
 - `advanced.ts` - Advanced usage (retry, monitoring)
 - `project-config-example.ts` - Complete project configuration
 
-**Version:** 1.1.0  
-**Last Updated:** 2026-02-05
+---
+
+## 🛡️ Reliability & Drops (1.10.0+)
+
+1.10 keeps the old default: `queue.offlinePolicy` is **`legacy`** (no pause; backoff off by default). Opt into offline pausing explicitly:
+
+```typescript
+initAemeath({
+  upload: async (log) => {
+    try {
+      const res = await fetch('/api/logs', { method: 'POST', body: JSON.stringify(log) });
+      if (!res.ok) {
+        return { success: false, shouldRetry: res.status >= 500, retryReason: 'server' };
+      }
+      return { success: true };
+    } catch {
+      return { success: false, shouldRetry: true, retryReason: 'network' };
+    }
+  },
+  queue: { offlinePolicy: 'pause' }, // opt-in: pause instead of burning retries
+  onDrop: (log, info) => console.warn('dropped', info.reason, log.logId),
+});
+```
+
+Key points:
+
+- Return `retryReason: 'network' | 'server' | 'payload'` to remove ambiguity; omitted means `server`.
+- In `pause` mode, consecutive transport failures pause the queue (`upload:paused`) and resume later; `legacy` burns `maxRetries` on every failure.
+- Every drop is observable via `onDrop` / `upload:drop` (`max-retries`, `cache-expired`, `payload-too-large`, …).
+- For longer offline retention see optional [Offline Persistence](./11-offline-persistence.md); for oversized payloads see [Payload Sanitize](./10-payload-sanitize.md) (both opt-in).
+
+**Version:** 1.10.0  
+**Last Updated:** 2026-08-07

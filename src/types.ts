@@ -164,9 +164,10 @@ export type BeforeLogResult =
  *
  * - false：拦截日志（不继续传递给 listener）
  * - LogEntry：使用修改后的 entry 继续
+ * - LogEntry[]：扇出 / 拆分为多条（后续插件与 listener 会对每条各执行一次）
  * - void：原样继续
  */
-export type AfterLogResult = false | LogEntry | void;
+export type AfterLogResult = false | LogEntry | LogEntry[] | void;
 
 /**
  * `beforeSend` 钩子函数：日志管道末端的最后一道关卡
@@ -231,7 +232,7 @@ export type PluginPriorityValue = number;
  *
  * 插件通过可选的 beforeLog / afterLog hook 参与日志管道：
  * - beforeLog：日志创建前调用，可拦截或修改参数
- * - afterLog：LogEntry 构建后、通知 listener 前调用，可拦截或修改 entry
+ * - afterLog：LogEntry 构建后、通知 listener 前调用，可拦截、修改或扇出（返回数组拆成多条）entry
  *
  * 插件之间的执行顺序由 priority 字段决定（详见 priority 字段说明）。
  */
@@ -287,6 +288,7 @@ export interface AemeathPlugin {
    *
    * - 返回 false → 拦截（不传递给 listener）
    * - 返回 LogEntry → 使用修改后的 entry 继续
+   * - 返回 LogEntry[] → 扇出 / 拆分为多条；后续插件与 listener 会对每条各执行一次
    * - 返回 void → 原样继续
    */
   afterLog?(entry: LogEntry): AfterLogResult;

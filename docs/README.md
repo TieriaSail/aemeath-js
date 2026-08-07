@@ -19,6 +19,8 @@
 | **Module 6** | 🧪 Performance Monitoring (experimental) | [View Docs](./en/6-performance-monitoring.md) |
 | **Module 8** | 🧩 Plugin Ordering (priority field) | [View Docs](./en/8-plugin-ordering.md) |
 | **Module 9** | 🛡️ `beforeSend` — End-of-Pipeline Interceptor | [View Docs](./en/9-before-send.md) |
+| **Module 10** | 🧼 Payload Sanitize — Data URL / oversized payload handling (opt-in) | [View Docs](./en/10-payload-sanitize.md) |
+| **Module 11** | 📴 Offline Persistence — persist offline, replay online (opt-in) | [View Docs](./en/11-offline-persistence.md) |
 
 ### 🔗 Links
 
@@ -43,6 +45,8 @@
 | **模块 6** | 🧪 性能监控（实验性） | [查看文档](./zh/6-performance-monitoring.md) |
 | **模块 8** | 🧩 插件执行顺序（priority 字段） | [查看文档](./zh/8-plugin-ordering.md) |
 | **模块 9** | 🛡️ `beforeSend` — 全链路最终拦截 | [查看文档](./zh/9-before-send.md) |
+| **模块 10** | 🧼 载荷清洗 — Data URL / 超大日志处理（opt-in） | [查看文档](./zh/10-payload-sanitize.md) |
+| **模块 11** | 📴 断网续传 — 离线落盘，联网补传（opt-in） | [查看文档](./zh/11-offline-persistence.md) |
 
 ### 🔗 链接
 

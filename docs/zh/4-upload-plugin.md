@@ -280,6 +280,9 @@ logger.use(
 | `queue.concurrency`    | `number`                                   | `1`                       | 并发上传数                        |
 | `queue.maxRetries`     | `number`                                   | `3`                       | 最大重试次数                      |
 | `queue.uploadInterval` | `number`                                   | `30000`                   | 自动上传间隔（毫秒）              |
+| `queue.offlinePolicy`  | `'pause' \| 'legacy'`                      | `'legacy'`                | 断网策略（1.10.0+；`pause` 为 opt-in） |
+| `queue.retryBackoff`   | `boolean \| { baseMs, maxMs }`             | 随 `offlinePolicy`        | 指数退避（`legacy` 默认关 / `pause` 默认开） |
+| `onDrop`               | `(log, info) => void`                      | —                         | 日志被丢弃时回调（1.10.0+）       |
 | `cache.enabled`        | `boolean`                                  | `true`                    | 是否启用缓存                      |
 | `cache.key`            | `string`                                   | `__logger_upload_queue__` | 缓存 key                          |
 | `saveOnUnload`         | `boolean`                                  | `true`                    | 页面卸载时保存队列到缓存          |
@@ -367,5 +370,36 @@ onUpload: async (log) => {
 - `advanced.ts` - 高级用法（重试、监控）
 - `project-config-example.ts` - 完整项目配置
 
-**版本**：1.1.0  
-**最后更新**：2026-02-05
+---
+
+## 🛡️ 可靠性与丢弃（1.10.0+）
+
+1.10 默认保持旧行为：`queue.offlinePolicy` 为 **`legacy`**（不暂停、默认关闭退避）。需要断网暂停时显式开启：
+
+```typescript
+initAemeath({
+  upload: async (log) => {
+    try {
+      const res = await fetch('/api/logs', { method: 'POST', body: JSON.stringify(log) });
+      if (!res.ok) {
+        return { success: false, shouldRetry: res.status >= 500, retryReason: 'server' };
+      }
+      return { success: true };
+    } catch {
+      return { success: false, shouldRetry: true, retryReason: 'network' };
+    }
+  },
+  queue: { offlinePolicy: 'pause' }, // opt-in：断网暂停而不是烧重试预算
+  onDrop: (log, info) => console.warn('dropped', info.reason, log.logId),
+});
+```
+
+要点：
+
+- 返回 `retryReason: 'network' | 'server' | 'payload'` 可消除歧义；省略时按 `server` 处理。
+- `pause` 模式下传输层连续失败会暂停队列（`upload:paused`），恢复后继续；`legacy` 则每次失败都消耗 `maxRetries`。
+- 任意丢弃都会走 `onDrop` / `upload:drop`（含 `max-retries`、`cache-expired`、`payload-too-large` 等）。
+- 更长的离线保留请用可选的 [断网续传](./11-offline-persistence.md)；载荷清洗见 [载荷清洗](./10-payload-sanitize.md)（均需 opt-in）。
+
+**版本**：1.10.0  
+**最后更新**：2026-08-07
