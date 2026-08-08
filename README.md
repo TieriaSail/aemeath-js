@@ -136,6 +136,11 @@ For jQuery, vanilla JS, or static HTML pages — no npm required:
 
 All plugins are optional. Only import what you need — unused plugins are tree-shaken away.
 
+> Tree-shaking applies when you compose a logger yourself (`new AemeathLogger()` + `.use()`).
+> The `initAemeath()` convenience entry references every plugin it can install from a runtime
+> branch, so its bundle includes them regardless of your options. Use the manual composition
+> path if you are optimizing for size.
+
 | Plugin | Description | Size |
 |--------|-------------|------|
 | `ErrorCapturePlugin` | Auto-capture global errors, unhandled rejections, resource failures | ~3KB |
@@ -145,8 +150,29 @@ All plugins are optional. Only import what you need — unused plugins are tree-
 | `NetworkPlugin` | Monitor fetch/XHR requests (errors, slow requests) | ~3KB |
 | `SafeGuardPlugin` | Rate limiting, recursion guard, error budget | ~3KB |
 | `BeforeSendPlugin` | 🛡️ End-of-pipeline interceptor for redaction / filtering ([docs](./docs/en/9-before-send.md)) | <1KB |
+| `PayloadSanitizePlugin` | 🧼 **On by default** — Data URL / Blob placeholders, oversized payload split ([docs](./docs/en/10-payload-sanitize.md)) | ~2KB |
+| `OfflinePersistencePlugin` | 📴 Persist logs offline (IndexedDB), replay when back online ([docs](./docs/en/11-offline-persistence.md)) | ~4KB |
 
 > Need to control plugin execution order? See [Plugin Ordering](./docs/en/8-plugin-ordering.md) (priority field).
+
+### Never lose a log to a flaky network
+
+```ts
+initAemeath({
+  upload: async (log) => {
+    const res = await fetch('/api/logs', { method: 'POST', body: JSON.stringify(log) });
+    // Tell the SDK *why* it failed: 'network' failures never burn the retry budget
+    return { success: res.ok, retryReason: res.ok ? undefined : 'server' };
+  },
+  offlinePersistence: true, // persist while offline, replay when back online
+  onDrop: (log, info) => console.warn('dropped', info.reason, log.logId),
+});
+```
+
+Going offline now pauses the queue instead of burning through the retry budget,
+retries back off exponentially, and nothing is ever dropped silently. See
+[UploadPlugin](./docs/en/4-upload-plugin.md) and
+[Offline Persistence](./docs/en/11-offline-persistence.md).
 
 ### `beforeSend` — privacy & redaction
 
@@ -377,6 +403,8 @@ logger.use(new MyPlugin());
 | **[WeChat Miniprogram Support](./docs/en/7-miniprogram-support.md)** | Native support via `miniprogram` field & slim bundle |
 | **[Plugin Ordering](./docs/en/8-plugin-ordering.md)** | 🧩 Control plugin execution order via `priority` |
 | **[`beforeSend` Hook](./docs/en/9-before-send.md)** | 🛡️ End-of-pipeline interceptor for redaction / filtering |
+| **[Payload Sanitize](./docs/en/10-payload-sanitize.md)** | 🧼 Data URL / Blob placeholders, oversized payload split |
+| **[Offline Persistence](./docs/en/11-offline-persistence.md)** | 📴 Persist logs offline, replay when back online |
 | **[Browser Usage](./docs/en/0-browser-usage.md)** | Script tag usage (no build tools) |
 
 > 📖 中文文档：[查看中文 README](./README.zh_CN.md) | [快速开始](./QUICK_START.zh_CN.md) | [模块文档](./docs/zh/)

@@ -16,6 +16,7 @@ import { AemeathLogger } from '../core/Logger';
 import { ErrorCapturePlugin } from '../plugins/ErrorCapturePlugin';
 import { BrowserApiErrorsPlugin } from '../plugins/BrowserApiErrorsPlugin';
 import { UploadPlugin } from '../plugins/UploadPlugin';
+import { PayloadSanitizePlugin } from '../plugins/PayloadSanitizePlugin';
 import { SafeGuardPlugin } from '../plugins/SafeGuardPlugin';
 import { detectPlatform } from '../platform/detect';
 import { PluginPriority } from '../types';
@@ -42,6 +43,13 @@ export interface BrowserLoggerOptions {
   browserApiErrors?: boolean;
   /** 是否启用安全保护 @default true */
   safeGuard?: boolean;
+  /**
+   * 是否启用载荷清洗 @default true
+   *
+   * 关掉之后 Data URL、Blob、超大字段会原样进入上报，可能被服务端 413 拒绝
+   * 或撑爆数据库字段。除非你在 upload 里自己做了同等处理，否则别关。
+   */
+  payloadSanitize?: boolean;
   /** 是否启用控制台输出 @default true */
   enableConsole?: boolean;
   /** 最低日志级别 @default 'info' */
@@ -94,18 +102,23 @@ function init(options: BrowserLoggerOptions = {}): AemeathLogger {
     logger.use(new SafeGuardPlugin());
   }
 
+  // 载荷清洗（与 npm 入口 initAemeath 保持一致：默认启用）
+  if (options.payloadSanitize !== false) {
+    logger.use(new PayloadSanitizePlugin());
+  }
+
   // 上报
   if (options.upload) {
     const uploadFn = options.upload;
     logger.use(
       new UploadPlugin({
+          // 故意不 catch：异常要原样交给 UploadPlugin 去分类。fetch 断网抛的
+          // TypeError 会被判为传输层失败（暂停等网络），而 axios 之类对 5xx 抛的
+          // 异常带着 response，会被判为服务端失败（照常消耗重试预算）。
+          // 在这里吞掉换成统一结果，两种情况就再也分不开了。
         onUpload: async (log) => {
-          try {
-            await uploadFn(log);
-            return { success: true };
-          } catch (err) {
-            return { success: false, shouldRetry: true, error: String(err) };
-          }
+          await uploadFn(log);
+          return { success: true };
         },
       }),
     );

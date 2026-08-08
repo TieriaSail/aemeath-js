@@ -9,15 +9,66 @@ import type {
   ErrorInfo,
   LogContext,
   BeforeLogResult,
+  AfterLogResult,
   AemeathPlugin,
   LogListener,
   PluginMetadata,
   EventListeners,
   AemeathInterface,
+  AemeathEventMap,
   ContextUpdater,
   ContextValue,
 } from '../types';
 import type { PlatformAdapter } from '../platform/types';
+
+/**
+ * 一条日志经 afterLog 扇出后最多保留多少条
+ *
+ * 扇出是相乘的，多个插件各返回 N 条就是 N^k。上界既保护宿主页面（监听器回调、
+ * 控制台输出），也保护后端（每条分片都是一次上传）。
+ */
+const MAX_FANOUT_ENTRIES = 64;
+
+/**
+ * 扇出截断时保持 splitId 分组完整：放不下的整组丢弃，绝不留下残片。
+ */
+function truncateFanoutPreservingSplits(entries: LogEntry[], max: number): LogEntry[] {
+  if (entries.length <= max) return entries;
+
+  const result: LogEntry[] = [];
+  let i = 0;
+  while (i < entries.length) {
+    const current = entries[i]!;
+    const splitId = current.tags?.splitId;
+    if (splitId === undefined) {
+      if (result.length + 1 > max) break;
+      result.push(current);
+      i++;
+      continue;
+    }
+
+    const sid = String(splitId);
+    const group: LogEntry[] = [];
+    let j = i;
+    while (j < entries.length && String(entries[j]!.tags?.splitId ?? '') === sid) {
+      group.push(entries[j]!);
+      j++;
+    }
+
+    if (result.length + group.length > max) {
+      // 单组本身就超过上限：整组放行，避免"本意是拆分保留"却静默丢光。
+      // 多组场景下放不下的后续组整组丢弃，绝不留下残片。
+      if (result.length === 0) {
+        return group;
+      }
+      break;
+    }
+    result.push(...group);
+    i = j;
+  }
+  return result;
+}
+
 import { detectPlatform } from '../platform/detect';
 import { LogLevel as LogLevelEnum, ErrorCategory } from '../types';
 import { RouteMatcher, type RouteMatchConfig } from '../utils/routeMatcher';
@@ -48,6 +99,7 @@ export class AemeathLogger implements AemeathInterface {
   private readonly dynamicContext: Map<string, ContextUpdater> = new Map();
   /** 已经警告过的异步 dynamic-context key（避免每条日志都刷屏） */
   private readonly asyncContextWarned: Set<string> = new Set();
+  private fanoutWarned = false;
   private readonly environment?: string;
   private readonly release?: string;
   private readonly debugEnabled: boolean;
@@ -153,44 +205,147 @@ export class AemeathLogger implements AemeathInterface {
       context,
     );
 
-    // Phase 3: afterLog 管道 — 遍历插件，允许修改或拦截 entry
+    // Phase 3: afterLog 管道 — 遍历插件，允许修改、拦截或扇出 entry
+    //
+    // 绝大多数情况下 entries 始终只有一条；返回数组的插件（如 PayloadSanitizePlugin
+    // 把超限日志按字段拆成多条）会让后续插件对每个分片各执行一次。
+    let entries: LogEntry[] = [entry];
+
     for (const plugin of this.pluginInstances) {
       if (!plugin.afterLog) continue;
-      try {
-        const result = plugin.afterLog(entry);
+
+      const next: LogEntry[] = [];
+      // 本轮被拦掉的分片所属的分组
+      let suppressedSplitIds: Set<string> | null = null;
+      for (const current of entries) {
+        let result: AfterLogResult;
+        try {
+          result = plugin.afterLog(current);
+        } catch (err) {
+          this.debugWarn(`Plugin "${plugin.name}" afterLog error:`, err);
+          next.push(current);
+          continue;
+        }
+
         if (result === false) {
-          return;
-        }
-        if (result && typeof result === 'object' && !Array.isArray(result)) {
-          const next = result as LogEntry;
-          if (typeof next.logId === 'string' && typeof next.level === 'string') {
-            entry = next;
-          } else if (typeof console !== 'undefined' && console.warn) {
-            // 与 beforeSend 非法返回值一致：始终 warn，避免生产环境静默坏数据
-            console.warn(
-              `[Aemeath] Plugin "${plugin.name}" afterLog returned an object without valid logId & level; `
-                + 'ignored. Return false to drop the log, void/undefined to keep the previous entry.',
-            );
+          // 拦掉的是某个分片 → 记下分组，稍后把同组其余分片一起拦掉。
+          //
+          // 用户写 beforeSend 时想的是"这条日志不要发"，可拆分之后钩子是按分片
+          // 逐个调用的：只拦住带敏感字段的那一片，另外两片照发不误，
+          // 既漏了数据又在后端留下拼不回来的碎片。
+          const splitId = current.tags?.splitId;
+          if (splitId !== undefined) {
+            (suppressedSplitIds ??= new Set()).add(String(splitId));
           }
+          continue;
         }
-      } catch (err) {
-        this.debugWarn(`Plugin "${plugin.name}" afterLog error:`, err);
+
+        if (Array.isArray(result)) {
+          let kept = 0;
+          for (const item of result) {
+            if (this.isValidEntry(item)) {
+              next.push(item);
+              kept++;
+            } else {
+              this.warnInvalidAfterLog(plugin.name);
+            }
+          }
+          // 插件想拆分却拆出了一堆坏数据：保住原件，别让日志凭空消失。
+          // （返回空数组是明确的"丢弃"意图，不在此列。）
+          if (kept === 0 && result.length > 0) next.push(current);
+          continue;
+        }
+
+        if (result && typeof result === 'object') {
+          if (this.isValidEntry(result)) {
+            next.push(result);
+          } else {
+            this.warnInvalidAfterLog(plugin.name);
+            next.push(current);
+          }
+          continue;
+        }
+
+        next.push(current);
+      }
+
+      entries = next;
+
+      // 分组里只要有一片被拦下，整组都不发：半组分片对后端毫无意义，
+      // 而且用户的本意本来就是"这条日志不要发"
+      if (suppressedSplitIds) {
+        const kept = entries.filter(
+          (it) => !suppressedSplitIds.has(String(it.tags?.splitId ?? '')),
+        );
+        if (kept.length !== entries.length) {
+          this.debugWarn(
+            `Plugin "${plugin.name}" suppressed part of a split log; dropping the remaining ${entries.length - kept.length} chunk(s) so the backend never sees an unassemblable fragment.`,
+          );
+        }
+        entries = kept;
+      }
+
+      if (entries.length === 0) return;
+
+      // 扇出是会**相乘**的：每个插件都返回 N 条，k 个插件就是 N^k。
+      // 一次 logger.error() 变成几百条日志意味着几百次监听器回调、几百个
+      // 上传请求，足以把宿主页面和后端一起拖垮。超限就截断并告警。
+      // 截断必须保完整 splitId 组，否则后端会收到拼不回来的残片。
+      if (entries.length > MAX_FANOUT_ENTRIES) {
+        const kept = truncateFanoutPreservingSplits(entries, MAX_FANOUT_ENTRIES);
+        this.warnFanoutCapped(plugin.name, entries.length, kept.length);
+        entries = kept;
       }
     }
 
-    // Phase 4: 输出到控制台
-    if (this.enableConsole) {
-      this.outputToConsole(entry);
-    }
-
-    // Phase 5: 通知监听器（不受 level 过滤，始终触发）
     const listenerSnapshot = Array.from(this.logListeners);
-    for (const listener of listenerSnapshot) {
-      try {
-        listener(entry);
-      } catch (err) {
-        this.debugWarn('Listener error:', err);
+
+    for (const finalEntry of entries) {
+      // Phase 4: 输出到控制台
+      if (this.enableConsole) {
+        this.outputToConsole(finalEntry);
       }
+
+      // Phase 5: 通知监听器（不受 level 过滤，始终触发）
+      for (const listener of listenerSnapshot) {
+        try {
+          listener(finalEntry);
+        } catch (err) {
+          this.debugWarn('Listener error:', err);
+        }
+      }
+    }
+  }
+
+  private isValidEntry(value: unknown): value is LogEntry {
+    const candidate = value as LogEntry | null;
+    return (
+      candidate != null &&
+      typeof candidate === 'object' &&
+      typeof candidate.logId === 'string' &&
+      typeof candidate.level === 'string'
+    );
+  }
+
+  private warnFanoutCapped(pluginName: string, produced: number, kept: number): void {
+    if (this.fanoutWarned) return;
+    this.fanoutWarned = true;
+    if (typeof console !== 'undefined' && console.warn) {
+      console.warn(
+        `[Aemeath] afterLog fan-out from plugin "${pluginName}" produced ${produced} entries `
+          + `for a single log; kept ${kept} (cap ${MAX_FANOUT_ENTRIES}, split groups kept intact). `
+          + 'This usually means a payload is far above the size budget. (This warning is shown once.)',
+      );
+    }
+  }
+
+  private warnInvalidAfterLog(pluginName: string): void {
+    // 与 beforeSend 非法返回值一致：始终 warn，避免生产环境静默坏数据
+    if (typeof console !== 'undefined' && console.warn) {
+      console.warn(
+        `[Aemeath] Plugin "${pluginName}" afterLog returned an object without valid logId & level; `
+          + 'ignored. Return false to drop the log, void/undefined to keep the previous entry.',
+      );
     }
   }
 
@@ -400,7 +555,12 @@ export class AemeathLogger implements AemeathInterface {
 
   // ==================== 事件系统 ====================
 
-  public on(event: string, listener: (...args: unknown[]) => void): void {
+  public on<K extends keyof AemeathEventMap>(
+    event: K,
+    listener: (payload: AemeathEventMap[K]) => void,
+  ): void;
+  public on(event: string, listener: (...args: unknown[]) => void): void;
+  public on(event: string, listener: (...args: never[]) => void): void {
     if (event === 'log') {
       this.logListeners.add(listener as LogListener);
       return;
@@ -408,23 +568,30 @@ export class AemeathLogger implements AemeathInterface {
     if (!this.eventListeners.has(event)) {
       this.eventListeners.set(event, new Set());
     }
-    this.eventListeners.get(event)!.add(listener);
+    this.eventListeners.get(event)!.add(listener as (...args: unknown[]) => void);
   }
 
-  public off(event: string, listener: (...args: unknown[]) => void): void {
+  public off<K extends keyof AemeathEventMap>(
+    event: K,
+    listener: (payload: AemeathEventMap[K]) => void,
+  ): void;
+  public off(event: string, listener: (...args: unknown[]) => void): void;
+  public off(event: string, listener: (...args: never[]) => void): void {
     if (event === 'log') {
       this.logListeners.delete(listener as LogListener);
       return;
     }
     const listeners = this.eventListeners.get(event);
     if (listeners) {
-      listeners.delete(listener);
+      listeners.delete(listener as (...args: unknown[]) => void);
       if (listeners.size === 0) {
         this.eventListeners.delete(event);
       }
     }
   }
 
+  public emit<K extends keyof AemeathEventMap>(event: K, payload: AemeathEventMap[K]): void;
+  public emit(event: string, ...args: unknown[]): void;
   public emit(event: string, ...args: unknown[]): void {
     const listeners = this.eventListeners.get(event);
     if (!listeners || listeners.size === 0) return;
@@ -477,6 +644,9 @@ export class AemeathLogger implements AemeathInterface {
         options,
       });
       this.debugLog(`Plugin "${plugin.name}" installed (priority=${priority})`);
+      // 与 plugin:uninstall 对称：OfflinePersistence 靠它在 Upload 被单独 remount
+      // 后重新唤醒盘上补传（upload:resumed 不会在 install 时发出）。
+      this.emit('plugin:install', plugin.name);
     } catch (err) {
       this.debugWarn(`Failed to install plugin "${plugin.name}":`, err);
       return this;

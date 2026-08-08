@@ -156,6 +156,8 @@ logger.updateContext('userId', '67890');
 | **SourceMap Parser** | 解析混淆堆栈 | +6KB | 可选 |
 | **PerformancePlugin** | 🌐🧪 Web Vitals 监控 — **仅浏览器可用**，实验性（[了解更多](./docs/zh/6-performance-monitoring.md)） | +4KB | 可选 |
 | **SafeGuardPlugin** | 防止 Logger 崩溃 | +3KB | 生产推荐 |
+| **PayloadSanitizePlugin** | Data URL / 超大日志处理（[文档](./docs/zh/10-payload-sanitize.md)） | +2KB | **默认启用** |
+| **OfflinePersistencePlugin** | 断网落盘、联网补传（[文档](./docs/zh/11-offline-persistence.md)） | +4KB | 可选 |
 
 **按需加载示例：**
 
@@ -502,13 +504,23 @@ initAemeath({});
 ```typescript
 initAemeath({
   upload: async (log) => {
-    await fetch('/api/logs', { method: 'POST', body: JSON.stringify(log) });
-    return { success: true };
+    try {
+      const res = await fetch('/api/logs', { method: 'POST', body: JSON.stringify(log) });
+      // 告诉 SDK 失败的**原因**，重试策略才能聪明起来
+      return { success: res.ok, retryReason: res.ok ? undefined : 'server' };
+    } catch {
+      // 'network' 不消耗重试预算，队列会暂停等网络恢复
+      return { success: false, retryReason: 'network' };
+    }
   },
+  offlinePersistence: true, // 断网 / 重启浏览器都不丢日志
+  onDrop: (log, info) => console.warn('dropped', info.reason, log.logId),
 });
-// 全部默认插件 + 上报插件
-// 体积：~13KB
+// 全部默认插件 + 上报 + 断网续传
+// 体积：~17KB
 ```
+
+完整说明见 [断网续传](./docs/zh/11-offline-persistence.md)。
 
 ---
 

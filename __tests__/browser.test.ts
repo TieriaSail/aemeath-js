@@ -261,5 +261,84 @@ describe('Browser IIFE 入口', () => {
       expect((window as any).__LOGGER_INITIALIZED__).toBeUndefined();
     });
   });
+
+  // ==================== 与 npm 入口的能力对齐 ====================
+
+  describe('与 initAemeath 的默认能力对齐', () => {
+    it('默认安装 PayloadSanitizePlugin：Data URL 不会原样进上报', async () => {
+      const mod = await import('../src/browser/index');
+      const uploaded: any[] = [];
+      const logger = mod.init({
+        errorCapture: false,
+        safeGuard: false,
+        enableConsole: false,
+        upload: (log) => {
+          uploaded.push(log);
+        },
+      });
+
+      logger.error('with screenshot', {
+        context: { shot: `data:image/png;base64,${'A'.repeat(5000)}` },
+      });
+      await new Promise((r) => setTimeout(r, 50));
+
+      expect(uploaded).toHaveLength(1);
+      expect(String(uploaded[0].context.shot)).toContain('[omitted:data-url');
+    });
+
+    it('payloadSanitize: false 时可以关掉', async () => {
+      const mod = await import('../src/browser/index');
+      const uploaded: any[] = [];
+      const logger = mod.init({
+        errorCapture: false,
+        safeGuard: false,
+        enableConsole: false,
+        payloadSanitize: false,
+        upload: (log) => {
+          uploaded.push(log);
+        },
+      });
+
+      logger.error('with screenshot', {
+        context: { shot: `data:image/png;base64,${'A'.repeat(5000)}` },
+      });
+      await new Promise((r) => setTimeout(r, 50));
+
+      expect(uploaded).toHaveLength(1);
+      expect(String(uploaded[0].context.shot)).not.toContain('[omitted');
+    });
+
+    it('upload 抛异常时按传输层失败处理：暂停队列而不是烧重试预算', async () => {
+      // 入口自己把异常吞成统一结果，就抹掉了 UploadPlugin 区分"断网"与
+      // "后端挂了"所需的全部信息 —— 异常必须原样透传给它去分类
+      const mod = await import('../src/browser/index');
+      let calls = 0;
+      const logger = mod.init({
+        errorCapture: false,
+        safeGuard: false,
+        enableConsole: false,
+        upload: async () => {
+          calls++;
+          throw new TypeError('Failed to fetch');
+        },
+      });
+
+      vi.useFakeTimers();
+      try {
+        logger.error('stranded');
+        // 默认阈值 3 次，中间还夹着指数退避，需要走足够长的时间轴
+        await vi.advanceTimersByTimeAsync(20000);
+
+        const upload = logger.getPluginInstance('upload') as any;
+        const status = upload.getQueueStatus();
+        expect(status.paused).toBe(true);
+        expect(status.length).toBe(1); // 日志还在队列里，没被丢弃
+        expect(status.drops.total).toBe(0);
+      } finally {
+        vi.useRealTimers();
+        logger.destroy();
+      }
+    });
+  });
 });
 

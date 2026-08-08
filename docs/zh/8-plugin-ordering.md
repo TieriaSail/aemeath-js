@@ -90,6 +90,8 @@ export const PluginPriority = {
 | `PerformancePlugin` | `NORMAL` (0) | 普通功能插件 |
 | `EarlyErrorCapturePlugin` | `NORMAL` (0) | 普通功能插件 |
 | `UploadPlugin` | `LATE` (100) | 消费类，处于管道末端 |
+| `OfflinePersistencePlugin`（v2.5.0+） | `LATE + 1` (101) | 只监听 UploadPlugin 的事件，不参与日志管道 |
+| `PayloadSanitizePlugin`（v2.5.0+） | `LATEST - 100` (900) | 采集插件之后、`beforeSend` 之前：写脱敏时面对的已是清洗过的骨架 |
 | `BeforeSendPlugin`（v2.4.0+） | `LATEST` (1000) | 全链路最终拦截，必须最后 |
 
 > **注意**：`SafeGuardPlugin` 和 `ErrorCapturePlugin` 都是 `EARLY`，谁先生效取决于 `use()` 顺序。
@@ -186,6 +188,8 @@ logger.getPlugins().forEach((p) => {
 // [-100]  safe-guard
 // [0]     network
 // [100]   upload
+// [101]   offline-persistence   ← 仅当开启 offlinePersistence
+// [900]   payload-sanitize
 // [1000]  before-send
 ```
 

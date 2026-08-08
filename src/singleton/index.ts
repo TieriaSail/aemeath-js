@@ -11,7 +11,17 @@ import { AemeathLogger } from '../core/Logger';
 import { ErrorCapturePlugin } from '../plugins/ErrorCapturePlugin';
 import { BrowserApiErrorsPlugin, type BrowserApiErrorsPluginOptions } from '../plugins/BrowserApiErrorsPlugin';
 import { EarlyErrorCapturePlugin } from '../plugins/EarlyErrorCapturePlugin';
-import { UploadPlugin, type UploadResult, type UploadCallback } from '../plugins/UploadPlugin';
+import {
+  UploadPlugin,
+  type UploadResult,
+  type UploadCallback,
+  type UploadDropCallback,
+} from '../plugins/UploadPlugin';
+import { PayloadSanitizePlugin } from '../plugins/PayloadSanitizePlugin';
+import {
+  OfflinePersistencePlugin,
+  type OfflinePersistencePluginOptions,
+} from '../plugins/OfflinePersistencePlugin';
 import { SafeGuardPlugin, type SafeGuardMode } from '../plugins/SafeGuardPlugin';
 import {
   NetworkPlugin,
@@ -137,14 +147,19 @@ export interface AemeathInitOptions {
    *
    *     if (data.code === 200) {
    *       return { success: true };
-   *     } else {
-   *       return { success: false, shouldRetry: true, error: data.message };
    *     }
+   *     // 服务端回了话 = 链路是通的，这是服务端的问题，消耗重试预算
+   *     return { success: false, shouldRetry: true, retryReason: 'server', error: data.message };
    *   } catch (error) {
-   *     return { success: false, shouldRetry: true, error: error.message };
+   *     // fetch 抛异常 = 请求根本没出去。标成 'network' 后不消耗重试预算，
+   *     // 队列会暂停等网络恢复，而不是几秒内把日志打光
+   *     return { success: false, shouldRetry: true, retryReason: 'network', error: error.message };
    *   }
    * }
    * ```
+   *
+   * `retryReason` 不填也能跑（默认按服务端失败处理），但填了才能让 SDK
+   * 分清"后端挂了"和"用户断网"——这两者需要的处置完全相反。
    */
   upload?: (log: LogEntry) => Promise<UploadResult>;
 
@@ -178,7 +193,82 @@ export interface AemeathInitOptions {
     concurrency?: number;
     /** 最大重试次数 @default 3 */
     maxRetries?: number;
+    /**
+     * 网络不可用时的策略
+     *
+     * - `'pause'`（默认）：判定离线时暂停队列，不消耗重试预算、不丢日志
+     * - `'legacy'`：v2.4 及更早的行为，仅用于回归对比
+     *
+     * @default 'pause'
+     */
+    offlinePolicy?: 'pause' | 'legacy';
+    /** 重试退避 @default true（base 1s / max 30s） */
+    retryBackoff?: boolean | { baseMs?: number; maxMs?: number };
+    /** 连续失败多少次判定为疑似离线 @default 3 */
+    suspectedOfflineThreshold?: number;
   };
+
+  /**
+   * 本地缓存配置
+   *
+   * ⚠️ 只解决页面重载导致的队列丢失，**不提供断网续传**（那是 `offlinePersistence`）。
+   */
+  cache?: {
+    /** 是否启用 @default true */
+    enabled?: boolean;
+    /** 缓存 key @default '__logger_upload_queue__' */
+    key?: string;
+    /** 有效期（毫秒），从写入缓存时刻算起 @default 3600000 */
+    ttl?: number;
+  };
+
+  /**
+   * 日志被丢弃时的回调
+   *
+   * 不挂这个回调（也不监听 `upload:drop` 事件）时，生产环境下的丢弃是完全静默的。
+   *
+   * @example
+   * ```javascript
+   * onDrop: (log, info) => {
+   *   console.warn('log dropped', info.reason, log.logId);
+   * }
+   * ```
+   */
+  onDrop?: UploadDropCallback;
+
+  /**
+   * 载荷清洗（默认启用）
+   *
+   * - Data URL / Blob / ArrayBuffer → 简短占位符
+   * - 单字段超过上限 → 整条丢弃并 `console.error`
+   * - 整包超过上限 → 按字段拆成多条上报，内容不丢
+   *
+   * 关闭后超大日志会原样进入上传队列与本地缓存，可能导致上报失败、
+   * 数据库字段截断、存储配额打满 —— 关闭时会输出一次控制台警告。
+   *
+   * @default true
+   */
+  payloadSanitize?: boolean | {
+    /** 单条上报体的最大 UTF-8 字节数 @default 60000 */
+    maxBytes?: number;
+  };
+
+  /**
+   * 断网续传（默认关闭）
+   *
+   * 开启后，断网期间的日志会落盘（IndexedDB，不可用时降级到 localStorage），
+   * 网络恢复后自动补传；补传只进上传队列，不会重放业务侧的日志监听。
+   *
+   * 这是**尽力而为**的持久化：配额打满会淘汰最旧的记录，
+   * 进程被杀时最后几笔未落盘的异步写入仍可能丢失。
+   *
+   * @default false
+   * @example
+   * ```javascript
+   * initAemeath({ upload, offlinePersistence: true });
+   * ```
+   */
+  offlinePersistence?: boolean | OfflinePersistencePluginOptions;
 
   /**
    * 是否启用控制台输出
@@ -315,8 +405,14 @@ export interface AemeathInitOptions {
     responseBodyCaptureTimeout?: number;
     /** 慢请求阈值（毫秒）@default 3000 */
     slowThreshold?: number;
-    /** 额外排除的 URL 模式（日志上报接口已自动排除） */
-    excludeUrls?: string[];
+  /**
+   * 额外排除的 URL 模式（日志上报接口已自动排除）
+   *
+   * 注意：SDK 自身的上报请求（`UploadPlugin` 调用 `onUpload` 期间发起的
+   * fetch / XHR / wx.request）会**自动跳过**网络监控，不依赖本列表。
+   * 这里留给你排除第三方埋点、自己的其它采集端点等。
+   */
+  excludeUrls?: string[];
     /**
      * 慢请求排除模式 - 匹配的 URL 不会触发慢请求告警
      *
@@ -440,16 +536,45 @@ export function initAemeath(options: AemeathInitOptions = {}): AemeathLogger {
         honored.push('beforeSend');
       }
     }
+    if (options.payloadSanitize === false) {
+      // getAemeath() 兜底路径会默认装上它，所以"关掉"必须能撤销已装的实例，
+      // 否则这个开关对先调过 getAemeath() 的用户永远失效
+      if (globalAemeath.uninstall('payload-sanitize')) honored.push('payloadSanitize');
+    } else if (options.payloadSanitize && !globalAemeath.hasPlugin('payload-sanitize')) {
+      globalAemeath.use(
+        new PayloadSanitizePlugin(
+          typeof options.payloadSanitize === 'object' ? options.payloadSanitize : {},
+        ),
+      );
+      honored.push('payloadSanitize');
+    }
     if (options.upload && !globalAemeath.hasPlugin('upload')) {
       globalAemeath.use(
         new UploadPlugin({
           onUpload: options.upload,
           getPriority: options.getPriority,
           queue: options.queue,
-          cache: { enabled: true },
+          cache: { enabled: options.cache?.enabled !== false, ...options.cache },
+          onDrop: options.onDrop,
         }),
       );
-      honored.push('upload');
+      // 这几项是随 UploadPlugin 一起生效的，不记进来就会在下面被反过来报成"已忽略"
+      honored.push('upload', 'getPriority', 'queue', 'cache', 'onDrop');
+    }
+    // 独立于上面那段：离线续传常常是入口配好 upload 之后，读到开关才补开的。
+    // 把它绑在"顺便新建 UploadPlugin"上，用户拿到的就是一个文档里有、
+    // 实际什么都不会发生的开关。
+    if (
+      options.offlinePersistence &&
+      globalAemeath.hasPlugin('upload') &&
+      !globalAemeath.hasPlugin('offline-persistence')
+    ) {
+      globalAemeath.use(
+        new OfflinePersistencePlugin(
+          typeof options.offlinePersistence === 'object' ? options.offlinePersistence : {},
+        ),
+      );
+      honored.push('offlinePersistence');
     }
     if (typeof console !== 'undefined' && console.warn) {
       const ignored = Object.keys(options).filter((k) => !honored.includes(k));
@@ -540,9 +665,24 @@ export function initAemeath(options: AemeathInitOptions = {}): AemeathLogger {
       onUpload: options.upload,
       getPriority: options.getPriority,
       queue: options.queue,
-      cache: { enabled: true },
+      cache: { enabled: options.cache?.enabled !== false, ...options.cache },
+      onDrop: options.onDrop,
     });
     logger.use(uploadPlugin);
+
+    // 4b. 断网续传（可选，必须在 UploadPlugin 之后安装）
+    if (options.offlinePersistence) {
+      logger.use(
+        new OfflinePersistencePlugin(
+          typeof options.offlinePersistence === 'object' ? options.offlinePersistence : {},
+        ),
+      );
+    }
+  } else if (options.offlinePersistence && typeof console !== 'undefined' && console.warn) {
+    console.warn(
+      '[Aemeath] `offlinePersistence` was enabled but no `upload` callback was provided. '
+        + 'There is nothing to persist or replay; the option is ignored.',
+    );
   }
 
   // 5. 网络请求监控（默认启用）
@@ -572,7 +712,22 @@ export function initAemeath(options: AemeathInitOptions = {}): AemeathLogger {
     );
   }
 
-  // 6. 全链路最终拦截 / 脱敏（PluginPriority.LATEST，永远在管道末端）
+  // 6. 载荷清洗（默认启用，位于所有采集插件之后、beforeSend 之前）
+  if (options.payloadSanitize !== false) {
+    logger.use(
+      new PayloadSanitizePlugin(
+        typeof options.payloadSanitize === 'object' ? options.payloadSanitize : {},
+      ),
+    );
+  } else if (typeof console !== 'undefined' && console.warn) {
+    console.warn(
+      '[Aemeath] `payloadSanitize` is disabled. Data URLs, Blobs and oversized text will be '
+        + 'uploaded and cached as-is, which can break your upload endpoint, truncate database '
+        + 'columns and exhaust localStorage / IndexedDB quota. You are on your own here.',
+    );
+  }
+
+  // 7. 全链路最终拦截 / 脱敏（PluginPriority.LATEST，永远在管道末端）
   //    即使用户没传 beforeSend，也注入此插件，以便后续运行时通过
   //    setBeforeSend(...) 动态启用。开销极小（无钩子时直接放行）。
   logger.use(new BeforeSendPlugin({ beforeSend: options.beforeSend }));
@@ -718,6 +873,9 @@ export function getAemeath(): AemeathLogger {
     globalAemeath.use(new ErrorCapturePlugin());
     // 兜底也要装 BeforeSendPlugin，否则后续 setBeforeSend(...) 会静默无效
     globalAemeath.use(new BeforeSendPlugin());
+    // 载荷清洗是"默认启用"的安全网，不能因为用户先调了 getAemeath() 就消失。
+    // 这条兜底路径正是早期错误的必经之路，超大载荷在这里同样要被拦住。
+    globalAemeath.use(new PayloadSanitizePlugin());
     // 如果构建插件已注入早期脚本，必须装 EarlyErrorCapturePlugin 完成接管，
     // 否则同 v2.2.0-beta.1 early-handoff bug：__LOGGER_INITIALIZED__ 永远不被
     // 翻牌，fallback 定时器到点就开火，造成双轨重复上报。

@@ -237,6 +237,38 @@ initAemeath({
 
 ---
 
+### [模块10：上报可靠性](./10-offline-resilience/) 📴
+
+> 适用 v2.5.0+；完整文档：[断网续传](../docs/zh/11-offline-persistence.md) · [载荷清洗](../docs/zh/10-payload-sanitize.md)
+
+断网暂停队列而不是烧光重试预算、指数退避、超大日志清洗、丢弃全程可观测。
+
+**示例**：
+
+- [basic.ts](./10-offline-resilience/basic.ts) - 一行开启断网续传 ⭐
+- [observe-drops.ts](./10-offline-resilience/observe-drops.ts) - 拿到"哪条没送到、为什么"
+- [tuning.ts](./10-offline-resilience/tuning.ts) - 全部可调项
+
+```typescript
+import { initAemeath } from 'aemeath-js';
+
+initAemeath({
+  upload: async (log) => {
+    try {
+      const res = await fetch('/api/logs', { method: 'POST', body: JSON.stringify(log) });
+      return { success: res.ok, retryReason: res.ok ? undefined : 'server' };
+    } catch {
+      // 'network' 不消耗重试预算，队列会暂停等网络恢复
+      return { success: false, retryReason: 'network' };
+    }
+  },
+  offlinePersistence: true,
+  onDrop: (log, info) => console.warn('dropped', info.reason, log.logId),
+});
+```
+
+---
+
 ### [推荐配置](./recommended-config.ts) ⭐
 
 完整的生产环境配置示例
@@ -293,6 +325,10 @@ logger.updateContext('userId', '67890');
 ### 我想解析混淆的错误
 
 → [模块3](./3-sourcemap-parser/)
+
+### 我不想因为网络抖动或者超大日志丢数据
+
+→ [模块10：上报可靠性](./10-offline-resilience/)
 
 ### 我想要完整的生产环境方案
 

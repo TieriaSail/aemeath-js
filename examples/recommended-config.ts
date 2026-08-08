@@ -8,6 +8,8 @@ import {
   AemeathLogger,
   EarlyErrorCapturePlugin,
   ErrorCapturePlugin,
+  OfflinePersistencePlugin,
+  PayloadSanitizePlugin,
   UploadPlugin,
 } from 'aemeath-js';
 
@@ -50,7 +52,11 @@ export function createLogger() {
     }),
   );
 
-  // 3. 统一上传（早期错误和正常日志都走这里）
+  // 3. 载荷清洗（用 initAemeath 时默认安装，手动装配需自己 use）
+  //    Data URL / Blob 换成短占位符，超大日志按字段拆多条，避免撑爆接口和存储
+  logger.use(new PayloadSanitizePlugin());
+
+  // 4. 统一上传（早期错误和正常日志都走这里）
   logger.use(
     new UploadPlugin({
       // 自定义上传逻辑 - 返回 UploadResult
@@ -74,6 +80,8 @@ export function createLogger() {
             return {
               success: false,
               shouldRetry: true,
+              // 服务端明确回了话，是服务端的问题，消耗重试预算
+              retryReason: 'server',
               error: data.message,
             };
           }
@@ -81,6 +89,9 @@ export function createLogger() {
           return {
             success: false,
             shouldRetry: true,
+            // fetch 抛异常 = 根本没连上。标成 'network' 后不消耗重试预算，
+            // 队列会暂停等待网络恢复，而不是把预算在几百毫秒内烧光
+            retryReason: 'network',
             error: error instanceof Error ? error.message : String(error),
           };
         }
@@ -110,16 +121,25 @@ export function createLogger() {
         maxRetries: 3,
       },
 
-      // 本地缓存
+      // 本地缓存（只解决页面重载，断网续传见下一个插件）
       cache: {
         enabled: true,
         key: 'my-app-logs',
+      },
+
+      // 日志被放弃时通知，不再静默丢失
+      onDrop: (log, info) => {
+        console.warn('[aemeath] log dropped:', info.reason, log.logId);
       },
 
       // 页面卸载时上传
       saveOnUnload: true,
     }),
   );
+
+  // 5. 断网续传（必须在 UploadPlugin 之后安装）
+  //    断网期间落盘 IndexedDB，网络恢复后自动补传
+  logger.use(new OfflinePersistencePlugin());
 
   return logger;
 }
@@ -167,6 +187,7 @@ export function createLoggerWithFallback() {
             return {
               success: false,
               shouldRetry: true,
+              retryReason: 'server',
               error: data.message,
             };
           }
@@ -174,6 +195,7 @@ export function createLoggerWithFallback() {
           return {
             success: false,
             shouldRetry: true,
+            retryReason: 'network',
             error: error instanceof Error ? error.message : String(error),
           };
         }

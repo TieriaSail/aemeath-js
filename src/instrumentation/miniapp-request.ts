@@ -10,6 +10,7 @@
  */
 
 import type { NetworkEvent, NetworkHandler, InstrumentOptions, Unsubscribe, NetworkErrorType, NetworkErrorDetail } from './types';
+import { shouldIgnoreNetworkCapture } from '../utils/ignoreNetworkCapture';
 
 // ---------------------------------------------------------------------------
 // MiniApp request API shape (minimal)
@@ -73,7 +74,7 @@ function installPatch(api: MiniAppRequestAPI, state: PatchState): void {
     const url = String(reqOptions['url'] || '');
     const method = String(reqOptions['method'] || 'GET').toUpperCase();
 
-    if (!shouldAnyCaptureUrl(state, url)) {
+    if (shouldIgnoreNetworkCapture() || !shouldAnyCaptureUrl(state, url)) {
       return original.call(api, reqOptions);
     }
 

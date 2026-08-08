@@ -354,6 +354,38 @@ Avoid heavy synchronous work (sync encryption, complex regex). If unavoidable:
 > Don't capture at all → `excludeUrls`
 > Capture but redact → `beforeSend`
 
+### 7. ℹ️ Payload sanitization runs before `beforeSend` (v2.5.0+)
+
+[`PayloadSanitizePlugin`](./10-payload-sanitize.md) (enabled by default, priority 900)
+runs first, so the entry you receive already has:
+
+- Data URLs / Blobs replaced by placeholders like `[omitted:data-url mime=image/png bytes=245678]`
+- Oversized entries split across fields — **`beforeSend` is called once per chunk**.
+  Detect them via `entry.tags.splitId / splitIndex / splitTotal`.
+
+> ℹ️ **Dropping one chunk drops the whole group.** Since v2.5.0 the SDK enforces
+> this for you: return `false` for any chunk and its siblings are discarded too.
+>
+> The reason is that a partial group is worse than no group at all. The surviving
+> chunks announce "3 of 3" while chunk 3 never arrives, so your backend either waits
+> forever or reassembles an entry with missing fields — and if you were dropping the
+> chunk because it held something sensitive, the other chunks would still leak the
+> rest of that same log.
+>
+> So a content check like this behaves the way you'd expect, dropping the entry as a
+> whole even though the hook is invoked per chunk:
+>
+> ```typescript
+> beforeSend: (entry) => (entry.context?.secret ? false : entry)
+> ```
+>
+> Note that only large fields (over 512 bytes) land on a single chunk; smaller ones
+> are replicated onto every chunk. Redaction that only rewrites values, never
+> dropping an entry, is unaffected either way.
+
+It also means anything you redact in `beforeSend` never reaches IndexedDB via
+[offline persistence](./11-offline-persistence.md) — persistence happens after the hook.
+
 ---
 
 ## 7. Plugin priority

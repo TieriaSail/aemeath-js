@@ -17,7 +17,17 @@
 
 import { AemeathLogger } from './core/Logger';
 import { ErrorCapturePlugin } from './plugins/ErrorCapturePlugin';
-import { UploadPlugin, type UploadResult, type UploadCallback } from './plugins/UploadPlugin';
+import {
+  UploadPlugin,
+  type UploadResult,
+  type UploadCallback,
+  type UploadDropCallback,
+} from './plugins/UploadPlugin';
+import { PayloadSanitizePlugin } from './plugins/PayloadSanitizePlugin';
+import {
+  OfflinePersistencePlugin,
+  type OfflinePersistencePluginOptions,
+} from './plugins/OfflinePersistencePlugin';
 import { SafeGuardPlugin, type SafeGuardMode } from './plugins/SafeGuardPlugin';
 import { NetworkPlugin, type NetworkLogType, type NetworkErrorType } from './plugins/NetworkPlugin';
 import { BeforeSendPlugin } from './plugins/BeforeSendPlugin';
@@ -62,7 +72,23 @@ export type {
   UploadResult,
   UploadCallback,
   PriorityCallback,
+  UploadRetryReason,
+  UploadDropReason,
+  UploadDropInfo,
+  UploadDropCallback,
 } from './plugins/UploadPlugin';
+
+export { PayloadSanitizePlugin };
+export type {
+  PayloadSanitizePluginOptions,
+  PayloadSanitizeStats,
+} from './plugins/PayloadSanitizePlugin';
+
+export { OfflinePersistencePlugin };
+export type {
+  OfflinePersistencePluginOptions,
+  OfflinePersistenceStatus,
+} from './plugins/OfflinePersistencePlugin';
 
 export { SafeGuardPlugin };
 export type {
@@ -172,7 +198,42 @@ export interface AemeathInitOptions {
     uploadInterval?: number;
     concurrency?: number;
     maxRetries?: number;
+    /** 网络不可用时暂停队列而不是耗尽重试预算 @default 'pause' */
+    offlinePolicy?: 'pause' | 'legacy';
+    /** 重试退避 @default true */
+    retryBackoff?: boolean | { baseMs?: number; maxMs?: number };
+    /** 连续失败多少次判定为疑似离线 @default 3 */
+    suspectedOfflineThreshold?: number;
   };
+
+  /**
+   * 本地缓存配置
+   *
+   * ⚠️ 只解决冷启动导致的队列丢失，**不提供断网续传**（那是 `offlinePersistence`）。
+   */
+  cache?: {
+    enabled?: boolean;
+    key?: string;
+    /** 有效期（毫秒），从写入缓存时刻算起 @default 3600000 */
+    ttl?: number;
+  };
+
+  /** 日志被丢弃时的回调（不挂则丢弃在生产环境完全静默） */
+  onDrop?: UploadDropCallback;
+
+  /**
+   * 载荷清洗 @default true
+   *
+   * Data URL / 二进制占位、单字段超限拒绝、整包超限按字段拆分。
+   */
+  payloadSanitize?: boolean | { maxBytes?: number };
+
+  /**
+   * 断网续传 @default false
+   *
+   * 小程序没有 IndexedDB，会使用平台 storage 作为后端，容量与条数上限相应收紧。
+   */
+  offlinePersistence?: boolean | OfflinePersistencePluginOptions;
 
   /** 是否启用控制台输出 @default true */
   enableConsole?: boolean;
@@ -258,9 +319,13 @@ export interface AemeathInitOptions {
  *             method: 'POST',
  *             data: log,
  *             success: () => resolve({ success: true }),
+ *             // wx.request 的 fail 只在请求发不出去时触发（4xx/5xx 走 success），
+ *             // 所以这里一定是传输层失败。小程序没有 navigator.onLine，
+ *             // retryReason 是 SDK 判定断网的唯一信号，务必填上
  *             fail: (err) => resolve({
  *               success: false,
  *               shouldRetry: true,
+ *               retryReason: 'network',
  *               error: err.errMsg
  *             })
  *           });
@@ -286,16 +351,43 @@ export function initAemeath(options: AemeathInitOptions): AemeathLogger {
         honored.push('beforeSend');
       }
     }
+    if (options?.payloadSanitize === false) {
+      // 与 singleton 入口对齐：显式关掉必须能撤销已装的实例
+      if (globalAemeath.uninstall('payload-sanitize')) honored.push('payloadSanitize');
+    } else if (options?.payloadSanitize && !globalAemeath.hasPlugin('payload-sanitize')) {
+      globalAemeath.use(
+        new PayloadSanitizePlugin(
+          typeof options.payloadSanitize === 'object' ? options.payloadSanitize : {},
+        ),
+      );
+      honored.push('payloadSanitize');
+    }
     if (options && options.upload && !globalAemeath.hasPlugin('upload')) {
       globalAemeath.use(
         new UploadPlugin({
           onUpload: options.upload,
           getPriority: options.getPriority,
           queue: options.queue,
-          cache: { enabled: true },
+          cache: { enabled: options.cache?.enabled !== false, ...options.cache },
+          onDrop: options.onDrop,
         }),
       );
-      honored.push('upload');
+      // 这几项是随 UploadPlugin 一起生效的，不记进来就会在下面被反过来报成"已忽略"
+      honored.push('upload', 'getPriority', 'queue', 'cache', 'onDrop');
+    }
+    // 独立于上面那段：离线续传常常是入口配好 upload 之后（登录、读到开关）才补开的。
+    // 绑在"顺便新建 UploadPlugin"上，用户拿到的就是一个不生效的开关。
+    if (
+      options?.offlinePersistence &&
+      globalAemeath.hasPlugin('upload') &&
+      !globalAemeath.hasPlugin('offline-persistence')
+    ) {
+      globalAemeath.use(
+        new OfflinePersistencePlugin(
+          typeof options.offlinePersistence === 'object' ? options.offlinePersistence : {},
+        ),
+      );
+      honored.push('offlinePersistence');
     }
     if (typeof console !== 'undefined' && console.warn) {
       const ignored = options ? Object.keys(options).filter((k) => !honored.includes(k)) : [];
@@ -365,8 +457,25 @@ export function initAemeath(options: AemeathInitOptions): AemeathLogger {
         onUpload: options.upload,
         getPriority: options.getPriority,
         queue: options.queue,
-        cache: { enabled: true },
+        cache: { enabled: options.cache?.enabled !== false, ...options.cache },
+        onDrop: options.onDrop,
       }),
+    );
+
+    // 断网续传（可选，必须在 UploadPlugin 之后安装）
+    if (options.offlinePersistence) {
+      logger.use(
+        new OfflinePersistencePlugin(
+          typeof options.offlinePersistence === 'object' ? options.offlinePersistence : {},
+        ),
+      );
+    }
+  } else if (options.offlinePersistence && typeof console !== 'undefined' && console.warn) {
+    // 续传的出口就是 UploadPlugin 的队列，没有它这个开关不会有任何效果
+    console.warn(
+      '[Aemeath] `offlinePersistence` was enabled but no `upload` callback was provided, '
+        + 'so the plugin was not installed. Offline logs are replayed through the upload '
+        + 'queue; without an upload callback there is nothing to replay into.',
     );
   }
 
@@ -390,6 +499,21 @@ export function initAemeath(options: AemeathInitOptions): AemeathLogger {
         ignoreErrorTypes: options.network?.ignoreErrorTypes,
         captureAborted: options.network?.captureAborted,
       }),
+    );
+  }
+
+  // 载荷清洗（默认启用，位于采集插件之后、beforeSend 之前）
+  if (options.payloadSanitize !== false) {
+    logger.use(
+      new PayloadSanitizePlugin(
+        typeof options.payloadSanitize === 'object' ? options.payloadSanitize : {},
+      ),
+    );
+  } else if (typeof console !== 'undefined' && console.warn) {
+    console.warn(
+      '[Aemeath] `payloadSanitize` is disabled. Data URLs, binary values and oversized text will '
+        + 'be uploaded and cached as-is, which can break your upload endpoint, truncate database '
+        + 'columns and exhaust storage quota. You are on your own here.',
     );
   }
 
@@ -458,7 +582,8 @@ export function setBeforeSend(hook: BeforeSendHook | null): void {
  *           header: { Authorization: `Bearer ${loginRes.token}` },
  *           data: log,
  *           success: () => resolve({ success: true }),
- *           fail: (e) => resolve({ success: false, shouldRetry: true, error: e.errMsg }),
+ *           fail: (e) =>
+ *             resolve({ success: false, shouldRetry: true, retryReason: 'network', error: e.errMsg }),
  *         });
  *       });
  *     });

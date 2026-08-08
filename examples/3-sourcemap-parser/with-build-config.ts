@@ -237,7 +237,7 @@ if (isProd) {
         sourceMapMode: 'separate', // 必须设为 separate
       },
       // 排除 aemeath-js chunk 不被混淆
-      ['**/lib-logger*'],
+      ['**\/lib-logger*'],
     ),
 
     // Rspack SourceMap chain 修复插件

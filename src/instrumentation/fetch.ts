@@ -22,6 +22,7 @@ import type {
   NetworkErrorDetail,
 } from './types';
 import { safeParseJSON, extractBusinessInfo, captureRequestBody } from './helpers';
+import { shouldIgnoreNetworkCapture } from '../utils/ignoreNetworkCapture';
 
 // ---------------------------------------------------------------------------
 // Singleton state
@@ -307,6 +308,13 @@ function installPatch(): boolean {
     input: RequestInfo | URL,
     init?: RequestInit,
   ): Promise<Response> {
+    // 上报回调窗口内发起的请求：原样放行，绝不记入 NetworkPlugin。
+    // 必须在「发起时」判断——若等响应回来再跳过，窗口可能已关上，而且
+    // 中间态仍会占用 activeCaptures。
+    if (shouldIgnoreNetworkCapture()) {
+      return saved.call(window, input, init);
+    }
+
     const startTime = Date.now();
     const url =
       typeof input === 'string'

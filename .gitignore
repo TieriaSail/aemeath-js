@@ -27,3 +27,8 @@ coverage/
 *.tgz
 .npmrc
 
+
+# Playwright
+/test-results/
+/playwright-report/
+/blob-report/

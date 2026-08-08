@@ -155,6 +155,8 @@ logger.updateContext('userId', '67890');
 | **SourceMap Parser** | Parse obfuscated stacks | +6KB | Optional |
 | **PerformancePlugin** | 🌐🧪 Web Vitals monitoring — **browser only**, experimental ([learn more](./docs/en/6-performance-monitoring.md)) | +4KB | Optional |
 | **SafeGuardPlugin** | Prevent logger crashes | +3KB | Recommended for production |
+| **PayloadSanitizePlugin** | Data URL / oversized payload handling ([docs](./docs/en/10-payload-sanitize.md)) | +2KB | **On by default** |
+| **OfflinePersistencePlugin** | Persist offline, replay online ([docs](./docs/en/11-offline-persistence.md)) | +4KB | Optional |
 
 **On-demand loading examples:**
 
@@ -503,13 +505,23 @@ initAemeath({});
 ```typescript
 initAemeath({
   upload: async (log) => {
-    await fetch('/api/logs', { method: 'POST', body: JSON.stringify(log) });
-    return { success: true };
+    try {
+      const res = await fetch('/api/logs', { method: 'POST', body: JSON.stringify(log) });
+      // Telling the SDK *why* it failed is what makes retries smart
+      return { success: res.ok, retryReason: res.ok ? undefined : 'server' };
+    } catch {
+      // 'network' never burns the retry budget — the queue pauses instead
+      return { success: false, retryReason: 'network' };
+    }
   },
+  offlinePersistence: true, // survive outages and browser restarts
+  onDrop: (log, info) => console.warn('dropped', info.reason, log.logId),
 });
-// All defaults + upload plugin
-// Size: ~13KB
+// All defaults + upload + offline persistence
+// Size: ~17KB
 ```
+
+See [Offline Persistence](./docs/en/11-offline-persistence.md) for the full story.
 
 ---
 

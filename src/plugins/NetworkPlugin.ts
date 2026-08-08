@@ -290,6 +290,9 @@ export class NetworkPlugin implements AemeathPlugin {
 
   private shouldCapture(url: string): boolean {
     const excludePatterns = [
+      // 历史硬编码兜底（作者自用后端路径）。真正挡住 SDK 自上报自反馈环的，
+      // 是 UploadPlugin 在 onUpload 期间抬起的 ignoreNetworkCapture 窗口——
+      // 不依赖 URL。本列表只覆盖「别人也往这些路径打点」的旁路流量。
       '/api/logs',
       '/api/session-recordings',
       '/logger',

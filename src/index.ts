@@ -28,6 +28,7 @@ export type {
   LogListener,
   PluginMetadata,
   AemeathInterface,
+  AemeathEventMap,
   BundleConfig,
   ContextUpdater,
   ContextValue,
@@ -56,7 +57,37 @@ export type {
   UploadResult,
   UploadCallback,
   PriorityCallback,
+  UploadRetryReason,
+  UploadDropReason,
+  UploadDropInfo,
+  UploadDropCallback,
 } from './plugins/UploadPlugin';
+
+// ==================== 载荷清洗（默认启用） ====================
+export { PayloadSanitizePlugin } from './plugins/PayloadSanitizePlugin';
+export type {
+  PayloadSanitizePluginOptions,
+  PayloadSanitizeStats,
+} from './plugins/PayloadSanitizePlugin';
+export { sanitizeLogEntry, utf8Bytes, DEFAULT_MAX_BYTES } from './utils/payloadSanitize';
+export type {
+  PayloadSanitizeOptions,
+  PayloadSanitizeResult,
+  PayloadStrip,
+} from './utils/payloadSanitize';
+
+// ==================== 断网续传（可选） ====================
+export { OfflinePersistencePlugin } from './plugins/OfflinePersistencePlugin';
+export type {
+  OfflinePersistencePluginOptions,
+  OfflinePersistenceStatus,
+} from './plugins/OfflinePersistencePlugin';
+export type {
+  OfflineBackend,
+  OfflineRecord,
+  OfflineRecordMeta,
+  OfflineStore,
+} from './plugins/offline/OfflineStore';
 
 // ==================== 可选插件 ====================
 export { PerformancePlugin } from './plugins/PerformancePlugin';
@@ -108,6 +139,16 @@ export { instrumentFetch } from './instrumentation/fetch';
 export { instrumentXHR } from './instrumentation/xhr';
 export { instrumentMiniAppRequest } from './instrumentation/miniapp-request';
 export type { MiniAppRequestAPI } from './instrumentation/miniapp-request';
+/**
+ * 在忽略窗口内跑一段代码，期间发起的网络请求不会被 NetworkPlugin 记录。
+ * UploadPlugin 已自动包住 `onUpload`；只有你自己绕开 UploadPlugin 做上报时才需要。
+ */
+export {
+  beginIgnoreNetworkCapture,
+  endIgnoreNetworkCapture,
+  runWithoutNetworkCapture,
+  shouldIgnoreNetworkCapture,
+} from './utils/ignoreNetworkCapture';
 /**
  * Symbol marker for synthetic error stacks created by platform adapters.
  * Exported for custom adapter authors who need to mark errors consistently.

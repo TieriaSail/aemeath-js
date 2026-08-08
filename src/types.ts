@@ -113,7 +113,13 @@ export interface LogContext {
  * 日志条目（简化版，统一结构）
  */
 export interface LogEntry {
-  /** 日志唯一标识（Logger 核心自动生成，同一条日志无论上报多少次 logId 不变） */
+  /**
+   * 日志唯一标识（Logger 核心自动生成，同一条日志无论上报多少次 logId 不变）
+   *
+   * 唯一的例外是 PayloadSanitizePlugin 的拆分：超限日志会被拆成 N 条，每条拿到
+   * `${原 logId}-${序号}`，原值保留在 `tags.splitId`。分片刻意用不同的 logId ——
+   * 若共用同一个，把 logId 当幂等键的后端会把 N 个分片去重成一个，反而丢数据。
+   */
   logId: string;
   /** 上报请求标识（UploadPlugin 每次上报尝试自动生成，用于消费端幂等去重） */
   requestId?: string;
@@ -164,9 +170,14 @@ export type BeforeLogResult =
  *
  * - false：拦截日志（不继续传递给 listener）
  * - LogEntry：使用修改后的 entry 继续
+ * - LogEntry[]：把这一条**扇出**成多条继续（空数组等价于 false）
  * - void：原样继续
+ *
+ * 扇出用于「一条日志体积超限、必须按字段拆成多条上报」的场景
+ * （见 `PayloadSanitizePlugin`）。后续插件、`beforeSend`、console 输出和
+ * listener 都会对每个分片各执行一次。
  */
-export type AfterLogResult = false | LogEntry | void;
+export type AfterLogResult = false | LogEntry | LogEntry[] | void;
 
 /**
  * `beforeSend` 钩子函数：日志管道末端的最后一道关卡
@@ -290,6 +301,7 @@ export interface AemeathPlugin {
    *
    * - 返回 false → 拦截（不传递给 listener）
    * - 返回 LogEntry → 使用修改后的 entry 继续
+   * - 返回 LogEntry[] → 扇出成多条继续（空数组等价于 false）
    * - 返回 void → 原样继续
    */
   afterLog?(entry: LogEntry): AfterLogResult;
@@ -332,6 +344,64 @@ export type ContextUpdater = (
 export type ContextValue = Record<string, unknown> | ContextUpdater;
 
 /**
+ * 内置事件的载荷类型
+ *
+ * 只覆盖 SDK 自己发出的事件；自定义事件仍然走 `on(string, ...)` 的兜底重载。
+ * 这里刻意用宽松的 `LogEntry` 而不是各插件的内部类型，避免公共接口被实现细节绑死。
+ */
+export interface AemeathEventMap {
+  /** 每条日志走完 pipeline 后触发（不受 level 过滤） */
+  log: LogEntry;
+  /** 日志被丢弃（队列溢出 / 重试耗尽 / 缓存过期 / 载荷超限 …） */
+  'upload:drop': {
+    log: LogEntry;
+    reason: string;
+    error?: string;
+    retryCount?: number;
+    /** 丢弃发生在补传链路上时带 `offline-replay` */
+    source?: string;
+  };
+  /** 日志进入上传队列 */
+  'upload:enqueued': {
+    log: LogEntry;
+    priority: number;
+    source?: string;
+    /** 入队时队列是否处于暂停态（断网续传插件据此决定要不要落盘） */
+    paused: boolean;
+  };
+  /** 日志上传成功 */
+  'upload:success': { log: LogEntry; source?: string };
+  /** 队列因判定断网而暂停，附暂停瞬间的队列快照 */
+  'upload:paused': {
+    reason: string;
+    queued: number;
+    logs: Array<{ log: LogEntry; priority: number }>;
+  };
+  /** 队列恢复处理 */
+  'upload:resumed': { queued: number };
+  /** 断网续传插件找不到任何可用存储后端，已降级为不落盘 */
+  'upload:offline-unavailable': { reason: string };
+  /** 一条超限日志被拆成多条 */
+  'payload:split': { splitId: string; chunks: number; bytes: number; maxBytes: number };
+  /** 单字段超限，整条日志被拒收 */
+  'payload:rejected': {
+    logId: string;
+    field: string;
+    fieldBytes: number;
+    bytes: number;
+    /** 配置的 `payloadSanitize.maxBytes` */
+    maxBytes: number;
+    /**
+     * 该字段实际被比较的上限，始终小于 `maxBytes`
+     *
+     * 上报时追加的元数据和条目自身的骨架都要占位置，所以留给单个字段的空间
+     * 比配置值小。做告警时请用这个值，`maxBytes` 只用来提示用户该往哪调。
+     */
+    budget: number;
+  };
+}
+
+/**
  * AemeathJs 接口（供插件使用）
  */
 export interface AemeathInterface {
@@ -343,8 +413,18 @@ export interface AemeathInterface {
   error(message: string, options?: LogOptions): void;
 
   // 事件系统
+  // 内置事件走精确重载；自定义事件落到后面的 string 兜底，保持向后兼容
+  on<K extends keyof AemeathEventMap>(
+    event: K,
+    listener: (payload: AemeathEventMap[K]) => void,
+  ): void;
   on(event: string, listener: (...args: unknown[]) => void): void;
+  off<K extends keyof AemeathEventMap>(
+    event: K,
+    listener: (payload: AemeathEventMap[K]) => void,
+  ): void;
   off(event: string, listener: (...args: unknown[]) => void): void;
+  emit<K extends keyof AemeathEventMap>(event: K, payload: AemeathEventMap[K]): void;
   emit(event: string, ...args: unknown[]): void;
 
   // 插件管理

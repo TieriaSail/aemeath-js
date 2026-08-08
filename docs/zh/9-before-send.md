@@ -359,6 +359,35 @@ beforeSend: (entry) => ({ ...entry, message: redact(entry.message) });
 > 想完全不捕获某 URL → 用 `excludeUrls`
 > 想捕获后过滤敏感字段 → 用 `beforeSend`
 
+### 7. ℹ️ 载荷清洗跑在 `beforeSend` 之前（v2.5.0+）
+
+[`PayloadSanitizePlugin`](./10-payload-sanitize.md)（默认启用，priority 900）先于
+`beforeSend` 执行，所以你拿到的 entry 里：
+
+- Data URL / Blob 已经是 `[omitted:data-url mime=image/png bytes=245678]` 这类占位符
+- 超限日志已经按字段拆成多条 —— **`beforeSend` 会对每个分片各调用一次**，
+  可通过 `entry.tags.splitId / splitIndex / splitTotal` 识别
+
+> ℹ️ **拦掉一片就等于拦掉整组。** v2.5.0 起 SDK 会替你保证这一点：
+> 任何一片 `return false`，同组其余分片一起丢弃。
+>
+> 原因是"半组"比"没有"更糟。留下的分片带着"共 3 片"的标记发出去，而第 3 片
+> 永远不会来，服务端要么永久挂着等、要么归并出一条缺字段的日志；更要命的是，
+> 如果你拦这一片是因为它带敏感数据，其余分片仍然会把同一条日志的其它部分漏出去。
+>
+> 所以下面这种按内容判断的写法，行为和你预期的一致 —— 钩子虽然是逐片调用的，
+> 整条日志会被一起丢掉：
+>
+> ```typescript
+> beforeSend: (entry) => (entry.context?.secret ? false : entry)
+> ```
+>
+> 注意只有大字段（超过 512 字节）才会单独落在某一片上，小字段会复制到每一片。
+> 只改写值、从不丢弃的脱敏逻辑不受这条规则影响。
+
+这也意味着 `beforeSend` 里脱敏掉的内容不会被 [断网续传](./11-offline-persistence.md)
+写进 IndexedDB —— 落盘发生在 `beforeSend` 之后。
+
 ---
 
 ## 七、与插件优先级的关系

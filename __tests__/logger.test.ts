@@ -845,3 +845,104 @@ describe('AemeathLogger Core', () => {
   });
 });
 
+
+describe('afterLog 扇出上限', () => {
+  it('多个插件的扇出相乘时会被截断并告警一次', () => {
+    // 扇出是相乘的：k 个插件各返回 N 条就是 N^k。不封顶的话一次
+    // logger.error() 能变成几百次监听器回调和几百个上传请求
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const logger = new AemeathLogger({ enableConsole: false });
+
+    const fanout = (name: string) => ({
+      name,
+      version: '1.0.0',
+      install: () => {},
+      afterLog: (entry: LogEntry) =>
+        Array.from({ length: 5 }, (_, i) => ({ ...entry, logId: `${entry.logId}-${name}${i}` })),
+    });
+    for (const n of ['a', 'b', 'c', 'd']) logger.use(fanout(n));
+
+    const received: LogEntry[] = [];
+    logger.on('log', (entry) => received.push(entry));
+
+    logger.error('boom');
+
+    expect(received.length).toBeLessThanOrEqual(64);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('fan-out'));
+  });
+
+  it('截断时不会留下残缺的 splitId 分组', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const logger = new AemeathLogger({ enableConsole: false });
+
+    // 产出 3 个完整分组（每组 30 片 = 90 > 64），截断后只能留下完整组
+    logger.use({
+      name: 'splitter',
+      version: '1.0.0',
+      install: () => {},
+      afterLog: (entry: LogEntry) => {
+        const out: LogEntry[] = [];
+        for (let g = 0; g < 3; g++) {
+          const splitId = `g${g}`;
+          const total = 30;
+          for (let i = 0; i < total; i++) {
+            out.push({
+              ...entry,
+              logId: `${entry.logId}-${splitId}-${i}`,
+              tags: { ...entry.tags, splitId, splitIndex: i, splitTotal: total },
+            });
+          }
+        }
+        return out;
+      },
+    });
+
+    const received: LogEntry[] = [];
+    logger.on('log', (entry) => received.push(entry));
+    logger.error('fat');
+
+    expect(received.length).toBeLessThanOrEqual(64);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('fan-out'));
+
+    const groups = new Map<string, Set<number>>();
+    const totals = new Map<string, number>();
+    for (const log of received) {
+      const id = log.tags?.splitId as string | undefined;
+      if (!id) continue;
+      if (!groups.has(id)) groups.set(id, new Set());
+      groups.get(id)!.add(log.tags?.splitIndex as number);
+      totals.set(id, log.tags?.splitTotal as number);
+    }
+    for (const [id, seen] of groups) {
+      expect(seen.size, `split group ${id} arrived fragmented`).toBe(totals.get(id));
+    }
+  });
+
+  it('单个 splitId 组超过上限时整组放行，不静默丢光', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const logger = new AemeathLogger({ enableConsole: false });
+
+    logger.use({
+      name: 'huge-split',
+      version: '1.0.0',
+      install: () => {},
+      afterLog: (entry: LogEntry) => {
+        const total = 70;
+        return Array.from({ length: total }, (_, i) => ({
+          ...entry,
+          logId: `${entry.logId}-${i}`,
+          tags: { ...entry.tags, splitId: 'solo', splitIndex: i, splitTotal: total },
+        }));
+      },
+    });
+
+    const received: LogEntry[] = [];
+    logger.on('log', (entry) => received.push(entry));
+    logger.error('oversized-split');
+
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('fan-out'));
+    expect(received).toHaveLength(70);
+    expect(received.every((e) => e.tags?.splitId === 'solo')).toBe(true);
+    expect(new Set(received.map((e) => e.tags?.splitIndex)).size).toBe(70);
+  });
+});

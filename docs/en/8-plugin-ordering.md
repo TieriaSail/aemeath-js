@@ -90,6 +90,8 @@ export const PluginPriority = {
 | `PerformancePlugin` | `NORMAL` (0) | Regular functional plugin |
 | `EarlyErrorCapturePlugin` | `NORMAL` (0) | Regular functional plugin |
 | `UploadPlugin` | `LATE` (100) | Consumer at the end of the pipeline |
+| `OfflinePersistencePlugin` (v2.5.0+) | `LATE + 1` (101) | Only listens to UploadPlugin events; not part of the log pipeline |
+| `PayloadSanitizePlugin` (v2.5.0+) | `LATEST - 100` (900) | After capture plugins, before `beforeSend`, so redaction sees a sanitized skeleton |
 | `BeforeSendPlugin` (v2.4.0+) | `LATEST` (1000) | End-of-pipeline interceptor, must run last |
 
 > **Note:** `SafeGuardPlugin` and `ErrorCapturePlugin` are both `EARLY`; their relative order depends on `use()` order.
@@ -188,6 +190,8 @@ logger.getPlugins().forEach((p) => {
 // [-100]  safe-guard
 // [0]     network
 // [100]   upload
+// [101]   offline-persistence   ← only when offlinePersistence is enabled
+// [900]   payload-sanitize
 // [1000]  before-send
 ```
 

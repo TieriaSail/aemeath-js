@@ -11,6 +11,7 @@
 
 import type { NetworkEvent, NetworkHandler, InstrumentOptions, Unsubscribe, NetworkErrorType, NetworkErrorDetail } from './types';
 import { safeParseJSON, extractBusinessInfo, captureRequestBody } from './helpers';
+import { shouldIgnoreNetworkCapture } from '../utils/ignoreNetworkCapture';
 
 // ---------------------------------------------------------------------------
 // Internal per-request metadata stored on each XHR instance
@@ -108,7 +109,7 @@ function installPatch(): boolean {
   ): void {
     const info: XHRInfo | undefined = (this as any)[XHR_INFO_KEY];
 
-    if (!info || !shouldAnyCaptureUrl(info.url)) {
+    if (!info || shouldIgnoreNetworkCapture() || !shouldAnyCaptureUrl(info.url)) {
       return savedSend.call(this, body);
     }
 

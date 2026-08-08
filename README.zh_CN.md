@@ -145,8 +145,27 @@ logger.updateContext('userId', '67890');
 | `NetworkPlugin` | 监控 fetch/XHR 请求（错误、慢请求） | ~3KB |
 | `SafeGuardPlugin` | 频率限制、递归保护、错误预算 | ~3KB |
 | `BeforeSendPlugin` | 🛡️ 全链路最终拦截，用于隐私脱敏 / 过滤（[文档](./docs/zh/9-before-send.md)） | <1KB |
+| `PayloadSanitizePlugin` | 🧼 **默认启用** — Data URL / Blob 占位、超大日志拆分（[文档](./docs/zh/10-payload-sanitize.md)） | ~2KB |
+| `OfflinePersistencePlugin` | 📴 断网期间落盘（IndexedDB），联网后自动补传（[文档](./docs/zh/11-offline-persistence.md)） | ~4KB |
 
 > 想精确控制插件执行顺序？请看 [插件执行顺序](./docs/zh/8-plugin-ordering.md)（priority 字段）。
+
+### 别再因为网络抖动丢日志
+
+```ts
+initAemeath({
+  upload: async (log) => {
+    const res = await fetch('/api/logs', { method: 'POST', body: JSON.stringify(log) });
+    // 告诉 SDK 失败的**原因**：'network' 类失败不消耗重试预算
+    return { success: res.ok, retryReason: res.ok ? undefined : 'server' };
+  },
+  offlinePersistence: true, // 断网落盘，联网自动补传
+  onDrop: (log, info) => console.warn('dropped', info.reason, log.logId),
+});
+```
+
+现在断网会**暂停队列**而不是把重试预算烧光，重试之间按指数退避，任何丢弃都有明确通知。
+详见 [上报插件](./docs/zh/4-upload-plugin.md) 与 [断网续传](./docs/zh/11-offline-persistence.md)。
 
 ### `beforeSend` — 隐私保护与脱敏
 
@@ -377,6 +396,8 @@ logger.use(new MyPlugin());
 | **[微信小程序支持](./docs/zh/7-miniprogram-support.md)** | 基于 `miniprogram` 字段的精简产物，原生可用 |
 | **[插件执行顺序](./docs/zh/8-plugin-ordering.md)** | 🧩 通过 `priority` 控制插件执行顺序 |
 | **[`beforeSend` 钩子](./docs/zh/9-before-send.md)** | 🛡️ 全链路最终拦截，用于隐私脱敏 / 过滤 |
+| **[载荷清洗](./docs/zh/10-payload-sanitize.md)** | 🧼 Data URL / Blob 占位、超大日志拆分 |
+| **[断网续传](./docs/zh/11-offline-persistence.md)** | 📴 离线落盘，联网自动补传 |
 | **[浏览器直接使用](./docs/zh/0-browser-usage.md)** | Script 标签引入（无需构建工具） |
 
 > 📖 English docs: [README](./README.md) | [Quick Start](./QUICK_START.md) | [Module Docs](./docs/en/)
