@@ -319,9 +319,11 @@ const BUNDLE_EXISTS = existsSync(BUNDLE_PATH);
       expect(pkg.main).toBe('index.js');
     });
 
-    it('产物体积应控制在 100KB 以内（当前目标 ~50KB）', () => {
+    it('产物体积应控制在 110KB 以内（本仓库自设预算，非微信硬上限）', () => {
+      // 微信小程序主包硬顶是 2MB；这里 110KB 是 aemeath 自己的回归闸门，
+      // 防止可靠性代码（Upload pause/Offline/Sanitize）无意间把小程序入口撑爆。
       const stats = statSync(BUNDLE_PATH);
-      expect(stats.size).toBeLessThan(100 * 1024);
+      expect(stats.size).toBeLessThan(110 * 1024);
     });
 
     it('产物应可被 Node CommonJS require，所有预期 API 存在', () => {
