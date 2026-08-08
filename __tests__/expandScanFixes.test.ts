@@ -12,7 +12,7 @@ import {
   shouldIgnoreNetworkCapture,
   _resetIgnoreNetworkCapture,
 } from '../src/utils/ignoreNetworkCapture';
-import type { LogEntry } from '../src/types';
+import { LogLevel, type LogEntry } from '../src/types';
 
 function setOnLine(value: boolean): void {
   Object.defineProperty(window.navigator, 'onLine', {
@@ -192,7 +192,7 @@ describe('expand-scan fixes', () => {
     const splitId = 'split-group-1';
     const chunks: LogEntry[] = [0, 1, 2].map((i) => ({
       logId: `L-${i}`,
-      level: 'error' as const,
+      level: LogLevel.ERROR,
       message: 'fat',
       timestamp: Date.now(),
       tags: { splitId, splitIndex: i, splitTotal: 3 },
