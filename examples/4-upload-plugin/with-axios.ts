@@ -42,11 +42,9 @@ logger.use(
           };
         }
       } catch (error) {
-        return {
-          success: false,
-          shouldRetry: true,
-          error: error instanceof Error ? error.message : String(error),
-        };
+        // 保留 axios 的 response/status/headers 或 ERR_NETWORK，让 UploadPlugin
+        // 正确分类，并自动遵守响应中的 Retry-After。
+        throw error;
       }
     },
 

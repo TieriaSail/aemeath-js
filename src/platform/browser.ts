@@ -45,7 +45,13 @@ export function createBrowserAdapter(): PlatformAdapter {
 
     onBeforeExit(callback: () => void): () => void {
       window.addEventListener('beforeunload', callback);
-      return () => window.removeEventListener('beforeunload', callback);
+      // iOS Safari / WKWebView 经常不触发 beforeunload；pagehide 才是更可靠的
+      // 页面生命周期信号。重复触发是安全的，缓存写入采用覆盖语义。
+      window.addEventListener('pagehide', callback);
+      return () => {
+        window.removeEventListener('beforeunload', callback);
+        window.removeEventListener('pagehide', callback);
+      };
     },
 
     requestIdle(callback: () => void, timeout?: number): void {

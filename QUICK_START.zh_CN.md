@@ -100,7 +100,7 @@ npm install aemeath-js
 
 ```typescript
 // src/main.ts - 初始化一次
-import { initAemeath } from 'aemeath-js';
+import { initAemeath, classifyHttpUploadResponse } from 'aemeath-js';
 
 initAemeath({
   upload: async (log) => {
@@ -108,7 +108,7 @@ initAemeath({
       method: 'POST',
       body: JSON.stringify(log),
     });
-    return { success: res.ok };
+    return classifyHttpUploadResponse(res.status, res.headers.get('Retry-After'));
   },
   context: {
     userId: '12345',
@@ -302,6 +302,8 @@ const result = await parser.parse(errorStack);
 自动监控 fetch 和 XMLHttpRequest 请求，默认排除大资源文件（mp3/mp4/png/jpg等）的慢请求检测。
 
 ```typescript
+import { initAemeath, classifyHttpUploadResponse } from 'aemeath-js';
+
 initAemeath({
   network: {
     logTypes: ['error', 'slow'],  // 只记录错误和慢请求
@@ -506,8 +508,7 @@ initAemeath({
   upload: async (log) => {
     try {
       const res = await fetch('/api/logs', { method: 'POST', body: JSON.stringify(log) });
-      // 告诉 SDK 失败的**原因**，重试策略才能聪明起来
-      return { success: res.ok, retryReason: res.ok ? undefined : 'server' };
+      return classifyHttpUploadResponse(res.status, res.headers.get('Retry-After'));
     } catch {
       // 'network' 不消耗重试预算，队列会暂停等网络恢复
       return { success: false, retryReason: 'network' };

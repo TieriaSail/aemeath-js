@@ -12,6 +12,7 @@ import { IDBFactory } from 'fake-indexeddb';
 import { AemeathLogger } from '../src/core/Logger';
 import { UploadPlugin, type UploadResult } from '../src/plugins/UploadPlugin';
 import { OfflinePersistencePlugin } from '../src/plugins/OfflinePersistencePlugin';
+import { LogLevel, type LogEntry } from '../src/types';
 
 function setOnLine(value: boolean): void {
   Object.defineProperty(window.navigator, 'onLine', {
@@ -129,5 +130,110 @@ describe('补传遇上队列溢出时必须收敛', () => {
 
     // 这条日志不能因为一路被挤掉而被判死刑
     expect(offline.getStatus().giveUps).toBe(0);
+  }, 30000);
+
+  it('剩余容量放不下整个 split 组时不部分补传、不触发自身溢出', async () => {
+    const dbName = `split-capacity-${Math.random()}`;
+    const seedUpload = new UploadPlugin({
+      onUpload: async () => ({ success: true }),
+      queue: { deduplicationDelay: 0, maxSize: 2 },
+      cache: { enabled: false },
+      saveOnUnload: false,
+    });
+    const seedOffline = new OfflinePersistencePlugin({ dbName });
+    logger.use(seedUpload);
+    logger.use(seedOffline);
+    await seedOffline.whenReady();
+
+    const now = Date.now();
+    const chunks: LogEntry[] = [0, 1].map((index) => ({
+      logId: `split-chunk-${index}`,
+      timestamp: now,
+      level: LogLevel.ERROR,
+      message: `chunk-${index}`,
+      tags: { splitId: 'split-capacity-group', splitIndex: index, splitTotal: 2 },
+    }));
+    logger.emit('upload:paused', {
+      reason: 'seed-test',
+      queued: chunks.length,
+      logs: chunks.map((log) => ({ log, priority: 100 })),
+    });
+    await settle();
+    expect(seedOffline.getStatus().pending).toBe(2);
+
+    logger.destroy();
+    logger = new AemeathLogger({ enableConsole: false });
+    setOnLine(false);
+    const replayUpload = new UploadPlugin({
+      onUpload: vi.fn(async () => ({ success: true })),
+      queue: { deduplicationDelay: 0, suspectedOfflineThreshold: 1, maxSize: 2 },
+      cache: { enabled: false },
+      saveOnUnload: false,
+    });
+    logger.use(replayUpload);
+    logger.error('occupies one slot');
+    await settle(5);
+    expect(replayUpload.getQueueStatus()).toMatchObject({ length: 1, paused: true });
+
+    const replayOffline = new OfflinePersistencePlugin({ dbName, replayTimeoutMs: 200 });
+    logger.use(replayOffline);
+    await replayOffline.whenReady();
+    await settle(10);
+
+    const status = replayUpload.getQueueStatus();
+    expect(status.length).toBe(1);
+    expect(status.items).toHaveLength(1);
+    expect(status.pendingItems?.filter((item) => item.logId.startsWith('split-chunk-')))
+      .toHaveLength(0);
+    expect(replayOffline.getStatus().items.filter((item) =>
+      item.logId.startsWith('split-chunk-'))).toHaveLength(2);
+  }, 30000);
+
+  it('split 组永久大于 maxSize 时保留磁盘副本，但不启动每秒空转定时器', async () => {
+    const dbName = `oversized-split-${Math.random()}`;
+    const seedUpload = new UploadPlugin({
+      onUpload: async () => ({ success: true }),
+      cache: { enabled: false },
+      saveOnUnload: false,
+    });
+    const seedOffline = new OfflinePersistencePlugin({ dbName });
+    logger.use(seedUpload);
+    logger.use(seedOffline);
+    await seedOffline.whenReady();
+
+    const now = Date.now();
+    const chunks: LogEntry[] = [0, 1, 2].map((index) => ({
+      logId: `oversized-split-chunk-${index}`,
+      timestamp: now,
+      level: LogLevel.ERROR,
+      message: `chunk-${index}`,
+      tags: { splitId: 'oversized-split-group', splitIndex: index, splitTotal: 3 },
+    }));
+    logger.emit('upload:paused', {
+      reason: 'seed-test',
+      queued: chunks.length,
+      logs: chunks.map((log) => ({ log, priority: 100 })),
+    });
+    await settle();
+    expect(seedOffline.getStatus().pending).toBe(3);
+
+    logger.destroy();
+    logger = new AemeathLogger({ enableConsole: false });
+    const replayUpload = new UploadPlugin({
+      onUpload: vi.fn(async () => ({ success: true })),
+      queue: { deduplicationDelay: 0, maxSize: 2 },
+      cache: { enabled: false },
+      saveOnUnload: false,
+    });
+    const replayOffline = new OfflinePersistencePlugin({ dbName, replayTimeoutMs: 200 });
+    logger.use(replayUpload);
+    logger.use(replayOffline);
+    await replayOffline.whenReady();
+    await settle(30);
+
+    expect(replayOffline.getStatus().pending).toBe(3);
+    expect(replayUpload.getQueueStatus().length).toBe(0);
+    expect((replayOffline as unknown as { overflowReplayTimer: unknown }).overflowReplayTimer)
+      .toBeNull();
   }, 30000);
 });

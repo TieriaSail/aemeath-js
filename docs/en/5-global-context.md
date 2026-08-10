@@ -17,7 +17,7 @@ Global context allows you to configure common information that will be automatic
 ### Configure on Initialization
 
 ```typescript
-import { initAemeath } from 'aemeath-js';
+import { initAemeath, classifyHttpUploadResponse } from 'aemeath-js';
 
 initAemeath({
   context: {
@@ -138,7 +138,7 @@ function onUserLogout() {
 
 ```typescript
 // App.tsx
-import { initAemeath } from 'aemeath-js';
+import { initAemeath, classifyHttpUploadResponse } from 'aemeath-js';
 
 function getDeviceInfo() {
   const ua = navigator.userAgent;
@@ -163,7 +163,7 @@ function initApp() {
         method: 'POST',
         body: JSON.stringify(log),
       });
-      return { success: res.ok };
+      return classifyHttpUploadResponse(res.status, res.headers.get('Retry-After'));
     },
     context: {
       // App info
@@ -378,7 +378,7 @@ logger.setContext({
 
 ```typescript
 // logger-config.ts
-import { initAemeath, getAemeath } from 'aemeath-js';
+import { initAemeath, getAemeath, classifyHttpUploadResponse } from 'aemeath-js';
 
 function getDeviceInfo() {
   const ua = navigator.userAgent;
@@ -394,11 +394,14 @@ function getDeviceInfo() {
 // Initialize
 initAemeath({
   upload: async (log) => {
-    await fetch('/api/logs', {
+    const response = await fetch('/api/logs', {
       method: 'POST',
       body: JSON.stringify(log),
     });
-    return { success: true };
+    return classifyHttpUploadResponse(
+      response.status,
+      response.headers.get('Retry-After'),
+    );
   },
   context: {
     appName: 'My App',

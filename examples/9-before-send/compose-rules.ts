@@ -7,7 +7,7 @@
  * 关键：每条规则返回新 entry / null。前一条返回 null 后立即终止。
  */
 
-import { initAemeath, type LogEntry } from 'aemeath-js';
+import { initAemeath, classifyHttpUploadResponse, type LogEntry } from 'aemeath-js';
 
 type Rule = (entry: LogEntry) => LogEntry | null;
 
@@ -79,7 +79,7 @@ initAemeath({
       method: 'POST',
       body: JSON.stringify(log),
     });
-    return { success: res.ok };
+    return classifyHttpUploadResponse(res.status, res.headers.get('Retry-After'));
   },
   beforeSend: compose(rules),
 });

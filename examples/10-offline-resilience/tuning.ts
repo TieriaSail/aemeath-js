@@ -4,12 +4,12 @@
  * 直接抄下来按需删减即可；所有配置都有合理默认值，删掉就是用默认值。
  */
 
-import { initAemeath } from 'aemeath-js';
+import { initAemeath, classifyHttpUploadResponse } from 'aemeath-js';
 
 initAemeath({
   upload: async (log) => {
     const res = await fetch('/api/logs', { method: 'POST', body: JSON.stringify(log) });
-    return { success: res.ok, retryReason: res.ok ? undefined : 'server' };
+    return classifyHttpUploadResponse(res.status, res.headers.get('Retry-After'));
   },
 
   queue: {

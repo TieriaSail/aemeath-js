@@ -461,18 +461,41 @@ describe('Singleton (initAemeath / getAemeath)', () => {
       mod.resetAemeath();
     });
 
-    it('setUpload(null)：替换为 no-op，队列里的日志 success 出队不残留', async () => {
+    it('setUpload(null)：真正暂停并在重新绑定后原样恢复', async () => {
       const mod = await import('../src/singleton/index');
       const initialUpload = vi.fn(async () => ({ success: true }));
-      const logger = mod.initAemeath({ upload: initialUpload });
+      const logger = mod.initAemeath({ upload: initialUpload, offlinePersistence: false });
 
       mod.setUpload(null);
       logger.error('after pause');
       await new Promise((r) => setTimeout(r, 100));
 
-      // 旧回调没被触发（因为已被替换）
       expect(initialUpload).not.toHaveBeenCalled();
-      // 没有 throw、没有未捕获 rejection
+      const upload = logger.getPluginInstance('upload') as import('../src/plugins/UploadPlugin').UploadPlugin;
+      expect(upload.getQueueStatus()).toMatchObject({ paused: true, length: 1 });
+
+      const resumed = vi.fn(async () => ({ success: true }));
+      mod.setUpload(resumed);
+      await new Promise((r) => setTimeout(r, 150));
+      expect(resumed).toHaveBeenCalledTimes(1);
+      expect(resumed).toHaveBeenCalledWith(expect.objectContaining({ message: 'after pause' }));
+      expect(upload.getQueueStatus()).toMatchObject({ paused: false, length: 0 });
+      mod.resetAemeath();
+    });
+
+    it('deliveryScope 变化时若仍有待投递日志则拒绝切换租户', async () => {
+      const mod = await import('../src/singleton/index');
+      const logger = mod.initAemeath({
+        upload: async () => ({ success: true }),
+        deliveryScope: 'tenant-a',
+        offlinePersistence: false,
+      });
+      mod.setUpload(null);
+      logger.error('tenant-a-secret');
+      await new Promise((r) => setTimeout(r, 80));
+
+      expect(() => mod.setUpload(async () => ({ success: true }), { deliveryScope: 'tenant-b' }))
+        .toThrow(/Refusing to switch upload deliveryScope/);
       mod.resetAemeath();
     });
 
@@ -523,4 +546,3 @@ describe('Singleton (initAemeath / getAemeath)', () => {
     });
   });
 });
-

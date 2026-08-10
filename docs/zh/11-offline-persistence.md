@@ -1,24 +1,33 @@
 # 断网续传（OfflinePersistence）
 
-> v2.5.0+ · **可选插件**，默认关闭 · 断网期间落盘，联网后自动补传
+> v2.5.0+ · 配置 `upload` 后**默认开启** · 断网期间落盘，联网后自动补传
+
+> ⚠️ 持久副本是明文 JSON，默认最长保留 7 天。请先通过 `beforeSend` 脱敏，并按
+> 业务合规要求评估是否适用；不允许本地持久化的项目请显式配置
+> `offlinePersistence: false`。
+
+> ⚠️ **后端必须按 `(projectId/tenantId, logId)` 幂等去重。** 离线恢复是至少一次
+> 投递；服务端已写入但响应丢失时，客户端只能再次发送相同 `logId`。重复项应返回成功，
+> 不能用每次变化的 `requestId` 去重。
 
 ---
 
 ## 🚀 快速开始
 
 ```typescript
-import { initAemeath } from 'aemeath-js';
+import { initAemeath, classifyHttpUploadResponse } from 'aemeath-js';
 
 initAemeath({
   upload: async (log) => {
     const res = await fetch('/api/logs', { method: 'POST', body: JSON.stringify(log) });
-    return { success: res.ok, retryReason: res.ok ? undefined : 'server' };
+    return classifyHttpUploadResponse(res.status, res.headers.get('Retry-After'));
   },
-  offlinePersistence: true, // 就这一行
 });
 ```
 
-开启后：断网期间产生的日志写入 IndexedDB，网络恢复自动补传；浏览器关掉再打开也不丢。
+只要配置了 `upload`，断网期间产生的日志就会默认写入 IndexedDB，网络恢复自动补传；
+浏览器关掉再打开也能恢复。可用 `offlinePersistence: false` 显式关闭；标准入口会同时
+关闭并清除 Upload queue cache 与 OfflinePersistence 副本，确保之后不再本地留存。
 
 ---
 
@@ -31,10 +40,12 @@ initAemeath({
 | 刷新页面 / 关闭后重开      | ✅              | ✅                   |
 | 断网几分钟后恢复           | ⚠️ 队列暂停期间靠它兜底 | ✅ 自动补传 |
 | 断网期间关闭浏览器，次日打开 | ❌ 默认 1 小时 TTL 已过 | ✅ 默认保留 7 天 |
-| 日志被 UploadPlugin 丢弃   | ❌ 丢了就不在缓存里 | ✅ 落盘留待补传 |
+| 可恢复失败耗尽热重试预算   | ✅ 镜像 `parked` 状态 | ✅ 保留持久副本 |
 | 存储介质                   | localStorage（~5MB 整源共享） | IndexedDB（默认 2MB 预算） |
 
 一句话：`cache` 保的是**队列**，`offlinePersistence` 保的是**日志**。
+这两个机制内部仍独立，但标准入口的总开关 `offlinePersistence: false` 会同时关闭两者；
+手动 `new UploadPlugin()` 时仍由 `cache.enabled` 单独控制。
 
 ---
 
@@ -51,7 +62,9 @@ initAemeath({
           └── 期间新产生的日志
                  └─ upload:enqueued{paused} ► 落盘
           │
-        （兜底）upload:drop ─────────────────► 落盘
+        可恢复失败耗尽热预算
+          └── upload:parked ─────────────────► 保留持久副本
+        （兜底）queue-overflow / legacy drop ─► 落盘
           │
         网络恢复
           │
@@ -75,11 +88,15 @@ initAemeath({
 经过 `beforeSend`、不会触发业务侧的 `logger.on('log')`、不会被其它插件重复加工。
 你的埋点统计不会因为一次断网恢复而凭空多出一批。
 
-**不重复上报。** 网络恢复的瞬间，内存队列和持久层可能各持有同一条日志的副本。
-补传前会检查 `upload.isPending(logId)`，已在队列或正在飞行的一律跳过。
+**同一页面内避免双份恢复。** 网络恢复的瞬间，内存队列和持久层可能各持有同一条
+日志的副本。补传前会检查 `upload.isPending(logId)`，本页面已在队列或正在飞行的一律
+跳过。该检查不跨标签页；2.6 的跨标签设计见下方限制说明。
 
-**补传失败有上限。** 单条日志补传失败 `maxReplayAttempts` 次（默认 3）后放弃并清理，
-以 `offline-give-up` 原因走 `onDrop`。不会有僵尸记录长期占着配额。
+**parked 不消耗补传生命周期。** 默认上传策略下，可恢复失败耗尽热预算后由
+`UploadPlugin` 持有在 `parked` 区，磁盘副本保持不动。冷却/`Retry-After` 到期（或显式
+`flush()`）并成功后才删除；`online` 提示不会覆盖该期限。`maxReplayAttempts` 保留为
+legacy 兼容保护：只有旧式
+补传链路真的发出终态失败事件时才计数，parked 不计入。
 
 ---
 
@@ -113,7 +130,7 @@ initAemeath({
     maxEntries: 500,           // 最多保留条数
     maxTotalBytes: 2_000_000,  // 最多占用字节
     replayBatchSize: 10,       // 每轮补传条数
-    maxReplayAttempts: 3,      // 单条补传失败几次后放弃
+    maxReplayAttempts: 3,      // legacy 补传失败保护；parked 不计数
     replayTimeoutMs: 60000,    // 补传对账超时
     dbName: 'aemeath-offline', // IndexedDB 库名
     key: '__aemeath_offline__',// localStorage key 前缀
@@ -129,7 +146,7 @@ initAemeath({
 | `maxEntries`        | `number`                                      | IDB 500 / KV 100   | **磁盘**最多保留条数，超出淘汰最旧的（不管内存队列） |
 | `maxTotalBytes`     | `number`                                      | IDB 2MB / KV 512KB | **磁盘**最多占用字节，超出淘汰最旧的（不管内存队列） |
 | `replayBatchSize`   | `number`                                      | `10`               | 避免恢复瞬间打爆服务端           |
-| `maxReplayAttempts` | `number`                                      | `3`                | 超出后放弃并 `onDrop`            |
+| `maxReplayAttempts` | `number`                                      | `3`                | legacy 补传失败保护；parked 不计数 |
 | `replayTimeoutMs`   | `number`                                      | `60000`            | 既无成功也无失败回执时的重投间隔 |
 | `dbName`            | `string`                                      | `'aemeath-offline'`| IndexedDB 数据库名               |
 | `key`               | `string`                                      | `'__aemeath_offline__'` | KV 后端 key 前缀            |
@@ -173,8 +190,9 @@ IndexedDB ──不可用──► localStorage ──不可用──► noop（
 配额是真实存在的天花板，所以这里的策略是**明确淘汰 + 明确上报**，绝不静默：
 
 1. 写入前检查条数与字节预算，超了就按落盘时间淘汰最旧的
-2. 写入仍失败（多半是配额）→ 再淘汰 20% 重试一次
-3. 还是失败 → 丢弃这条，以 `storage-quota` 原因触发 `onDrop`
+2. 遇到明确配额错误 → 再淘汰 20% 重试一次
+3. 配额重试仍失败 → 以 `storage-quota` 触发 `onDrop`
+4. 非配额的不可存储值 → 不淘汰健康日志，以 `storage-rejected` 单独上报
 
 按落盘时间而不是优先级淘汰：断网期间日志优先级往往完全一样，时间顺序是唯一
 稳定可预期的标准。
@@ -198,13 +216,13 @@ IndexedDB ──不可用──► localStorage ──不可用──► noop（
 ```typescript
 initAemeath({
   upload,
-  offlinePersistence: true,
+  // 配置 upload 后已默认开启；只有调参时才需要再传对象配置
   onDrop: (log, info) => {
     if (info.reason === 'storage-quota') {
       // 存储满了，这条没能留下
     }
-    if (info.reason === 'offline-give-up') {
-      // 补传反复失败，放弃
+    if (info.reason === 'storage-rejected') {
+      // 该条无法被持久化引擎接受，不是容量不足
     }
   },
 });
@@ -224,42 +242,54 @@ plugin.getStatus();
 //   bytes: 128374,         // 估算占用
 //   replaying: 3,          // 正在补传
 //   quotaDrops: 0,         // 因配额丢弃
-//   giveUps: 0,            // 因反复失败放弃
+//   giveUps: 0,            // legacy 补传链路因反复失败放弃
 //   replayed: 137,         // 成功补传
+//   items: [{ logId, capturedAt, state: 'persisted' | 'replaying' }],
 // }
 
 await plugin.clear(); // 清空所有持久副本
 ```
 
+跨 Upload 与持久层查看全局状态时，不要把两个计数直接相加；同一个 `logId` 通常同时
+存在于内存和磁盘。使用统一接口，它会按 `logId` 去重：
+
+```typescript
+const status = getAemeath().getDeliveryStatus();
+// { totalPending, queued, inFlight, parked, persisted, persistedOnly, replaying, ... }
+```
+
+`logger.on('delivery:status', listener)` 可订阅统一快照，成功落盘另有
+`delivery:persisted` 事件。旧的 `plugin.getStatus()` 继续作为存储层诊断接口。
+
 ---
 
 ## 🚧 已知限制
 
-**多标签页会重复补传。** 每个标签页各自持有一份存储句柄，同一条日志可能被多个
-标签页同时补传。后端按 `logId` 幂等去重即可 —— `logId` 在重试与补传中始终不变。
-（跨标签页锁在规划中。）
+**2.5 多标签页可能重复补传。** 每个标签页各自持有一份存储句柄，同一条日志可能被
+多个标签页同时补传。后端必须按 `logId` 幂等去重，并将重复项视为成功。
 
 **尽力而为，不是事务保证。** IndexedDB 写入是异步的，进程被强杀（崩溃、
 `window.close()` 后立即关机）时最后几笔未落盘的写入会丢。
 
-**同一页面上多个实例要各配一个 `dbName`。** `dbName` 默认是 `'aemeath-offline'`，
-两个实例共用一个库时，A 攒下的离线日志会被 B 自动补传到 B 的上报地址上 —— 补传是
+**同一页面上多个实例要各配一组独立的 `dbName` 和 `key`。** `dbName` 标识
+IndexedDB，`key` 标识 KV 降级后端；共享其中任一资源时，A 攒下的离线日志都可能被
+B 自动补传到 B 的上报地址上 —— 补传是
 自动发生的，这类串台尤其难查。SDK 检测到撞车时会**让第二个实例停用**（`getStatus().backend`
-返回 `'noop'`）并在控制台报出提示。要让两边都能持久化，各配一个库名：
+返回 `'noop'`）并在控制台报出提示。要让两边在任一后端都能持久化，两项都要区分：
 
 ```ts
-new OfflinePersistencePlugin({ dbName: 'host-offline' });
-new OfflinePersistencePlugin({ dbName: 'widget-offline' });
+new OfflinePersistencePlugin({ dbName: 'host-offline', key: 'host-offline' });
+new OfflinePersistencePlugin({ dbName: 'widget-offline', key: 'widget-offline' });
 ```
 
 `UploadPlugin` 的 `cache.key` 有同样的要求，见
 [上传插件](./4-upload-plugin.md)。
 
-**不做加密。** 落盘的是明文 JSON。日志里有敏感信息的话，请在
+**不做加密。** 落盘的是明文 JSON，默认 TTL 为 7 天。日志里有敏感信息的话，请在
 [`beforeSend`](./9-before-send.md) 里先脱敏 —— 它在落盘之前执行。
 
-**依赖 `logId` 幂等。** 补传使用与首次上报相同的 `logId`（`requestId` 每次不同），
-后端务必按 `logId` 去重。
+**强制依赖 `logId` 幂等。** 补传使用与首次上报相同的 `logId`（`requestId` 每次
+不同）。后端必须建立 `(projectId/tenantId, logId)` 唯一约束，并把重复项视为成功。
 
 ---
 

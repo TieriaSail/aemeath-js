@@ -14,7 +14,7 @@
  * NetworkPlugin 当前不抓 request/response headers，因此无需脱敏 headers。
  */
 
-import { initAemeath, type LogEntry } from 'aemeath-js';
+import { initAemeath, classifyHttpUploadResponse, type LogEntry } from 'aemeath-js';
 
 const SENSITIVE_PARAMS = ['token', 'phone', 'idCard', 'sessionId'];
 
@@ -29,7 +29,7 @@ initAemeath({
       method: 'POST',
       body: JSON.stringify(log),
     });
-    return { success: res.ok };
+    return classifyHttpUploadResponse(res.status, res.headers.get('Retry-After'));
   },
 
   beforeSend: (entry: LogEntry) => {

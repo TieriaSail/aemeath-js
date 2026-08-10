@@ -15,7 +15,17 @@
 import { AemeathLogger } from '../core/Logger';
 import { ErrorCapturePlugin } from '../plugins/ErrorCapturePlugin';
 import { BrowserApiErrorsPlugin } from '../plugins/BrowserApiErrorsPlugin';
-import { UploadPlugin } from '../plugins/UploadPlugin';
+import {
+  UploadPlugin,
+  parseRetryAfter,
+  classifyHttpUploadResponse,
+  type UploadResult,
+} from '../plugins/UploadPlugin';
+import {
+  OfflinePersistencePlugin,
+  purgeOfflinePersistenceStorage,
+  type OfflinePersistencePluginOptions,
+} from '../plugins/OfflinePersistencePlugin';
 import { PayloadSanitizePlugin } from '../plugins/PayloadSanitizePlugin';
 import { SafeGuardPlugin } from '../plugins/SafeGuardPlugin';
 import { detectPlatform } from '../platform/detect';
@@ -36,7 +46,9 @@ const LOG_LEVEL_ORDER: Record<string, number> = {
 
 export interface BrowserLoggerOptions {
   /** 上报函数 */
-  upload?: (log: LogEntry) => void | Promise<void>;
+  upload?: (log: LogEntry) => UploadResult | void | Promise<UploadResult | void>;
+  /** 断网续传；配置 upload 时默认开启，可显式传 `false` 关闭 */
+  offlinePersistence?: boolean | OfflinePersistencePluginOptions;
   /** 是否启用错误捕获 @default true */
   errorCapture?: boolean;
   /** 是否启用浏览器 API 回调增强捕获 @default true */
@@ -117,11 +129,21 @@ function init(options: BrowserLoggerOptions = {}): AemeathLogger {
           // 异常带着 response，会被判为服务端失败（照常消耗重试预算）。
           // 在这里吞掉换成统一结果，两种情况就再也分不开了。
         onUpload: async (log) => {
-          await uploadFn(log);
-          return { success: true };
+          const result = await uploadFn(log);
+          return result ?? { success: true };
         },
+        localPersistence: options.offlinePersistence !== false,
       }),
     );
+    if (options.offlinePersistence !== false) {
+      logger.use(
+        new OfflinePersistencePlugin(
+          typeof options.offlinePersistence === 'object' ? options.offlinePersistence : {},
+        ),
+      );
+    } else {
+      void purgeOfflinePersistenceStorage(logger.platform);
+    }
   }
 
   globalLogger = logger;
@@ -189,4 +211,16 @@ function destroy(): void {
   }
 }
 
-export { init, getAemeath, destroy, AemeathLogger, ErrorCapturePlugin, BrowserApiErrorsPlugin, UploadPlugin, SafeGuardPlugin };
+export {
+  init,
+  getAemeath,
+  destroy,
+  AemeathLogger,
+  ErrorCapturePlugin,
+  BrowserApiErrorsPlugin,
+  UploadPlugin,
+  parseRetryAfter,
+  classifyHttpUploadResponse,
+  OfflinePersistencePlugin,
+  SafeGuardPlugin,
+};

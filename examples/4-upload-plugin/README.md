@@ -26,7 +26,7 @@ interface UploadResult {
 ### Basic Usage
 
 ```typescript
-import { AemeathLogger, UploadPlugin } from 'aemeath-js';
+import { AemeathLogger, UploadPlugin, classifyHttpUploadResponse } from 'aemeath-js';
 
 const logger = new AemeathLogger();
 
@@ -43,6 +43,13 @@ logger.use(
           body: JSON.stringify(log),
         });
 
+        if (!response.ok) {
+          return classifyHttpUploadResponse(
+            response.status,
+            response.headers.get('Retry-After'),
+          );
+        }
+
         const data = await response.json();
 
         if (data.code === 200) {
@@ -58,6 +65,7 @@ logger.use(
         return {
           success: false,
           shouldRetry: true,
+          retryReason: 'network',
           error: error.message,
         };
       }
@@ -72,6 +80,8 @@ logger.error('Something went wrong', { error: new Error('example') });
 ### With Authentication
 
 ```typescript
+import { classifyHttpUploadResponse } from 'aemeath-js';
+
 logger.use(
   new UploadPlugin({
     onUpload: async (log) => {
@@ -85,7 +95,7 @@ logger.use(
         },
         body: JSON.stringify(log),
       });
-      return { success: res.ok };
+      return classifyHttpUploadResponse(res.status, res.headers.get('Retry-After'));
     },
   }),
 );
@@ -101,7 +111,7 @@ logger.use(
         method: 'POST',
         body: JSON.stringify(log),
       });
-      return { success: res.ok };
+      return classifyHttpUploadResponse(res.status, res.headers.get('Retry-After'));
     },
 
     // Custom priority calculation
@@ -158,7 +168,7 @@ logger.use(
         },
         body: JSON.stringify(log),
       });
-      return { success: res.ok };
+      return classifyHttpUploadResponse(res.status, res.headers.get('Retry-After'));
     },
   }),
 );
@@ -174,7 +184,7 @@ logger.use(
         method: 'POST',
         body: JSON.stringify(log),
       });
-      return { success: res.ok };
+      return classifyHttpUploadResponse(res.status, res.headers.get('Retry-After'));
     },
 
     queue: {
@@ -204,23 +214,11 @@ logger.use(
           body: JSON.stringify(log),
         });
 
-        // Check HTTP status
-        if (response.status >= 500) {
-          // Server error, should retry
-          return {
-            success: false,
-            shouldRetry: true,
-            error: `Server error: ${response.status}`,
-          };
-        }
-
-        if (response.status >= 400) {
-          // Client error (401, 404), don't retry
-          return {
-            success: false,
-            shouldRetry: false,
-            error: `Client error: ${response.status}`,
-          };
+        if (!response.ok) {
+          return classifyHttpUploadResponse(
+            response.status,
+            response.headers.get('Retry-After'),
+          );
         }
 
         // Check business response code
@@ -240,6 +238,7 @@ logger.use(
         return {
           success: false,
           shouldRetry: true,
+          retryReason: 'network',
           error: error.message,
         };
       }
@@ -341,22 +340,22 @@ await plugin.flush();
 // ❌ BAD: Logging in upload callback
 onUpload: async (log) => {
   try {
-    await fetch('/api/logs', { body: JSON.stringify(log) });
-    return { success: true };
+    const response = await fetch('/api/logs', { body: JSON.stringify(log) });
+    return classifyHttpUploadResponse(response.status, response.headers.get('Retry-After'));
   } catch (error) {
     logger.error('Upload failed', { error }); // Infinite loop!
-    return { success: false, shouldRetry: true };
+    return { success: false, shouldRetry: true, retryReason: 'network' };
   }
 };
 
 // ✅ GOOD: Use console
 onUpload: async (log) => {
   try {
-    await fetch('/api/logs', { body: JSON.stringify(log) });
-    return { success: true };
+    const response = await fetch('/api/logs', { body: JSON.stringify(log) });
+    return classifyHttpUploadResponse(response.status, response.headers.get('Retry-After'));
   } catch (error) {
     console.error('Upload failed:', error); // OK
-    return { success: false, shouldRetry: true };
+    return { success: false, shouldRetry: true, retryReason: 'network' };
   }
 };
 ```
@@ -381,6 +380,8 @@ getPriority: (log) => {
 ### 3. Handle Auth Token Refresh
 
 ```typescript
+import { classifyHttpUploadResponse } from 'aemeath-js';
+
 onUpload: async (log) => {
   let token = getAuthToken();
 
@@ -398,7 +399,10 @@ onUpload: async (log) => {
     });
   }
 
-  return { success: response.ok };
+  return classifyHttpUploadResponse(
+    response.status,
+    response.headers.get('Retry-After'),
+  );
 };
 ```
 

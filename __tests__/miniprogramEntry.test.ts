@@ -85,11 +85,75 @@ describe('src/miniprogram.ts 精简入口（源码）', () => {
     expect(logger.hasPlugin('safe-guard')).toBe(true);
     expect(logger.hasPlugin('network')).toBe(true);
     expect(logger.hasPlugin('upload')).toBe(true);
+    expect(logger.hasPlugin('offline-persistence')).toBe(true);
 
     // 精简版不应自动启用浏览器专用插件
     expect(logger.hasPlugin('browser-api-errors')).toBe(false);
     expect(logger.hasPlugin('early-error-capture')).toBe(false);
     expect(logger.hasPlugin('performance')).toBe(false);
+  });
+
+  it('offlinePersistence: false 可关闭小程序端默认持久化', async () => {
+    const mod = await import('../src/miniprogram');
+    const wx = createFakeWx();
+    const platform = mod.createMiniAppAdapter('wechat', wx);
+
+    const logger = mod.initAemeath({
+      platform,
+      upload: async () => ({ success: true }),
+      offlinePersistence: false,
+    });
+
+    expect(logger.hasPlugin('upload')).toBe(true);
+    expect(logger.hasPlugin('offline-persistence')).toBe(false);
+  });
+
+  it('失败的 init 不应把 offlinePersistence 配置泄漏给下一次合法初始化', async () => {
+    const mod = await import('../src/miniprogram');
+    expect(() => mod.initAemeath({ offlinePersistence: false } as never)).toThrow(TypeError);
+
+    const platform = mod.createMiniAppAdapter('wechat', createFakeWx());
+    const logger = mod.initAemeath({
+      platform,
+      upload: async () => ({ success: true }),
+    });
+    expect(logger.hasPlugin('offline-persistence')).toBe(true);
+  });
+
+  it('显式关闭后一次增量 true 调用即可重新开启持久化', async () => {
+    const mod = await import('../src/miniprogram');
+    const platform = mod.createMiniAppAdapter('wechat', createFakeWx());
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const logger = mod.initAemeath({
+      platform,
+      upload: async () => ({ success: true }),
+      offlinePersistence: false,
+    });
+    expect(logger.hasPlugin('offline-persistence')).toBe(false);
+
+    mod.initAemeath({ platform, offlinePersistence: true });
+    expect(logger.hasPlugin('offline-persistence')).toBe(true);
+  });
+
+  it('关闭后立即用 true 重开时保留小程序端自定义持久化配置', async () => {
+    const mod = await import('../src/miniprogram');
+    const platform = mod.createMiniAppAdapter('wechat', createFakeWx());
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const logger = mod.initAemeath({
+      platform,
+      upload: async () => ({ success: true }),
+      offlinePersistence: { storage: 'localstorage', key: 'wx-custom-key', ttl: 234_567 },
+    });
+
+    mod.initAemeath({ platform, offlinePersistence: false });
+    mod.initAemeath({ platform, offlinePersistence: true });
+
+    const reopened = logger.getPluginInstance('offline-persistence') as unknown as {
+      whenReady(): Promise<void>;
+      options: { key: string; ttl: number };
+    };
+    expect(reopened.options).toMatchObject({ key: 'wx-custom-key', ttl: 234_567 });
+    await reopened.whenReady();
   });
 
   it('initAemeath 的 platform 应被 Logger 实际采用（type=miniapp, vendor=wechat）', async () => {
@@ -129,10 +193,27 @@ describe('src/miniprogram.ts 精简入口（源码）', () => {
 
     expect(logger2).toBe(logger1);
     expect(logger2.hasPlugin('upload')).toBe(true);
+    expect(logger2.hasPlugin('offline-persistence')).toBe(true);
 
     logger2.error('post-incremental-upload');
     await new Promise((r) => setTimeout(r, 50));
     expect(uploadFn).toHaveBeenCalled();
+  });
+
+  it('小程序 setUpload 懒安装也默认持久化，并尊重先前的显式关闭', async () => {
+    const mod = await import('../src/miniprogram');
+    const wx = createFakeWx();
+    const platform = mod.createMiniAppAdapter('wechat', wx);
+
+    let logger = mod.initAemeath({ platform });
+    mod.setUpload(async () => ({ success: true }));
+    expect(logger.hasPlugin('offline-persistence')).toBe(true);
+    mod.resetAemeath();
+
+    logger = mod.initAemeath({ platform, offlinePersistence: false });
+    mod.setUpload(async () => ({ success: true }));
+    expect(logger.hasPlugin('upload')).toBe(true);
+    expect(logger.hasPlugin('offline-persistence')).toBe(false);
   });
 
   it('Bug D: 增量补装时 console.warn 应明确「upload was honored」', async () => {
@@ -249,17 +330,25 @@ describe('src/miniprogram.ts 精简入口（源码）', () => {
       expect(initialUpload).not.toHaveBeenCalled();
     });
 
-    it('setUpload(null)：替换为 no-op', async () => {
+    it('setUpload(null)：暂停且重新绑定后继续发送原队列', async () => {
       const mod = await import('../src/miniprogram');
       const platform = mod.createMiniAppAdapter('wechat', createFakeWx());
       const initialUpload = vi.fn(async () => ({ success: true }));
-      const logger = mod.initAemeath({ platform, upload: initialUpload });
+      const logger = mod.initAemeath({ platform, upload: initialUpload, offlinePersistence: false });
 
       mod.setUpload(null);
       logger.error('after pause');
       await new Promise((r) => setTimeout(r, 100));
 
       expect(initialUpload).not.toHaveBeenCalled();
+      const upload = logger.getPluginInstance('upload') as import('../src/plugins/UploadPlugin').UploadPlugin;
+      expect(upload.getQueueStatus()).toMatchObject({ paused: true, length: 1 });
+
+      const resumed = vi.fn(async () => ({ success: true }));
+      mod.setUpload(resumed);
+      await new Promise((r) => setTimeout(r, 150));
+      expect(resumed).toHaveBeenCalledTimes(1);
+      expect(upload.getQueueStatus()).toMatchObject({ paused: false, length: 0 });
     });
   });
 });
@@ -280,6 +369,8 @@ const BUNDLE_EXISTS = existsSync(BUNDLE_PATH);
       'AemeathLogger',
       'ErrorCapturePlugin',
       'UploadPlugin',
+      'parseRetryAfter',
+      'classifyHttpUploadResponse',
       'SafeGuardPlugin',
       'NetworkPlugin',
       'createMiniAppAdapter',
@@ -319,11 +410,11 @@ const BUNDLE_EXISTS = existsSync(BUNDLE_PATH);
       expect(pkg.main).toBe('index.js');
     });
 
-    it('产物体积应控制在 110KB 以内（本仓库自设预算，非微信硬上限）', () => {
-      // 微信小程序主包硬顶是 2MB；这里 110KB 是 aemeath 自己的回归闸门，
-      // 防止可靠性代码（Upload pause/Offline/Sanitize）无意间把小程序入口撑爆。
+    it('产物体积应控制在 160KiB 以内（本仓库自设预算，非微信硬上限）', () => {
+      // 微信小程序主包硬顶是 2MB；160KiB 给可靠投递演进留出合理余量，同时仍能
+      // 防止误把 sourcemap 解析器 / React / Vue 等大模块打进来。
       const stats = statSync(BUNDLE_PATH);
-      expect(stats.size).toBeLessThan(110 * 1024);
+      expect(stats.size).toBeLessThan(160 * 1024);
     });
 
     it('产物应可被 Node CommonJS require，所有预期 API 存在', () => {

@@ -190,7 +190,7 @@ logger.getPlugins().forEach((p) => {
 // [-100]  safe-guard
 // [0]     network
 // [100]   upload
-// [101]   offline-persistence   ← only when offlinePersistence is enabled
+// [101]   offline-persistence   ← default with upload; omitted only when explicitly disabled
 // [900]   payload-sanitize
 // [1000]  before-send
 ```

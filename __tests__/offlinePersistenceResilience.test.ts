@@ -42,11 +42,11 @@ describe('OfflinePersistencePlugin — 存储异常下的终止性', () => {
     localStorage.clear();
   });
 
-  it('持久层写入一直失败时，补传仍在 maxReplayAttempts 内收敛', async () => {
+  it('持久层删除失败时，永久拒收仍然收敛且不形成补传热循环', async () => {
     let online = true;
     const uploadFn = vi.fn(async (_log: LogEntry): Promise<UploadResult> => {
       if (!online) throw new Error('network unreachable');
-      // 网络恢复后服务端一律拒收 → 每次补传都会 drop，触发 registerReplayFailure
+      // 网络恢复后服务端明确永久拒收，不能再进入可恢复补传循环。
       return { success: false, shouldRetry: false };
     });
 
@@ -79,7 +79,7 @@ describe('OfflinePersistencePlugin — 存储异常下的终止性', () => {
     };
 
     try {
-      // 3. 网络恢复，但服务端拒收 → 补传 → drop → 重新记账（而记账写不进去）
+      // 3. 网络恢复，但服务端拒收；删盘写不进去也不能立刻反复补投。
       online = true;
       setOnLine(true);
       window.dispatchEvent(new Event('online'));
@@ -91,6 +91,29 @@ describe('OfflinePersistencePlugin — 存储异常下的终止性', () => {
     // 关键断言：投递次数必须有上限。修复前这里是持续增长的请求风暴。
     expect(uploadFn.mock.calls.length).toBeLessThanOrEqual(5);
     expect(offline.getStatus().pending).toBe(0);
+
+    // 删盘失败的终态记录必须留下跨生命周期墓碑。存储恢复后重启，
+    // 它应在 hydrate 之前被清理，而不是又被翻出来上报。
+    logger.destroy();
+    uploadFn.mockClear();
+    logger = new AemeathLogger({ enableConsole: false });
+    const uploadAfterRestart = new UploadPlugin({
+      onUpload: uploadFn as never,
+      queue: { deduplicationDelay: 0, suspectedOfflineThreshold: 1 },
+      cache: { enabled: false },
+      saveOnUnload: false,
+    });
+    const offlineAfterRestart = new OfflinePersistencePlugin({
+      storage: 'localstorage',
+      maxReplayAttempts: 3,
+    });
+    logger.use(uploadAfterRestart);
+    logger.use(offlineAfterRestart);
+    await offlineAfterRestart.whenReady();
+    await settle(20);
+
+    expect(uploadFn).not.toHaveBeenCalled();
+    expect(offlineAfterRestart.getStatus().pending).toBe(0);
   });
 
   it('日志无法被存储引擎克隆时只丢它自己，不牵连已落盘的其它日志', async () => {
@@ -99,12 +122,14 @@ describe('OfflinePersistencePlugin — 存储异常下的终止性', () => {
     const uploadFn = vi.fn(async (_log: LogEntry): Promise<UploadResult> => {
       throw new Error('offline');
     });
+    const dropped: string[] = [];
 
     const upload = new UploadPlugin({
       onUpload: uploadFn as never,
       queue: { deduplicationDelay: 0, suspectedOfflineThreshold: 1 },
       cache: { enabled: false },
       saveOnUnload: false,
+      onDrop: (_log, info) => dropped.push(info.reason),
     });
     const offline = new OfflinePersistencePlugin({ dbName: `clone-${Math.random()}` });
     logger.use(upload);
@@ -125,7 +150,75 @@ describe('OfflinePersistencePlugin — 存储异常下的终止性', () => {
     await settle(15);
 
     // 这一条存不下是应该的，明确记一次丢弃；但已经落盘的 5 条一条都不能少
-    expect(offline.getStatus().quotaDrops).toBe(1);
+    expect(offline.getStatus().quotaDrops).toBe(0);
+    expect(dropped).toContain('storage-rejected');
     expect(offline.getStatus().pending).toBe(before);
+  });
+
+  it('物理删除失败会写入持久终态墓碑，真正的新模块生命周期也不会复活', async () => {
+    const values = new Map<string, string>();
+    let failRemove = false;
+    const platform = {
+      type: 'unknown' as const,
+      storage: {
+        getItem: (key: string) => values.get(key) ?? null,
+        setItem: (key: string, value: string) => { values.set(key, value); },
+        removeItem: (key: string) => { if (!failRemove) values.delete(key); },
+      },
+      onBeforeExit: () => () => {},
+      requestIdle: (callback: () => void) => callback(),
+      getCurrentPath: () => '',
+      errorCapture: { onGlobalError: () => () => {}, onUnhandledRejection: () => () => {} },
+      earlyCapture: { isInstalled: () => false, hasEarlyErrors: () => false, flush: () => {} },
+    };
+    const key = 'durable-tombstone';
+    let online = false;
+    const uploadFn = vi.fn(async (): Promise<UploadResult> => online
+      ? { success: false, shouldRetry: false }
+      : { success: false, shouldRetry: true, retryReason: 'network' });
+    logger.destroy();
+    logger = new AemeathLogger({ enableConsole: false, platform });
+    const upload = new UploadPlugin({
+      onUpload: uploadFn,
+      queue: { deduplicationDelay: 0, suspectedOfflineThreshold: 1 },
+      cache: { enabled: false },
+      saveOnUnload: false,
+    });
+    const offline = new OfflinePersistencePlugin({ storage: 'localstorage', key });
+    logger.use(upload);
+    logger.use(offline);
+    await offline.whenReady();
+    setOnLine(false);
+    logger.error('terminal across real restart');
+    await settle(12);
+    const logId = offline.getStatus().items[0]!.logId;
+
+    failRemove = true;
+    online = true;
+    setOnLine(true);
+    window.dispatchEvent(new Event('online'));
+    await settle(25);
+    const retained = JSON.parse(values.get(`${key}:r:${logId}`)!);
+    expect(retained.terminal).toBe(true);
+
+    logger.destroy();
+    vi.resetModules();
+    failRemove = false;
+    const [{ AemeathLogger: FreshLogger }, { UploadPlugin: FreshUpload }, { OfflinePersistencePlugin: FreshOffline }] = await Promise.all([
+      import('../src/core/Logger'),
+      import('../src/plugins/UploadPlugin'),
+      import('../src/plugins/OfflinePersistencePlugin'),
+    ]);
+    const replay = vi.fn(async () => ({ success: true }));
+    logger = new FreshLogger({ enableConsole: false, platform });
+    const freshOffline = new FreshOffline({ storage: 'localstorage', key });
+    logger.use(new FreshUpload({ onUpload: replay, cache: { enabled: false }, saveOnUnload: false }));
+    logger.use(freshOffline);
+    await freshOffline.whenReady();
+    await settle(10);
+
+    expect(replay).not.toHaveBeenCalled();
+    expect(freshOffline.getStatus().pending).toBe(0);
+    expect(values.has(`${key}:r:${logId}`)).toBe(false);
   });
 });

@@ -36,6 +36,32 @@ describe('UploadPlugin — 终止性保证', () => {
     localStorage.clear();
   });
 
+  it('自定义宿主 emit 抛错不能打断队列或留下幽灵 in-flight', async () => {
+    const uploadFn = vi.fn(async (): Promise<UploadResult> => ({ success: true }));
+    const plugin = new UploadPlugin({
+      onUpload: uploadFn,
+      queue: { deduplicationDelay: 0 },
+      cache: { enabled: false },
+      saveOnUnload: false,
+    });
+    logger.use(plugin);
+    const emit = vi.spyOn(logger, 'emit').mockImplementation(() => {
+      throw new Error('custom host emit failed');
+    });
+
+    expect(() => plugin.requeue({
+      logId: 'emit-failure-log',
+      level: LogLevel.ERROR,
+      message: 'must still upload',
+      timestamp: Date.now(),
+    })).not.toThrow();
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(uploadFn).toHaveBeenCalledTimes(1);
+    expect(plugin.getQueueStatus()).toMatchObject({ length: 0, inFlight: 0 });
+    emit.mockRestore();
+  });
+
   it('legacy 策略下 onUpload 抛异常必须耗尽预算后丢弃，不能无限重试', async () => {
     const uploadFn = vi.fn(async (_log: LogEntry): Promise<UploadResult> => {
       throw new Error('network down');
@@ -114,7 +140,7 @@ describe('UploadPlugin — 终止性保证', () => {
     expect(plugin.getQueueStatus().paused).toBe(true);
   });
 
-  it('抛出的 HTTP 错误（axios 风格）不算离线：耗预算丢弃，队列不暂停', async () => {
+  it('抛出的 HTTP 错误（axios 风格）不算离线：耗尽热预算后停放，队列不暂停', async () => {
     // axios / ky / got 默认对 4xx-5xx **抛异常**，异常上挂着 response。
     // 把"回调抛了"一律当成离线，等于让后端故障把整条上报链路静默挂起 ——
     // 这和"服务端 5xx 不算离线证据"是同一条原则，只是走的另一条分支。
@@ -139,7 +165,8 @@ describe('UploadPlugin — 终止性保证', () => {
     await vi.advanceTimersByTimeAsync(30_000);
 
     expect(plugin.getQueueStatus().paused).toBe(false);
-    expect(dropped).toEqual(['max-retries']);
+    expect(plugin.getQueueStatus().parked).toBe(1);
+    expect(dropped).toEqual([]);
   });
 
   it('fetch 的网络异常（TypeError）仍然算离线：暂停而不是丢弃', async () => {
@@ -165,9 +192,9 @@ describe('UploadPlugin — 终止性保证', () => {
     expect(dropped).toEqual([]);
   });
 
-  it('回调自身的 bug（普通 Error）按服务端失败处理，不把链路挂起', async () => {
+  it('回调自身的 bug（普通 Error）按可观测失败停放，不把链路挂起', async () => {
     // 用户回调里写错了变量名之类。这不是离线的证据，当成离线会让整条链路
-    // 因为一个代码 bug 永久停摆 —— 耗预算丢弃至少是有界且可观测的
+    // 因为一个代码 bug 永久停摆；热重试有界，但不能把未知异常静默删掉。
     const uploadFn = vi.fn(async (_log: LogEntry): Promise<UploadResult> => {
       throw new ReferenceError('token is not defined');
     });
@@ -185,7 +212,31 @@ describe('UploadPlugin — 终止性保证', () => {
     await vi.advanceTimersByTimeAsync(30_000);
 
     expect(plugin.getQueueStatus().paused).toBe(false);
-    expect(dropped).toEqual(['max-retries']);
+    expect(plugin.getQueueStatus().parked).toBe(1);
+    expect(dropped).toEqual([]);
+  });
+
+  it('AbortError 不作为断网证据，耗尽热预算后进入 parked', async () => {
+    const uploadFn = vi.fn(async (): Promise<UploadResult> => {
+      const error = new Error('cancelled by host');
+      error.name = 'AbortError';
+      throw error;
+    });
+    const dropped: string[] = [];
+    const plugin = new UploadPlugin({
+      onUpload: uploadFn,
+      queue: { deduplicationDelay: 10, maxRetries: 1, suspectedOfflineThreshold: 1 },
+      cache: { enabled: false },
+      saveOnUnload: false,
+      onDrop: (_log, info) => dropped.push(info.reason),
+    });
+    logger.use(plugin);
+
+    logger.error('host cancelled');
+    await vi.advanceTimersByTimeAsync(5000);
+
+    expect(plugin.getQueueStatus()).toMatchObject({ paused: false, length: 0, parked: 1 });
+    expect(dropped).toEqual([]);
   });
 
   it('上传超时按传输层失败处理：暂停等网络，不消耗重试预算', async () => {
@@ -235,8 +286,8 @@ describe('UploadPlugin — 终止性保证', () => {
       await vi.advanceTimersByTimeAsync(120_000);
 
       const status = plugin.getQueueStatus();
-      // 收敛的两种合法形态：队列清空（已丢弃），或明确处于暂停态
-      expect(status.length === 0 || status.paused).toBe(true);
+      // 收敛的合法形态：明确暂停，或离开热队列进入 parked 区。
+      expect(status.paused || status.parked > 0).toBe(true);
       logger.uninstall('upload');
     }
   });
@@ -280,8 +331,80 @@ describe('UploadPlugin — 终止性保证', () => {
     await vi.advanceTimersByTimeAsync(60_000);
 
     expect(uploadFn.mock.calls.length).toBeLessThanOrEqual(3);
-    expect(dropped).toEqual(['max-retries']);
+    expect(dropped).toEqual([]);
     expect(plugin.getQueueStatus().length).toBe(0);
+    expect(plugin.getQueueStatus().parked).toBe(1);
+  });
+
+  it('parked 状态会跨重载恢复，到期后只重新投递一次', async () => {
+    const firstUpload = vi.fn(async (): Promise<UploadResult> => ({
+      success: false,
+      shouldRetry: true,
+      retryReason: 'server',
+    }));
+    const first = new UploadPlugin({
+      onUpload: firstUpload,
+      queue: { deduplicationDelay: 10, maxRetries: 1 },
+      cache: { enabled: true, key: CACHE_KEY },
+      saveOnUnload: true,
+    });
+    logger.use(first);
+    logger.error('survive reload');
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(first.getQueueStatus().parked).toBe(1);
+
+    logger.destroy();
+    const secondUpload = vi.fn(async (): Promise<UploadResult> => ({ success: true }));
+    logger = new AemeathLogger({ enableConsole: false });
+    const second = new UploadPlugin({
+      onUpload: secondUpload,
+      queue: { deduplicationDelay: 10, maxRetries: 1 },
+      cache: { enabled: true, key: CACHE_KEY },
+      saveOnUnload: true,
+    });
+    logger.use(second);
+
+    expect(second.getQueueStatus()).toMatchObject({ length: 0, parked: 1 });
+    await vi.advanceTimersByTimeAsync(55_000);
+    expect(secondUpload).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(secondUpload).toHaveBeenCalledTimes(1);
+    expect(second.getQueueStatus()).toMatchObject({ length: 0, parked: 0 });
+  });
+
+  it('热重试的 Retry-After 会跨重载保留，不能因刷新提前请求', async () => {
+    const firstUpload = vi.fn(async (): Promise<UploadResult> => ({
+      success: false,
+      shouldRetry: true,
+      retryReason: 'rate-limit',
+      retryAfter: '120',
+    }));
+    const first = new UploadPlugin({
+      onUpload: firstUpload,
+      queue: { deduplicationDelay: 0, maxRetries: 3, retryBackoff: false },
+      cache: { enabled: true, key: CACHE_KEY },
+      saveOnUnload: true,
+    });
+    logger.use(first);
+    logger.error('respect Retry-After after reload');
+    await vi.advanceTimersByTimeAsync(100);
+    expect(firstUpload).toHaveBeenCalledTimes(1);
+
+    logger.destroy();
+    const secondUpload = vi.fn(async (): Promise<UploadResult> => ({ success: true }));
+    logger = new AemeathLogger({ enableConsole: false });
+    const second = new UploadPlugin({
+      onUpload: secondUpload,
+      queue: { deduplicationDelay: 0, retryBackoff: false },
+      cache: { enabled: true, key: CACHE_KEY },
+      saveOnUnload: true,
+    });
+    logger.use(second);
+
+    await vi.advanceTimersByTimeAsync(119_000);
+    expect(secondUpload).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1_500);
+    expect(secondUpload).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -345,6 +468,69 @@ describe('processQueue 崩溃不能变成自噬热循环', () => {
     // 崩溃后必须退避，而不是贴着 CPU 反复重入
     expect(uploadFn.mock.calls.length).toBeLessThan(5);
     scoped.destroy();
+  });
+
+  it('缓存时间戳损坏时状态年龄仍保持有限数值', async () => {
+    localStorage.setItem(
+      CACHE_KEY,
+      JSON.stringify([
+        {
+          log: {
+            logId: 'broken-time',
+            level: 'error',
+            message: 'bad timestamp',
+            timestamp: 'not-a-number',
+          },
+          priority: 50,
+          retryCount: 0,
+          timestamp: 'also-bad',
+          cachedAt: Date.now(),
+        },
+      ]),
+    );
+    const plugin = new UploadPlugin({
+      onUpload: async () => new Promise<never>(() => {}),
+      queue: { deduplicationDelay: 0 },
+      cache: { enabled: true, key: CACHE_KEY },
+      saveOnUnload: false,
+    });
+    logger.use(plugin);
+
+    const status = plugin.getQueueStatus();
+    expect(Number.isFinite(status.oldestPendingAgeMs)).toBe(true);
+    expect(status.oldestPendingAgeMs).toBeGreaterThanOrEqual(0);
+    expect(Number.isFinite(status.pendingItems?.[0]?.capturedAt)).toBe(true);
+  });
+
+  it('缓存 TTL 基准损坏时按过期丢弃，不上传无法证明新鲜的记录', async () => {
+    localStorage.setItem(
+      CACHE_KEY,
+      JSON.stringify([
+        {
+          log: { logId: 'broken-ttl', level: 'error', message: 'stale?', timestamp: 'bad' },
+          priority: 50,
+          retryCount: 0,
+          timestamp: 'bad',
+          cachedAt: 'bad',
+        },
+      ]),
+    );
+    const uploadFn = vi.fn(async (): Promise<UploadResult> => ({ success: true }));
+    const onDrop = vi.fn();
+    const plugin = new UploadPlugin({
+      onUpload: uploadFn,
+      cache: { enabled: true, key: CACHE_KEY, ttl: 1 },
+      saveOnUnload: false,
+      onDrop,
+    });
+    logger.use(plugin);
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect(uploadFn).not.toHaveBeenCalled();
+    expect(onDrop).toHaveBeenCalledWith(
+      expect.objectContaining({ logId: 'broken-ttl' }),
+      expect.objectContaining({ reason: 'cache-expired', source: 'upload-cache' }),
+    );
   });
 
   it('一次 flush() 不会把所有日志的重试预算一次烧光', async () => {

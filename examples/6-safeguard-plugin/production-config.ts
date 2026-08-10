@@ -7,6 +7,7 @@ import {
   SafeGuardPlugin,
   ErrorCapturePlugin,
   UploadPlugin,
+  classifyHttpUploadResponse,
   type SafeGuardHealth,
 } from 'aemeath-js';
 
@@ -50,10 +51,10 @@ logger.use(
         body: JSON.stringify(log),
       });
 
-      if (!response.ok) {
-        return { success: false, shouldRetry: true, error: `Upload failed: ${response.status}` };
-      }
-      return { success: true };
+      return classifyHttpUploadResponse(
+        response.status,
+        response.headers.get('Retry-After'),
+      );
     },
 
     queue: {

@@ -11,6 +11,7 @@ import {
   UploadPlugin,
   ErrorCapturePlugin,
   EarlyErrorCapturePlugin,
+  classifyHttpUploadResponse,
 } from 'aemeath-js';
 import type { LogEntry } from 'aemeath-js';
 
@@ -57,10 +58,10 @@ logger.use(
         }),
       });
 
-      if (!response.ok) {
-        return { success: false, shouldRetry: true, error: `Upload failed: ${response.status}` };
-      }
-      return { success: true };
+      return classifyHttpUploadResponse(
+        response.status,
+        response.headers.get('Retry-After'),
+      );
     },
 
     // Priority callback - define log priority

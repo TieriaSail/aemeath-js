@@ -46,19 +46,29 @@ describe('createBrowserAdapter', () => {
   // ==================== onBeforeExit ====================
 
   describe('onBeforeExit', () => {
-    it('应注册 beforeunload 事件', () => {
+    it('应同时注册 beforeunload 与 pagehide 事件', () => {
       const spy = vi.spyOn(window, 'addEventListener');
       const cb = vi.fn();
       adapter.onBeforeExit(cb);
       expect(spy).toHaveBeenCalledWith('beforeunload', cb);
+      expect(spy).toHaveBeenCalledWith('pagehide', cb);
     });
 
-    it('取消函数应移除 beforeunload 事件', () => {
+    it('取消函数应移除两个页面退出事件', () => {
       const spy = vi.spyOn(window, 'removeEventListener');
       const cb = vi.fn();
       const unregister = adapter.onBeforeExit(cb);
       unregister();
       expect(spy).toHaveBeenCalledWith('beforeunload', cb);
+      expect(spy).toHaveBeenCalledWith('pagehide', cb);
+    });
+
+    it('只触发 pagehide 时也应执行退出回调', () => {
+      const cb = vi.fn();
+      const unregister = adapter.onBeforeExit(cb);
+      window.dispatchEvent(new Event('pagehide'));
+      expect(cb).toHaveBeenCalledOnce();
+      unregister();
     });
   });
 

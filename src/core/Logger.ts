@@ -18,8 +18,11 @@ import type {
   AemeathEventMap,
   ContextUpdater,
   ContextValue,
+  DeliveryStatus,
 } from '../types';
 import type { PlatformAdapter } from '../platform/types';
+import type { UploadQueueStatus } from '../plugins/UploadPlugin';
+import type { OfflinePersistenceStatus } from '../plugins/OfflinePersistencePlugin';
 
 /**
  * 一条日志经 afterLog 扇出后最多保留多少条
@@ -28,6 +31,19 @@ import type { PlatformAdapter } from '../platform/types';
  * 控制台输出），也保护后端（每条分片都是一次上传）。
  */
 const MAX_FANOUT_ENTRIES = 64;
+
+const DELIVERY_EVENT_ALIASES: Readonly<Record<string, string>> = {
+  'upload:enqueued': 'delivery:queued',
+  'upload:attempt': 'delivery:attempt',
+  'upload:retry-scheduled': 'delivery:retry-scheduled',
+  'upload:parked': 'delivery:parked',
+  'upload:unparked': 'delivery:unparked',
+  'upload:success': 'delivery:delivered',
+  'upload:drop': 'delivery:dropped',
+  'upload:paused': 'delivery:paused',
+  'upload:resumed': 'delivery:resumed',
+  'upload:offline-unavailable': 'delivery:persistence-unavailable',
+};
 
 /**
  * 扇出截断时保持 splitId 分组完整：放不下的整组丢弃，绝不留下残片。
@@ -593,16 +609,23 @@ export class AemeathLogger implements AemeathInterface {
   public emit<K extends keyof AemeathEventMap>(event: K, payload: AemeathEventMap[K]): void;
   public emit(event: string, ...args: unknown[]): void;
   public emit(event: string, ...args: unknown[]): void {
-    const listeners = this.eventListeners.get(event);
-    if (!listeners || listeners.size === 0) return;
-
-    const snapshot = Array.from(listeners);
-    for (const listener of snapshot) {
-      try {
-        listener(...args);
-      } catch (err) {
-        this.debugWarn(`Error in event listener for "${event}":`, err);
+    const dispatch = (target: string): void => {
+      const listeners = this.eventListeners.get(target);
+      if (!listeners) return;
+      for (const listener of Array.from(listeners)) {
+        try {
+          listener(...args);
+        } catch (err) {
+          this.debugWarn(`Error in event listener for "${target}":`, err);
+        }
       }
+    };
+
+    dispatch(event);
+    const alias = DELIVERY_EVENT_ALIASES[event];
+    if (alias) {
+      dispatch(alias);
+      this.notifyDeliveryStatus();
     }
   }
 
@@ -647,6 +670,9 @@ export class AemeathLogger implements AemeathInterface {
       // 与 plugin:uninstall 对称：OfflinePersistence 靠它在 Upload 被单独 remount
       // 后重新唤醒盘上补传（upload:resumed 不会在 install 时发出）。
       this.emit('plugin:install', plugin.name);
+      if (plugin.name === 'upload' || plugin.name === 'offline-persistence') {
+        this.notifyDeliveryStatus();
+      }
     } catch (err) {
       this.debugWarn(`Failed to install plugin "${plugin.name}":`, err);
       return this;
@@ -661,6 +687,131 @@ export class AemeathLogger implements AemeathInterface {
 
   public getPluginInstance(name: string): AemeathPlugin | undefined {
     return this.pluginInstances.find((p) => p.name === name);
+  }
+
+  /**
+   * 聚合 UploadPlugin 与 OfflinePersistencePlugin 的统一只读状态。
+   *
+   * 两个插件仍各自拥有调度与持久化职责；这里只建立按稳定 `logId` 去重的观测视图。
+   */
+  public getDeliveryStatus(): DeliveryStatus {
+    const uploadPlugin = this.getPluginInstance('upload') as
+      | (AemeathPlugin & { getQueueStatus?: () => UploadQueueStatus })
+      | undefined;
+    const offlinePlugin = this.getPluginInstance('offline-persistence') as
+      | (AemeathPlugin & { getStatus?: () => OfflinePersistenceStatus })
+      | undefined;
+    let upload: Partial<UploadQueueStatus> | undefined;
+    let offline: Partial<OfflinePersistenceStatus> | undefined;
+    try {
+      upload = uploadPlugin?.getQueueStatus?.();
+    } catch (err) {
+      // 状态观测不得反向拖垮日志主链路。同名第三方插件如果提供了
+      // 不完整的状态实现，本次快照降级为空状态并仅在 debug 下告警。
+      this.debugWarn('Upload delivery status provider failed:', err);
+    }
+    try {
+      offline = offlinePlugin?.getStatus?.();
+    } catch (err) {
+      this.debugWarn('Offline delivery status provider failed:', err);
+    }
+    const count = (value: unknown): number =>
+      typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : 0;
+    const stats = (value: unknown): { total: number; byReason: Record<string, number> } => {
+      if (!value || typeof value !== 'object') return { total: 0, byReason: {} };
+      const raw = value as { total?: unknown; byReason?: unknown };
+      const byReason: Record<string, number> = {};
+      if (raw.byReason && typeof raw.byReason === 'object') {
+        for (const [reason, n] of Object.entries(raw.byReason)) {
+          if (typeof n === 'number' && Number.isFinite(n) && n >= 0) byReason[reason] = n;
+        }
+      }
+      return { total: count(raw.total), byReason };
+    };
+    const uploadItems = (Array.isArray(upload?.pendingItems)
+      ? upload.pendingItems
+      : Array.isArray(upload?.items) ? upload.items : [])
+      .filter((item): item is UploadQueueStatus['items'][number] =>
+        !!item && typeof item.logId === 'string' && item.logId.length > 0,
+      );
+    const offlineItems = (Array.isArray(offline?.items) ? offline.items : [])
+      .filter((item): item is OfflinePersistenceStatus['items'][number] =>
+        !!item && typeof item.logId === 'string' && item.logId.length > 0,
+      );
+    const validBackends = new Set(['initializing', 'indexeddb', 'localstorage', 'noop']);
+    const backend = typeof offline?.backend === 'string' && validBackends.has(offline.backend)
+      ? offline.backend as OfflinePersistenceStatus['backend']
+      : offlinePlugin ? 'initializing' as const : 'disabled' as const;
+    const queued = count(upload?.length);
+    const inFlight = count(upload?.inFlight);
+    const parked = count(upload?.parked);
+    const persisted = count(offline?.pending);
+    const replaying = count(offline?.replaying);
+    const consecutiveFailures = count(upload?.consecutiveFailures);
+    const ids = new Set<string>();
+    let persistedOnly = 0;
+    let oldestCapturedAt = Infinity;
+    // pendingItems 是 2.5.1 的全量观测面；items 继续保持 2.4/2.5 的“仅活跃队列”
+    // 兼容语义。回退可同时兼容自定义/旧版状态提供者。
+    for (const item of uploadItems) {
+      ids.add(item.logId);
+      if (Number.isFinite(item.capturedAt)) {
+        oldestCapturedAt = Math.min(oldestCapturedAt, item.capturedAt);
+      }
+    }
+    for (const item of offlineItems) {
+      if (!ids.has(item.logId)) persistedOnly++;
+      ids.add(item.logId);
+      if (Number.isFinite(item.capturedAt)) {
+        oldestCapturedAt = Math.min(oldestCapturedAt, item.capturedAt);
+      }
+    }
+    // 2.5.1 之前的第三方状态提供器可能只有计数、没有稳定 logId。
+    // 这部分不能伪造 ID，也不能直接丢成 0；按两层计数的较大缺口保守去重。
+    const anonymousUpload = Math.max(0, queued + inFlight + parked - uploadItems.length);
+    const anonymousOffline = Math.max(0, persisted - offlineItems.length);
+    const anonymousPending = Math.max(anonymousUpload, anonymousOffline);
+    persistedOnly += Math.max(0, anonymousOffline - anonymousUpload);
+
+    return {
+      enabled: !!uploadPlugin,
+      state: !uploadPlugin
+        ? 'disabled'
+        : upload?.paused === true
+          ? 'paused'
+          : backend === 'noop' || parked > 0 || consecutiveFailures > 0
+            ? 'degraded'
+            : ids.size + anonymousPending > 0
+              ? 'delivering'
+              : 'idle',
+      totalPending: ids.size + anonymousPending,
+      queued,
+      inFlight,
+      parked,
+      persisted,
+      persistedOnly,
+      replaying,
+      oldestPendingAgeMs: oldestCapturedAt === Infinity
+        ? 0
+        : Math.max(0, Date.now() - oldestCapturedAt),
+      consecutiveFailures,
+      attempts: stats(upload?.attempts),
+      drops: stats(upload?.drops),
+      persistence: {
+        enabled: !!offlinePlugin,
+        backend,
+        bytes: count(offline?.bytes),
+        quotaDrops: count(offline?.quotaDrops),
+        giveUps: count(offline?.giveUps),
+        replayed: count(offline?.replayed),
+      },
+    };
+  }
+
+  public notifyDeliveryStatus(): void {
+    if (this.eventListeners.has('delivery:status')) {
+      this.emit('delivery:status', this.getDeliveryStatus());
+    }
   }
 
   public uninstall(name: string): boolean {
@@ -684,6 +835,9 @@ export class AemeathLogger implements AemeathInterface {
     this.emit('plugin:uninstall', name);
     this.plugins.delete(name);
     this.debugLog(`Plugin "${name}" uninstalled`);
+    if (name === 'upload' || name === 'offline-persistence') {
+      this.notifyDeliveryStatus();
+    }
     return true;
   }
 
@@ -765,4 +919,3 @@ export class AemeathLogger implements AemeathInterface {
     this.asyncContextWarned.clear();
   }
 }
-

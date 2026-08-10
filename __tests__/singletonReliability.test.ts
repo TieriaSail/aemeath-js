@@ -41,7 +41,7 @@ describe('initAemeath — 可靠性选项接线', () => {
     vi.restoreAllMocks();
   });
 
-  it('默认装上 PayloadSanitizePlugin，不装 OfflinePersistencePlugin', async () => {
+  it('未配置 upload 时默认装上 PayloadSanitizePlugin，但不空装 OfflinePersistencePlugin', async () => {
     const mod = await import('../src/singleton/index');
     const logger = mod.initAemeath();
 
@@ -77,7 +77,7 @@ describe('initAemeath — 可靠性选项接线', () => {
     mod.resetAemeath();
   });
 
-  it('offlinePersistence: true 时装上，并能真的落盘+补传', async () => {
+  it('配置 upload 后默认装上 OfflinePersistencePlugin，并能真的落盘+补传', async () => {
     let online = true;
     const uploadFn = vi.fn(async (_log: LogEntry): Promise<UploadResult> => {
       if (!online) throw new Error('network unreachable');
@@ -90,7 +90,6 @@ describe('initAemeath — 可靠性选项接线', () => {
       errorCapture: false,
       safeGuard: { enabled: false },
       enableConsole: false,
-      offlinePersistence: true,
     });
 
     expect(logger.hasPlugin('offline-persistence')).toBe(true);
@@ -117,6 +116,94 @@ describe('initAemeath — 可靠性选项接线', () => {
     expect(sent).toHaveLength(1);
     expect(offline.getStatus().pending).toBe(0);
 
+    mod.resetAemeath();
+  });
+
+  it('offlinePersistence: false 可显式关闭默认持久化', async () => {
+    const mod = await import('../src/singleton/index');
+    const logger = mod.initAemeath({
+      upload: async () => ({ success: true }),
+      offlinePersistence: false,
+    });
+
+    expect(logger.hasPlugin('upload')).toBe(true);
+    expect(logger.hasPlugin('offline-persistence')).toBe(false);
+
+    const upload = logger.getPluginInstance('upload') as import('../src/plugins/UploadPlugin').UploadPlugin;
+    upload.setOnUpload(async () => ({
+      success: false,
+      shouldRetry: true,
+      retryReason: 'server',
+    }));
+    logger.error('memory only');
+    await settle(10);
+    expect(localStorage.getItem('__logger_upload_queue__')).toBeNull();
+
+    mod.resetAemeath();
+  });
+
+  it('显式关闭后立即重开仍会清理默认 IDB 与过去降级遗留的 KV 副本', async () => {
+    const now = Date.now();
+    const logId = 'stale-fallback-copy';
+    const record = {
+      logId,
+      storedAt: now,
+      capturedAt: now,
+      priority: 0,
+      bytes: 128,
+      replayAttempts: 0,
+      log: {
+        logId,
+        level: 'error',
+        message: 'must not survive explicit opt-out',
+        timestamp: now,
+      },
+    };
+    // 模拟旧会话因 IDB 不可用而写入默认 KV；当前会话 IDB 已恢复可用。
+    localStorage.setItem('__aemeath_offline__:r:stale-fallback-copy', JSON.stringify(record));
+    localStorage.setItem(
+      '__aemeath_offline__:index',
+      JSON.stringify([{ ...record, log: undefined }]),
+    );
+
+    const mod = await import('../src/singleton/index');
+    const logger = mod.initAemeath({
+      upload: async () => ({ success: true }),
+      offlinePersistence: false,
+    });
+    // 不等待异步清理就重新开启，新的资源认领不能令正在进行的 purge 提前让路。
+    mod.initAemeath({ offlinePersistence: true });
+    const offline = logger.getPluginInstance('offline-persistence') as import('../src/plugins/OfflinePersistencePlugin').OfflinePersistencePlugin;
+    await offline.whenReady();
+
+    expect(localStorage.getItem('__aemeath_offline__:index')).toBeNull();
+    expect(localStorage.getItem('__aemeath_offline__:r:stale-fallback-copy')).toBeNull();
+    mod.resetAemeath();
+  });
+
+  it('先显式关闭、后增量安装 upload 时不能把持久化偷偷装回来', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const mod = await import('../src/singleton/index');
+    mod.initAemeath({ offlinePersistence: false });
+
+    const logger = mod.initAemeath({ upload: async () => ({ success: true }) });
+    expect(logger.hasPlugin('upload')).toBe(true);
+    expect(logger.hasPlugin('offline-persistence')).toBe(false);
+
+    mod.resetAemeath();
+  });
+
+  it('setUpload 懒安装 UploadPlugin 时也默认安装持久化，且尊重之前的显式关闭', async () => {
+    const mod = await import('../src/singleton/index');
+    let logger = mod.getAemeath();
+    mod.setUpload(async () => ({ success: true }));
+    expect(logger.hasPlugin('offline-persistence')).toBe(true);
+    mod.resetAemeath();
+
+    logger = mod.initAemeath({ offlinePersistence: false });
+    mod.setUpload(async () => ({ success: true }));
+    expect(logger.hasPlugin('upload')).toBe(true);
+    expect(logger.hasPlugin('offline-persistence')).toBe(false);
     mod.resetAemeath();
   });
 
@@ -177,6 +264,104 @@ describe('initAemeath — 可靠性选项接线', () => {
     const logger = mod.initAemeath({ offlinePersistence: true });
     expect(logger.hasPlugin('offline-persistence')).toBe(true);
 
+    mod.resetAemeath();
+  });
+
+  it('增量初始化：offlinePersistence: false 能卸载默认安装的持久化插件', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const mod = await import('../src/singleton/index');
+    const logger = mod.initAemeath({ upload: async () => ({ success: true }) });
+    expect(logger.hasPlugin('offline-persistence')).toBe(true);
+
+    mod.initAemeath({ offlinePersistence: false });
+    expect(logger.hasPlugin('offline-persistence')).toBe(false);
+
+    mod.resetAemeath();
+  });
+
+  it('运行时关闭会清除已有持久副本，重新开启不会复活重复上报', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const key = `runtime-disable-${Math.random()}`;
+    let online = false;
+    const uploadFn = vi.fn(async (): Promise<UploadResult> => online
+      ? { success: true }
+      : { success: false, shouldRetry: true, retryReason: 'network' });
+    const mod = await import('../src/singleton/index');
+    const logger = mod.initAemeath({
+      upload: uploadFn,
+      offlinePersistence: { storage: 'localstorage', key },
+      errorCapture: false,
+      safeGuard: { enabled: false },
+      enableConsole: false,
+      queue: { suspectedOfflineThreshold: 1 },
+    });
+    const offline = logger.getPluginInstance('offline-persistence') as import('../src/plugins/OfflinePersistencePlugin').OfflinePersistencePlugin;
+    await offline.whenReady();
+    setOnLine(false);
+    logger.error('do not resurrect');
+    await settle(15);
+    expect(offline.getStatus().pending).toBe(1);
+
+    mod.initAemeath({ offlinePersistence: false });
+    await settle(15);
+    expect(localStorage.getItem(`${key}:index`)).toBeNull();
+    expect(localStorage.getItem('__logger_upload_queue__')).toBeNull();
+
+    online = true;
+    setOnLine(true);
+    const upload = logger.getPluginInstance('upload') as import('../src/plugins/UploadPlugin').UploadPlugin;
+    await upload.flush();
+    expect(uploadFn).toHaveBeenCalledTimes(1);
+
+    mod.initAemeath({ offlinePersistence: { storage: 'localstorage', key } });
+    const remounted = logger.getPluginInstance('offline-persistence') as import('../src/plugins/OfflinePersistencePlugin').OfflinePersistencePlugin;
+    await remounted.whenReady();
+    await settle(10);
+    expect(uploadFn).toHaveBeenCalledTimes(1);
+    expect(remounted.getStatus().pending).toBe(0);
+    mod.resetAemeath();
+  });
+
+  it('增量初始化：显式关闭后一次 true 调用即可重新开启持久化', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const mod = await import('../src/singleton/index');
+    const logger = mod.initAemeath({
+      upload: async () => ({ success: true }),
+      offlinePersistence: false,
+    });
+    expect(logger.hasPlugin('offline-persistence')).toBe(false);
+
+    mod.initAemeath({ offlinePersistence: true });
+    expect(logger.hasPlugin('offline-persistence')).toBe(true);
+
+    mod.resetAemeath();
+  });
+
+  it('关闭后立即用 true 重开会等待清理完成，并恢复之前的自定义存储配置', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const key = `remembered-options-${Math.random()}`;
+    const mod = await import('../src/singleton/index');
+    const logger = mod.initAemeath({
+      upload: async () => ({ success: true }),
+      offlinePersistence: { storage: 'localstorage', key, ttl: 123_456 },
+    });
+    const first = logger.getPluginInstance('offline-persistence') as unknown as {
+      whenReady(): Promise<void>;
+      options: { key: string; ttl: number };
+    };
+    await first.whenReady();
+
+    mod.initAemeath({ offlinePersistence: false });
+    // 刻意不等待异步 purge：重装必须在资源级 purge 完成后再打开同一个 store。
+    mod.initAemeath({ offlinePersistence: true });
+
+    const reopened = logger.getPluginInstance('offline-persistence') as unknown as {
+      whenReady(): Promise<void>;
+      options: { key: string; ttl: number };
+    };
+    expect(reopened).toBeDefined();
+    expect(reopened.options).toMatchObject({ key, ttl: 123_456 });
+    await reopened.whenReady();
     mod.resetAemeath();
   });
 

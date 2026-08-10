@@ -4,7 +4,7 @@
  * 最简单的使用方式
  */
 
-import { AemeathLogger, UploadPlugin } from 'aemeath-js';
+import { AemeathLogger, UploadPlugin, classifyHttpUploadResponse } from 'aemeath-js';
 
 const logger = new AemeathLogger();
 
@@ -23,6 +23,13 @@ logger.use(
           body: JSON.stringify(log),
         });
 
+        if (!response.ok) {
+          return classifyHttpUploadResponse(
+            response.status,
+            response.headers.get('Retry-After'),
+          );
+        }
+
         const data = await response.json();
 
         // 检查业务返回码
@@ -36,10 +43,11 @@ logger.use(
           };
         }
       } catch (error) {
-        // 网络错误
+        // fetch 抛错时明确标记传输层失败，避免消耗热重试预算。
         return {
           success: false,
-          shouldRetry: true, // 网络错误，需要重试
+          shouldRetry: true,
+          retryReason: 'network',
           error: error instanceof Error ? error.message : String(error),
         };
       }

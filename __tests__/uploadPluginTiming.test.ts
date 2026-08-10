@@ -174,6 +174,83 @@ describe('UploadPlugin 并发交错与时序', () => {
     expect(plugin.getQueueStatus().length).toBe(0);
   });
 
+  it('请求飞行期间 setOnUpload(null) 会在当前请求后停住，不能继续调用旧端点', async () => {
+    let releaseFirst!: () => void;
+    let markFirstStarted!: () => void;
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const firstStarted = new Promise<void>((resolve) => {
+      markFirstStarted = resolve;
+    });
+    const oldUpload = vi.fn(async (): Promise<UploadResult> => {
+      if (oldUpload.mock.calls.length === 1) {
+        markFirstStarted();
+        await firstGate;
+      }
+      return { success: true };
+    });
+    const plugin = new UploadPlugin({
+      onUpload: oldUpload,
+      queue: { deduplicationDelay: 0, uploadInterval: 100000 },
+      cache: { enabled: false },
+      saveOnUnload: false,
+    });
+    logger.use(plugin);
+
+    logger.error('already flying');
+    logger.error('must stay queued');
+    await firstStarted;
+    plugin.setOnUpload(null);
+    releaseFirst();
+    await new Promise((resolve) => setTimeout(resolve, 180));
+
+    expect(oldUpload).toHaveBeenCalledTimes(1);
+    expect(plugin.getQueueStatus()).toMatchObject({ paused: true, length: 1 });
+
+    const replacement = vi.fn(async (): Promise<UploadResult> => ({ success: true }));
+    plugin.setOnUpload(replacement);
+    await new Promise((resolve) => setTimeout(resolve, 180));
+    expect(replacement).toHaveBeenCalledTimes(1);
+    expect(replacement).toHaveBeenCalledWith(expect.objectContaining({ message: 'must stay queued' }));
+  });
+
+  it('重新绑定 callback 不能把仍然断网的队列谎报为 resumed', async () => {
+    let online = false;
+    const resumed = vi.fn();
+    const plugin = new UploadPlugin({
+      onUpload: async (): Promise<UploadResult> => {
+        if (!online) throw new TypeError('Failed to fetch');
+        return { success: true };
+      },
+      queue: { deduplicationDelay: 0, suspectedOfflineThreshold: 1, uploadInterval: 100000 },
+      cache: { enabled: false },
+      saveOnUnload: false,
+    });
+    logger.on('upload:resumed', resumed);
+    logger.use(plugin);
+
+    logger.error('still offline after callback returns');
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    expect(plugin.getQueueStatus().paused).toBe(true);
+
+    plugin.setOnUpload(null);
+    plugin.setOnUpload(async () => online ? { success: true } : {
+      success: false,
+      shouldRetry: true,
+      retryReason: 'network',
+    });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(resumed).not.toHaveBeenCalled();
+    expect(plugin.getQueueStatus().paused).toBe(true);
+
+    online = true;
+    window.dispatchEvent(new Event('online'));
+    await new Promise((resolve) => setTimeout(resolve, 180));
+    expect(resumed).toHaveBeenCalledTimes(1);
+    expect(plugin.getQueueStatus()).toMatchObject({ paused: false, length: 0 });
+  });
+
   it('上传飞行途中卸载，这条日志要落进缓存而不是凭空消失', async () => {
     let release: (() => void) | null = null;
     const gate = new Promise<void>((r) => {
@@ -202,7 +279,7 @@ describe('UploadPlugin 并发交错与时序', () => {
     expect(cached).toContain('in flight when torn down');
   });
 
-  it('同一轮里 pause 和 resume 交替，probeDelay 不能被推到上限', async () => {
+  it('重复 online 只触发半开探测，不能伪造恢复或突破退避上限', async () => {
     vi.useFakeTimers();
     const plugin = new UploadPlugin({
       onUpload: async (): Promise<UploadResult> => {
@@ -217,14 +294,15 @@ describe('UploadPlugin 并发交错与时序', () => {
     logger.error('flap');
     await vi.advanceTimersByTimeAsync(200);
 
-    // 反复触发 online：每次 resume 都会清掉退避，下一次暂停应从基础间隔重新开始
+    // online 只是链路可能恢复的提示。探测仍失败时不能清空退避，否则抖动的
+    // 网络事件会把请求频率重新拉满。
     for (let i = 0; i < 10; i++) {
       window.dispatchEvent(new Event('online'));
       await vi.advanceTimersByTimeAsync(50);
     }
 
     const probeDelay = (plugin as unknown as { probeDelay: number }).probeDelay;
-    // 基础间隔 5s，上限 60s。反复 resume 不该把它顶到上限
-    expect(probeDelay).toBeLessThan(60000);
+    expect(plugin.getQueueStatus().paused).toBe(true);
+    expect(probeDelay).toBeLessThanOrEqual(60000);
   });
 });

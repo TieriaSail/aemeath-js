@@ -1,7 +1,7 @@
 /**
  * XHR 上报自忽略、onDrop 配置项、业务请求仍被监控、cache TTL
  */
-import { test, expect, openPage, initSdk, ORIGIN } from './fixture';
+import { test, expect, openPage, ORIGIN } from './fixture';
 import { build } from 'esbuild';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -107,13 +107,31 @@ test('业务 fetch 仍会被 NetworkPlugin 记录（自忽略的正对照）', a
 });
 
 test('超过 cache.ttl 的缓存条目启动后不再恢复上报', async ({ page, context, collected }) => {
-  await initSdk(page, {
-    cache: { enabled: true, ttl: 60_000 },
-  });
-
+  await openPage(page);
   await context.setOffline(true);
   await page.evaluate(() => {
-    window.__aemeath__.getAemeath().error('stale cache entry');
+    // offlinePersistence:false 现在是完整的“不落盘”总开关，会连 Upload cache
+    // 一起关闭。本用例只测 UploadPlugin 自身的镜像 TTL，因此直接安装该插件，
+    // 避免标准入口的 OfflinePersistence 层改变被测边界。
+    const Logger = window.__aemeath__.AemeathLogger as new (options?: unknown) => {
+      use(plugin: unknown): void;
+      error(message: string): void;
+    };
+    const Upload = window.__aemeath__.UploadPlugin as new (options?: unknown) => unknown;
+    const logger = new Logger({ enableConsole: false });
+    logger.use(new Upload({
+      onUpload: async (log: unknown) => {
+        await fetch('/collect', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(log),
+        });
+        return { success: true };
+      },
+      queue: { uploadInterval: 200, deduplicationDelay: 0 },
+      cache: { enabled: true, ttl: 60_000 },
+    }));
+    logger.error('stale cache entry');
   });
   await page.waitForTimeout(500);
 
@@ -124,22 +142,8 @@ test('超过 cache.ttl 的缓存条目启动后不再恢复上报', async ({ pag
   expect(cached, '断网卸载后应有缓存').toBeTruthy();
   expect(cached!).toContain('stale cache entry');
 
-  // 缓存格式是数组；把时间戳改到很久以前
-  await page.evaluate(() => {
-    const key = '__logger_upload_queue__';
-    const data = JSON.parse(localStorage.getItem(key)!) as Array<{
-      timestamp?: number;
-      cachedAt?: number;
-    }>;
-    const ancient = Date.now() - 24 * 60 * 60 * 1000;
-    for (const item of data) {
-      item.timestamp = ancient;
-      item.cachedAt = ancient;
-    }
-    localStorage.setItem(key, JSON.stringify(data));
-  });
-
-  // 先关页丢掉内存，再恢复网络——否则旧页会直接把内存里的发出去
+  // 先关页丢掉内存。真实 close 会再次触发 beforeunload 并刷新 cachedAt，
+  // 所以必须在下一页的 SDK 脚本执行前把缓存改旧，才能真正验证恢复时 TTL。
   await page.close();
   await context.setOffline(false);
 
@@ -171,13 +175,30 @@ test('超过 cache.ttl 的缓存条目启动后不再恢复上报', async ({ pag
     }
     await route.fulfill({ status: 200, body: '{}' });
   });
+  await page2.addInitScript(() => {
+    const key = '__logger_upload_queue__';
+    const data = JSON.parse(localStorage.getItem(key)!) as Array<{
+      timestamp?: number;
+      cachedAt?: number;
+    }>;
+    const ancient = Date.now() - 24 * 60 * 60 * 1000;
+    for (const item of data) {
+      item.timestamp = ancient;
+      item.cachedAt = ancient;
+    }
+    localStorage.setItem(key, JSON.stringify(data));
+  });
 
   await page2.goto(`${ORIGIN}/`);
   await page2.waitForFunction(() => typeof window.__aemeath__ !== 'undefined');
   await page2.evaluate(() => {
-    window.__aemeath__.initAemeath({
-      enableConsole: false,
-      upload: async (log: unknown) => {
+    const Logger = window.__aemeath__.AemeathLogger as new (options?: unknown) => {
+      use(plugin: unknown): void;
+    };
+    const Upload = window.__aemeath__.UploadPlugin as new (options?: unknown) => unknown;
+    const logger = new Logger({ enableConsole: false });
+    logger.use(new Upload({
+      onUpload: async (log: unknown) => {
         await fetch('/collect', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
@@ -186,9 +207,8 @@ test('超过 cache.ttl 的缓存条目启动后不再恢复上报', async ({ pag
         return { success: true };
       },
       queue: { uploadInterval: 200, deduplicationDelay: 0 },
-      network: { enabled: false },
       cache: { enabled: true, ttl: 60_000 },
-    });
+    }));
   });
 
   await page2.waitForTimeout(3000);

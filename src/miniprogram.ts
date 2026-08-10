@@ -19,13 +19,17 @@ import { AemeathLogger } from './core/Logger';
 import { ErrorCapturePlugin } from './plugins/ErrorCapturePlugin';
 import {
   UploadPlugin,
+  parseRetryAfter,
+  classifyHttpUploadResponse,
   type UploadResult,
   type UploadCallback,
   type UploadDropCallback,
+  type UploadBindingOptions,
 } from './plugins/UploadPlugin';
 import { PayloadSanitizePlugin } from './plugins/PayloadSanitizePlugin';
 import {
   OfflinePersistencePlugin,
+  purgeOfflinePersistenceStorage,
   type OfflinePersistencePluginOptions,
 } from './plugins/OfflinePersistencePlugin';
 import { SafeGuardPlugin, type SafeGuardMode } from './plugins/SafeGuardPlugin';
@@ -58,6 +62,8 @@ export type {
   BundleConfig,
   ContextUpdater,
   ContextValue,
+  DeliveryState,
+  DeliveryStatus,
 } from './types';
 
 export { LogLevel as LogLevelEnum, ErrorCategory, PluginPriority } from './types';
@@ -66,16 +72,19 @@ export { LogLevel as LogLevelEnum, ErrorCategory, PluginPriority } from './types
 export { ErrorCapturePlugin };
 export type { ErrorCapturePluginOptions } from './plugins/ErrorCapturePlugin';
 
-export { UploadPlugin };
+export { UploadPlugin, parseRetryAfter, classifyHttpUploadResponse };
 export type {
   UploadPluginOptions,
   UploadResult,
   UploadCallback,
+  UploadBindingOptions,
   PriorityCallback,
   UploadRetryReason,
   UploadDropReason,
   UploadDropInfo,
   UploadDropCallback,
+  UploadQueueStatus,
+  UploadQueueStatusItem,
 } from './plugins/UploadPlugin';
 
 export { PayloadSanitizePlugin };
@@ -138,6 +147,10 @@ export type { RouteMatchConfig };
  * 全局 AemeathJs 实例（小程序入口独立维护，与主入口隔离）
  */
 let globalAemeath: AemeathLogger | null = null;
+/** 记住显式退出，避免稍后通过 setUpload / 增量 init 又把持久化装回来 */
+let offlinePersistenceConfig: boolean | OfflinePersistencePluginOptions | undefined;
+/** 关闭持久化时保留最近一次有效参数，后续传 true 可原配置恢复。 */
+let offlinePersistenceOptions: OfflinePersistencePluginOptions = {};
 
 /**
  * 小程序版 AemeathJs 初始化配置
@@ -182,6 +195,9 @@ export interface AemeathInitOptions {
    * 自定义上传函数
    */
   upload?: (log: LogEntry) => Promise<UploadResult>;
+
+  /** 投递目标稳定作用域；多租户必须为每个租户使用独立存储 key */
+  deliveryScope?: string;
 
   /**
    * 自定义优先级
@@ -229,9 +245,10 @@ export interface AemeathInitOptions {
   payloadSanitize?: boolean | { maxBytes?: number };
 
   /**
-   * 断网续传 @default false
+   * 断网续传 @default true
    *
    * 小程序没有 IndexedDB，会使用平台 storage 作为后端，容量与条数上限相应收紧。
+   * 配置 upload 时默认开启，可显式传入 `false` 关闭。
    */
   offlinePersistence?: boolean | OfflinePersistencePluginOptions;
 
@@ -318,7 +335,10 @@ export interface AemeathInitOptions {
  *             url: 'https://your-server.com/api/logs',
  *             method: 'POST',
  *             data: log,
- *             success: () => resolve({ success: true }),
+ *             success: (res) => resolve(classifyHttpUploadResponse(
+ *               res.statusCode,
+ *               res.header?.['Retry-After'] ?? res.header?.['retry-after']
+ *             )),
  *             // wx.request 的 fail 只在请求发不出去时触发（4xx/5xx 走 success），
  *             // 所以这里一定是传输层失败。小程序没有 navigator.onLine，
  *             // retryReason 是 SDK 判定断网的唯一信号，务必填上
@@ -337,6 +357,7 @@ export interface AemeathInitOptions {
  * ```
  */
 export function initAemeath(options: AemeathInitOptions): AemeathLogger {
+  const requestedOfflinePersistence = options?.offlinePersistence;
   if (globalAemeath) {
     // 重复 init：整个 options 不会被再次应用，但下面的「可挽救」选项会被增量应用：
     //   - beforeSend：直接 setHook 到现有 BeforeSendPlugin
@@ -363,31 +384,64 @@ export function initAemeath(options: AemeathInitOptions): AemeathLogger {
       honored.push('payloadSanitize');
     }
     if (options && options.upload && !globalAemeath.hasPlugin('upload')) {
+      const localPersistence = requestedOfflinePersistence === false
+        ? false
+        : requestedOfflinePersistence !== undefined || offlinePersistenceConfig !== false;
       globalAemeath.use(
         new UploadPlugin({
           onUpload: options.upload,
+          deliveryScope: options.deliveryScope,
           getPriority: options.getPriority,
           queue: options.queue,
           cache: { enabled: options.cache?.enabled !== false, ...options.cache },
+          localPersistence,
           onDrop: options.onDrop,
         }),
       );
       // 这几项是随 UploadPlugin 一起生效的，不记进来就会在下面被反过来报成"已忽略"
-      honored.push('upload', 'getPriority', 'queue', 'cache', 'onDrop');
+      honored.push('upload', 'deliveryScope', 'getPriority', 'queue', 'cache', 'onDrop');
     }
-    // 独立于上面那段：离线续传常常是入口配好 upload 之后（登录、读到开关）才补开的。
-    // 绑在"顺便新建 UploadPlugin"上，用户拿到的就是一个不生效的开关。
-    if (
-      options?.offlinePersistence &&
-      globalAemeath.hasPlugin('upload') &&
-      !globalAemeath.hasPlugin('offline-persistence')
-    ) {
-      globalAemeath.use(
-        new OfflinePersistencePlugin(
-          typeof options.offlinePersistence === 'object' ? options.offlinePersistence : {},
-        ),
-      );
+    // 持久化随 UploadPlugin 默认开启；显式 false 必须也能撤销已经装上的实例。
+    if (requestedOfflinePersistence === false) {
+      offlinePersistenceConfig = false;
+      const upload = globalAemeath.getPluginInstance('upload') as UploadPlugin | undefined;
+      upload?.setCachePersistenceEnabled(false, true);
+      const offline = globalAemeath.getPluginInstance('offline-persistence') as
+        | OfflinePersistencePlugin
+        | undefined;
+      offline?.requestPurgeOnUninstall();
+      globalAemeath.uninstall('offline-persistence');
+      void purgeOfflinePersistenceStorage(globalAemeath.platform, offlinePersistenceOptions);
       honored.push('offlinePersistence');
+    } else {
+      const alreadyInstalled = globalAemeath.hasPlugin('offline-persistence');
+      if (requestedOfflinePersistence !== undefined) {
+        if (alreadyInstalled) {
+          // 不在运行中热切持久化库，否则旧 dbName/key 中的日志会失去补传出口。
+          if (requestedOfflinePersistence === true) honored.push('offlinePersistence');
+        } else {
+          // 先应用本次显式配置，再判断是否安装，允许此前的 false 被一次 true
+          // 调用立即撤销，而不是要求用户重复调用 init。
+          offlinePersistenceConfig = requestedOfflinePersistence;
+          if (typeof requestedOfflinePersistence === 'object') {
+            offlinePersistenceOptions = requestedOfflinePersistence;
+          }
+          honored.push('offlinePersistence');
+        }
+      }
+      if (
+        offlinePersistenceConfig !== false &&
+        globalAemeath.hasPlugin('upload') &&
+        !globalAemeath.hasPlugin('offline-persistence')
+      ) {
+        globalAemeath.use(
+          new OfflinePersistencePlugin(offlinePersistenceOptions),
+        );
+      }
+      if (requestedOfflinePersistence !== undefined) {
+        const upload = globalAemeath.getPluginInstance('upload') as UploadPlugin | undefined;
+        upload?.setCachePersistenceEnabled(true);
+      }
     }
     if (typeof console !== 'undefined' && console.warn) {
       const ignored = options ? Object.keys(options).filter((k) => !honored.includes(k)) : [];
@@ -409,6 +463,14 @@ export function initAemeath(options: AemeathInitOptions): AemeathLogger {
       '[AemeathJs] initAemeath requires options.platform for miniprogram entry. '
         + 'Use createMiniAppAdapter(vendor, wx) to construct the adapter.',
     );
+  }
+
+  // 只有参数校验通过后才提交模块级配置。失败的 init 不得影响下一次合法初始化。
+  if (requestedOfflinePersistence !== undefined) {
+    offlinePersistenceConfig = requestedOfflinePersistence;
+    if (typeof requestedOfflinePersistence === 'object') {
+      offlinePersistenceOptions = requestedOfflinePersistence;
+    }
   }
 
   const context: Record<string, unknown> = {
@@ -455,27 +517,29 @@ export function initAemeath(options: AemeathInitOptions): AemeathLogger {
     logger.use(
       new UploadPlugin({
         onUpload: options.upload,
+        deliveryScope: options.deliveryScope,
         getPriority: options.getPriority,
         queue: options.queue,
         cache: { enabled: options.cache?.enabled !== false, ...options.cache },
+        localPersistence: offlinePersistenceConfig !== false,
         onDrop: options.onDrop,
       }),
     );
 
-    // 断网续传（可选，必须在 UploadPlugin 之后安装）
-    if (options.offlinePersistence) {
+    // 断网续传（默认开启，可显式关闭；必须在 UploadPlugin 之后安装）
+    if (offlinePersistenceConfig !== false) {
       logger.use(
-        new OfflinePersistencePlugin(
-          typeof options.offlinePersistence === 'object' ? options.offlinePersistence : {},
-        ),
+        new OfflinePersistencePlugin(offlinePersistenceOptions),
       );
+    } else {
+      void purgeOfflinePersistenceStorage(logger.platform);
     }
   } else if (options.offlinePersistence && typeof console !== 'undefined' && console.warn) {
-    // 续传的出口就是 UploadPlugin 的队列，没有它这个开关不会有任何效果
+    // 当前不安装，但保留给稍后 setUpload / 增量 init。
     console.warn(
-      '[Aemeath] `offlinePersistence` was enabled but no `upload` callback was provided, '
-        + 'so the plugin was not installed. Offline logs are replayed through the upload '
-        + 'queue; without an upload callback there is nothing to replay into.',
+      '[Aemeath] `offlinePersistence` was configured without an `upload` callback. '
+        + 'The plugin is not installed yet; the option is retained and will be applied '
+        + 'when upload is configured later.',
     );
   }
 
@@ -554,8 +618,8 @@ export function setBeforeSend(hook: BeforeSendHook | null): void {
 /**
  * 在运行时设置 / 替换 / 暂停 upload 回调
  *
- * 与 web 入口 `src/singleton/index.ts` 的 `setUpload` **语义对称**（懒装载 /
- * `null` → no-op / 队列语义等）。
+ * 与 web 入口 `src/singleton/index.ts` 的 `setUpload` **语义对称**：`null` 会冻结
+ * 队列与持久副本，绑定新回调后从原位置恢复。
  *
  * 用户文档：`docs/zh/9-before-send.md` / `docs/en/9-before-send.md` 末节
  * 「setUpload（运行时绑定上传）」。
@@ -581,7 +645,10 @@ export function setBeforeSend(hook: BeforeSendHook | null): void {
  *           method: 'POST',
  *           header: { Authorization: `Bearer ${loginRes.token}` },
  *           data: log,
- *           success: () => resolve({ success: true }),
+ *           success: (res) => resolve(classifyHttpUploadResponse(
+ *             res.statusCode,
+ *             res.header?.['Retry-After'] ?? res.header?.['retry-after']
+ *           )),
  *           fail: (e) =>
  *             resolve({ success: false, shouldRetry: true, retryReason: 'network', error: e.errMsg }),
  *         });
@@ -591,7 +658,10 @@ export function setBeforeSend(hook: BeforeSendHook | null): void {
  * });
  * ```
  */
-export function setUpload(callback: UploadCallback | null): void {
+export function setUpload(
+  callback: UploadCallback | null,
+  options: UploadBindingOptions = {},
+): void {
   if (!globalAemeath) {
     if (typeof console !== 'undefined' && console.warn) {
       console.warn(
@@ -603,16 +673,22 @@ export function setUpload(callback: UploadCallback | null): void {
   }
   const existing = globalAemeath.getPluginInstance('upload') as UploadPlugin | undefined;
   if (existing) {
-    existing.setOnUpload(callback);
+    existing.setOnUpload(callback, options);
     return;
   }
-  const onUpload: UploadCallback = callback ?? (async () => ({ success: true }));
-  globalAemeath.use(
-    new UploadPlugin({
-      onUpload,
-      cache: { enabled: true },
-    }),
-  );
+  const upload = new UploadPlugin({
+    onUpload: callback ?? (async () => ({ success: false, shouldRetry: true })),
+    deliveryScope: options.deliveryScope,
+    localPersistence: offlinePersistenceConfig !== false,
+    cache: { enabled: true },
+  });
+  if (callback === null) upload.setOnUpload(null);
+  globalAemeath.use(upload);
+  if (offlinePersistenceConfig !== false) {
+    globalAemeath.use(
+      new OfflinePersistencePlugin(offlinePersistenceOptions),
+    );
+  }
 }
 
 /**
@@ -643,6 +719,8 @@ export function resetAemeath(): void {
     globalAemeath.destroy?.();
   }
   globalAemeath = null;
+  offlinePersistenceConfig = undefined;
+  offlinePersistenceOptions = {};
 }
 
 export type { AemeathInterface as Logger } from './types';

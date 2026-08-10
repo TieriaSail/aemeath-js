@@ -81,6 +81,42 @@ describe('Browser IIFE 入口', () => {
       });
 
       expect(logger.hasPlugin('upload')).toBe(true);
+      expect(logger.hasPlugin('offline-persistence')).toBe(true);
+    });
+
+    it('offlinePersistence=false 时 IIFE 入口不安装持久化插件', async () => {
+      const mod = await import('../src/browser/index');
+      const logger = mod.init({
+        upload: vi.fn(async () => ({
+          success: false,
+          shouldRetry: true,
+          retryReason: 'server' as const,
+        })),
+        offlinePersistence: false,
+      });
+
+      expect(logger.hasPlugin('upload')).toBe(true);
+      expect(logger.hasPlugin('offline-persistence')).toBe(false);
+      logger.error('must stay memory-only');
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(localStorage.getItem('__logger_upload_queue__')).toBeNull();
+    });
+
+    it('IIFE upload 回调可以返回 UploadResult，不再把失败强制改写为成功', async () => {
+      const mod = await import('../src/browser/index');
+      const upload = vi.fn(async () => ({
+        success: false,
+        shouldRetry: true,
+        retryReason: 'rate-limit' as const,
+        retryAfter: '120',
+      }));
+      const logger = mod.init({ upload, offlinePersistence: false });
+      logger.error('rate limited');
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      const plugin = logger.getPluginInstance('upload') as import('../src/plugins/UploadPlugin').UploadPlugin;
+      expect(upload).toHaveBeenCalledTimes(1);
+      expect(plugin.getQueueStatus()).toMatchObject({ length: 1, parked: 0 });
     });
 
     it('不传 upload 回调不应安装 UploadPlugin', async () => {
@@ -341,4 +377,3 @@ describe('Browser IIFE 入口', () => {
     });
   });
 });
-

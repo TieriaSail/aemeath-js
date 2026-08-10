@@ -27,7 +27,8 @@
 
 ## 2. 精简版 API 范围
 
-小程序产物为了极致体积控制（当前压缩后约 50KB），**仅导出在小程序环境下可运行的 API**：
+小程序产物**仅导出在小程序环境下可运行的 API**。仓库会将压缩后的单文件产物控制在
+160 KiB 的回归预算内；该预算远低于微信包限制，不是平台硬上限。
 
 ### 可用导出
 
@@ -89,7 +90,11 @@ npm install aemeath-js
 ### 3.3 初始化（`app.js`）
 
 ```javascript
-const { initAemeath, createMiniAppAdapter } = require('aemeath-js');
+const {
+  initAemeath,
+  createMiniAppAdapter,
+  classifyHttpUploadResponse,
+} = require('aemeath-js');
 
 App({
   onLaunch() {
@@ -109,10 +114,14 @@ App({
           url: 'https://your-server.com/api/logs',
           method: 'POST',
           data: log,
-          success: () => resolve({ success: true }),
+          success: (res) => resolve(classifyHttpUploadResponse(
+            res.statusCode,
+            res.header?.['Retry-After'] ?? res.header?.['retry-after'],
+          )),
           fail: (err) => resolve({
             success: false,
             shouldRetry: true,
+            retryReason: 'network',
             error: err.errMsg,
           }),
         });
@@ -166,7 +175,7 @@ Taro 的 `@tarojs/taro` 默认以 **调用方原生 API** 的形式 polyfill `wx
 
 ```javascript
 import Taro from '@tarojs/taro';
-import { initAemeath, createMiniAppAdapter } from 'aemeath-js';
+import { initAemeath, createMiniAppAdapter, classifyHttpUploadResponse } from 'aemeath-js';
 
 initAemeath({
   platform: createMiniAppAdapter('wechat', Taro),
@@ -176,7 +185,10 @@ initAemeath({
       method: 'POST',
       data: log,
     });
-    return { success: res.statusCode === 200 };
+    return classifyHttpUploadResponse(
+      res.statusCode,
+      res.header?.['Retry-After'] ?? res.header?.['retry-after'],
+    );
   },
 });
 ```
@@ -186,7 +198,7 @@ initAemeath({
 ### 4.2 uni-app
 
 ```javascript
-import { initAemeath, createMiniAppAdapter } from 'aemeath-js';
+import { initAemeath, createMiniAppAdapter, classifyHttpUploadResponse } from 'aemeath-js';
 
 initAemeath({
   platform: createMiniAppAdapter('wechat', uni),
@@ -195,8 +207,16 @@ initAemeath({
       url: 'https://your-server.com/api/logs',
       method: 'POST',
       data: log,
-      success: () => resolve({ success: true }),
-      fail: (err) => resolve({ success: false, shouldRetry: true, error: err.errMsg }),
+      success: (res) => resolve(classifyHttpUploadResponse(
+        res.statusCode,
+        res.header?.['Retry-After'] ?? res.header?.['retry-after'],
+      )),
+      fail: (err) => resolve({
+        success: false,
+        shouldRetry: true,
+        retryReason: 'network',
+        error: err.errMsg,
+      }),
     });
   }),
 });
@@ -232,7 +252,8 @@ initAemeath({
 
 ### Q: 能不能只用 `NetworkPlugin` 不用 `UploadPlugin`？
 
-可以。所有插件都是按需安装，省略对应字段即可：
+可以。`UploadPlugin` 仍按需安装；配置它后会默认同时安装持久化插件，除非设置
+`offlinePersistence: false`：
 
 ```javascript
 initAemeath({

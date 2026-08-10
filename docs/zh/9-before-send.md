@@ -490,6 +490,9 @@ import { initAemeath, setBeforeSend, setUpload } from 'aemeath-js';
 在 Logger 已存在时再绑定或替换上传函数（例如登录后才拿到 token / endpoint）。
 
 - **小程序**：使用精简入口导出的 `setUpload`，语义与 Web 对称。
-- **传 `null`**：内部替换为「恒返回 `success: true`」的 no-op——队列里待上报项会以**成功**出队并被丢弃，**不是**失败重试；也不是整块冻结离线缓存。
+- **传 `null`**：真正冻结队列和离线副本，不调用旧回调、不消耗重试预算；再次传入 callback 后从原位置恢复。
+- **租户隔离**：`setUpload` 默认只用于同一投递目标刷新 token/实现。若传
+  `setUpload(fn, { deliveryScope: 'tenant-b' })` 改变作用域，而仍有待投递日志，SDK
+  会拒绝切换。跨租户还必须分别配置 `cache.key`、`offlinePersistence.dbName` 和 `key`。
 - **懒装载**：若尚未装有 `UploadPlugin`，`setUpload(fn)` 会安装一个带默认 queue 配置的 `UploadPlugin`。
 - **勿与增量 `initAemeath` 混搭踩坑**：若已通过 `setUpload` 装好 `UploadPlugin`，再次 `initAemeath({ upload, queue })` 时，`upload`/`queue` 等可能不会被采纳（见控制台告警）；请继续用 `setUpload(...)`，或先 `resetAemeath()` 再完整传入配置。

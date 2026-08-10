@@ -49,7 +49,12 @@ Since `2.3.0-beta.0`, aemeath-js ships a dedicated slim bundle at `dist-miniprog
 ```javascript
 // app.js — use CommonJS require (miniprogram runtime is CJS)
 // app.js — 使用 CommonJS require（小程序运行时为 CJS）
-const { initAemeath, getAemeath, createMiniAppAdapter } = require('aemeath-js');
+const {
+  initAemeath,
+  getAemeath,
+  createMiniAppAdapter,
+  classifyHttpUploadResponse,
+} = require('aemeath-js');
 
 App({
   onLaunch() {
@@ -62,7 +67,10 @@ App({
           url: 'https://your-server.com/api/logs',
           method: 'POST',
           data: log,
-          success: () => resolve({ success: true }),
+          success: (res) => resolve(classifyHttpUploadResponse(
+            res.statusCode,
+            res.header?.['Retry-After'] ?? res.header?.['retry-after'],
+          )),
           fail: (err) => resolve({
             success: false,
             shouldRetry: true,

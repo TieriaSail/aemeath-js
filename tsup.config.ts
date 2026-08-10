@@ -7,8 +7,13 @@ export default defineConfig([
       index: 'src/index.ts',
       'core/Logger': 'src/core/Logger.ts',
       'plugins/ErrorCapturePlugin': 'src/plugins/ErrorCapturePlugin.ts',
+      'plugins/BrowserApiErrorsPlugin': 'src/plugins/BrowserApiErrorsPlugin.ts',
       'plugins/EarlyErrorCapturePlugin': 'src/plugins/EarlyErrorCapturePlugin.ts',
       'plugins/UploadPlugin': 'src/plugins/UploadPlugin.ts',
+      'plugins/OfflinePersistencePlugin': 'src/plugins/OfflinePersistencePlugin.ts',
+      'plugins/offline/OfflineStore': 'src/plugins/offline/OfflineStore.ts',
+      'plugins/PayloadSanitizePlugin': 'src/plugins/PayloadSanitizePlugin.ts',
+      'plugins/BeforeSendPlugin': 'src/plugins/BeforeSendPlugin.ts',
       'plugins/PerformancePlugin': 'src/plugins/PerformancePlugin.ts',
       'plugins/SafeGuardPlugin': 'src/plugins/SafeGuardPlugin.ts',
       'plugins/NetworkPlugin': 'src/plugins/NetworkPlugin.ts',
@@ -100,7 +105,12 @@ export default defineConfig([
     bundle: true,
     sourcemap: false,
     clean: false, // 主构建已清理根 dist，不动 dist-miniprogram
-    minify: true,
+    minify: 'terser',
+    terserOptions: {
+      ecma: 2017,
+      compress: { passes: 3 },
+      mangle: { toplevel: true },
+    },
     treeshake: true,
     external: ['source-map-js'],
     target: 'es2017',
@@ -108,7 +118,7 @@ export default defineConfig([
     outExtension: () => ({ js: '.js' }),
     platform: 'neutral',
     banner: {
-      js: '/* aemeath-js - WeChat Miniprogram Bundle */',
+      js: '/* aemeath-js - Miniprogram Bundle */',
     },
     // 根 package.json 声明了 "type": "module"，该产物为 CJS，
     // 写入一个本地 package.json 覆盖 type 字段，避免 Node 误解析

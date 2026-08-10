@@ -7,16 +7,18 @@
  * 3. `getQueueStatus()` 轮询累计计数（适合面板 / 自监控）
  */
 
-import { initAemeath, getAemeath, type UploadPlugin } from 'aemeath-js';
+import {
+  initAemeath,
+  getAemeath,
+  classifyHttpUploadResponse,
+  type UploadPlugin,
+} from 'aemeath-js';
 
 initAemeath({
   upload: async (log) => {
     const res = await fetch('/api/logs', { method: 'POST', body: JSON.stringify(log) });
-    return { success: res.ok, retryReason: res.ok ? undefined : 'server' };
+    return classifyHttpUploadResponse(res.status, res.headers.get('Retry-After'));
   },
-
-  offlinePersistence: true,
-
   // 1. 回调：在日志被放弃**之前**调用，你还有机会自救
   onDrop: (log, info) => {
     switch (info.reason) {

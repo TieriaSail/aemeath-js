@@ -7,7 +7,12 @@
  * - 用户登出 / 切换账号时需要清除钩子
  */
 
-import { initAemeath, setBeforeSend, type LogEntry } from 'aemeath-js';
+import {
+  initAemeath,
+  setBeforeSend,
+  classifyHttpUploadResponse,
+  type LogEntry,
+} from 'aemeath-js';
 
 initAemeath({
   upload: async (log) => {
@@ -15,7 +20,7 @@ initAemeath({
       method: 'POST',
       body: JSON.stringify(log),
     });
-    return { success: res.ok };
+    return classifyHttpUploadResponse(res.status, res.headers.get('Retry-After'));
   },
 });
 

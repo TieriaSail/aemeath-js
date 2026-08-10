@@ -127,7 +127,7 @@ result.frames.forEach((frame) => {
 **快速开始**：
 
 ```typescript
-import { UploadPlugin } from 'aemeath-js';
+import { UploadPlugin, classifyHttpUploadResponse } from 'aemeath-js';
 
 logger.use(
   new UploadPlugin({
@@ -136,7 +136,7 @@ logger.use(
         method: 'POST',
         body: JSON.stringify(log),
       });
-      return { success: res.ok };
+      return classifyHttpUploadResponse(res.status, res.headers.get('Retry-After'));
     },
   }),
 );
@@ -213,7 +213,7 @@ initAemeath({ platform, upload: async (log) => ({ success: true }) });
 - [compose-rules.ts](./9-before-send/compose-rules.ts) - 多规则组合
 
 ```typescript
-import { initAemeath } from 'aemeath-js';
+import { initAemeath, classifyHttpUploadResponse } from 'aemeath-js';
 
 initAemeath({
   upload: async (log) => ({ success: true }),
@@ -256,13 +256,13 @@ initAemeath({
   upload: async (log) => {
     try {
       const res = await fetch('/api/logs', { method: 'POST', body: JSON.stringify(log) });
-      return { success: res.ok, retryReason: res.ok ? undefined : 'server' };
+      return classifyHttpUploadResponse(res.status, res.headers.get('Retry-After'));
     } catch {
       // 'network' 不消耗重试预算，队列会暂停等网络恢复
       return { success: false, retryReason: 'network' };
     }
   },
-  offlinePersistence: true,
+  // 配置 upload 后持久化补传默认开启；如需禁止本地留存可传 false
   onDrop: (log, info) => console.warn('dropped', info.reason, log.logId),
 });
 ```
@@ -346,7 +346,7 @@ logger.updateContext('userId', '67890');
 
 ```typescript
 // src/main.ts
-import { initAemeath } from 'aemeath-js';
+import { initAemeath, classifyHttpUploadResponse } from 'aemeath-js';
 
 initAemeath({
   errorCapture: true,
@@ -355,7 +355,7 @@ initAemeath({
       method: 'POST',
       body: JSON.stringify(log),
     });
-    return { success: res.ok };
+    return classifyHttpUploadResponse(res.status, res.headers.get('Retry-After'));
   },
 });
 

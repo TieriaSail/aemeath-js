@@ -1,25 +1,35 @@
 # Offline Persistence
 
-> v2.5.0+ · **Optional plugin**, disabled by default · Persist while offline, replay when back online
+> v2.5.0+ · **Enabled by default** when `upload` is configured · Persist offline, replay online
+
+> ⚠️ Persisted records are plaintext JSON and default to a seven-day TTL. Redact with
+> `beforeSend` first and confirm this is compatible with your compliance requirements.
+> Applications that must not persist logs locally should set `offlinePersistence: false`.
+
+> ⚠️ **The backend must deduplicate on `(projectId/tenantId, logId)`.** Offline recovery
+> is at-least-once. If the server commits a record but its response is lost, the client can
+> only send the same `logId` again. Treat duplicates as success; never deduplicate with the
+> per-attempt `requestId`.
 
 ---
 
 ## 🚀 Quick start
 
 ```typescript
-import { initAemeath } from 'aemeath-js';
+import { initAemeath, classifyHttpUploadResponse } from 'aemeath-js';
 
 initAemeath({
   upload: async (log) => {
     const res = await fetch('/api/logs', { method: 'POST', body: JSON.stringify(log) });
-    return { success: res.ok, retryReason: res.ok ? undefined : 'server' };
+    return classifyHttpUploadResponse(res.status, res.headers.get('Retry-After'));
   },
-  offlinePersistence: true, // that's it
 });
 ```
 
-Logs produced while offline are written to IndexedDB and replayed automatically
-once the network returns — surviving a full browser restart.
+Once `upload` is configured, logs produced while offline are written to IndexedDB by
+default and replayed automatically once the network returns — surviving a full browser
+restart. Set `offlinePersistence: false` to opt out. Standard entry points then disable and
+purge both the Upload queue cache and OfflinePersistence records so no local copy remains.
 
 ---
 
@@ -32,10 +42,13 @@ once the network returns — surviving a full browser restart.
 | Page refresh / close and reopen       | ✅                 | ✅                   |
 | Offline for a few minutes, then back  | ⚠️ Covers the paused queue | ✅ Replays automatically |
 | Close the browser offline, open tomorrow | ❌ 1-hour TTL expired | ✅ 7 days by default |
-| Log dropped by UploadPlugin           | ❌ Gone, not in the cache | ✅ Persisted for replay |
+| Recoverable failure exhausts hot retries | ✅ Mirrors `parked` state | ✅ Keeps durable copy |
 | Storage medium                        | localStorage (~5MB per origin) | IndexedDB (2MB budget by default) |
 
 In one line: `cache` protects the **queue**, `offlinePersistence` protects the **logs**.
+They remain separate internally, but the standard-entry master switch
+`offlinePersistence: false` disables both. A manually constructed `UploadPlugin` still controls
+its own mirror through `cache.enabled`.
 
 ---
 
@@ -52,7 +65,9 @@ Entirely event-driven — the main upload path is untouched:
           └── logs produced while paused
                  └─ upload:enqueued{paused} ► persisted
           │
-        (safety net) upload:drop ───────────► persisted
+        Recoverable failure exhausts hot retries
+          └── upload:parked ────────────────► durable copy retained
+        (safety net) overflow / legacy drop ► persisted
           │
         Network returns
           │
@@ -80,13 +95,17 @@ upload queue directly: no second pass through `beforeSend`, no `logger.on('log')
 listeners firing again, no other plugin reprocessing them. Your analytics won't
 suddenly gain a batch of events because someone's WiFi came back.
 
-**No duplicate uploads.** When the network returns, the in-memory queue and the
-persisted store may both hold the same entry. Before replaying, the plugin checks
-`upload.isPending(logId)` and skips anything already queued or in flight.
+**Avoids duplicate recovery within one page.** When the network returns, the in-memory
+queue and persisted store may both hold the same entry. Before replaying, the plugin checks
+`upload.isPending(logId)` and skips anything already queued or in flight in this page. This
+check does not cross tab boundaries; see the 2.6 design linked below.
 
-**Replay attempts are bounded.** After `maxReplayAttempts` failures (default 3) an
-entry is abandoned and cleaned up, reported through `onDrop` with reason
-`offline-give-up`. No zombie records hold onto quota forever.
+**Parking does not spend the persisted lifecycle.** Under the default upload policy,
+recoverable failures that exhaust hot retries are held by `UploadPlugin` in `parked`, while
+the durable copy remains untouched. It is deleted only after the cooling/`Retry-After`
+deadline (or an explicit `flush()`) leads to success; an `online` hint does not override
+that deadline. `maxReplayAttempts` remains as a legacy
+compatibility guard; parked transitions do not increment it.
 
 ---
 
@@ -122,7 +141,7 @@ initAemeath({
     maxEntries: 500,           // max records retained
     maxTotalBytes: 2_000_000,  // max bytes retained
     replayBatchSize: 10,       // entries per replay round
-    maxReplayAttempts: 3,      // give up after this many failures
+    maxReplayAttempts: 3,      // legacy replay guard; parked does not count
     replayTimeoutMs: 60000,    // reconciliation timeout
     dbName: 'aemeath-offline', // IndexedDB database name
     key: '__aemeath_offline__',// localStorage key prefix
@@ -138,7 +157,7 @@ initAemeath({
 | `maxEntries`        | `number`                                  | IDB 500 / KV 100     | **Disk** max records; oldest evicted (memory queue unaffected) |
 | `maxTotalBytes`     | `number`                                  | IDB 2MB / KV 512KB   | **Disk** max bytes; oldest evicted (memory queue unaffected) |
 | `replayBatchSize`   | `number`                                  | `10`                 | Prevents a thundering herd on recovery          |
-| `maxReplayAttempts` | `number`                                  | `3`                  | Then abandoned and reported via `onDrop`        |
+| `maxReplayAttempts` | `number`                                  | `3`                  | Legacy replay guard; parked does not count      |
 | `replayTimeoutMs`   | `number`                                  | `60000`              | Requeue window when neither success nor failure arrives |
 | `dbName`            | `string`                                  | `'aemeath-offline'`  | IndexedDB database name                         |
 | `key`               | `string`                                  | `'__aemeath_offline__'` | Key prefix for the KV backend                |
@@ -187,8 +206,9 @@ Quota is a real ceiling, so the policy here is **evict explicitly, report explic
 never silently:
 
 1. Check the entry and byte budget before writing; evict the oldest if over
-2. If the write still fails (usually quota) → evict another 20% and retry once
-3. Still failing → drop the entry and fire `onDrop` with reason `storage-quota`
+2. On an explicit quota error, evict another 20% and retry once
+3. If the quota retry still fails, fire `onDrop` with reason `storage-quota`
+4. For a non-quota storage rejection, keep healthy entries and report `storage-rejected`
 
 Eviction is by persist time rather than priority: offline logs usually share the
 same priority, so chronological order is the only stable, predictable criterion.
@@ -215,13 +235,13 @@ entry from the memory queue.
 ```typescript
 initAemeath({
   upload,
-  offlinePersistence: true,
+  // Offline persistence is already enabled by upload; configure only when tuning it.
   onDrop: (log, info) => {
     if (info.reason === 'storage-quota') {
       // storage full, this one didn't make it onto disk
     }
-    if (info.reason === 'offline-give-up') {
-      // replay failed repeatedly, abandoned
+    if (info.reason === 'storage-rejected') {
+      // this entry was not accepted by storage; capacity was not the cause
     }
   },
 });
@@ -241,45 +261,61 @@ plugin.getStatus();
 //   bytes: 128374,         // estimated footprint
 //   replaying: 3,          // currently in flight
 //   quotaDrops: 0,         // dropped due to quota
-//   giveUps: 0,            // abandoned after repeated failures
+//   giveUps: 0,            // legacy replay failures that were abandoned
 //   replayed: 137,         // successfully replayed
+//   items: [{ logId, capturedAt, state: 'persisted' | 'replaying' }],
 // }
 
 await plugin.clear(); // wipe all persisted copies
 ```
 
+Do not add the Upload and persistence counts when you need the global picture: the same
+`logId` normally exists in memory and on disk. Use the unified query, which deduplicates by
+`logId`:
+
+```typescript
+const status = getAemeath().getDeliveryStatus();
+// { totalPending, queued, inFlight, parked, persisted, persistedOnly, replaying, ... }
+```
+
+Subscribe with `logger.on('delivery:status', listener)` for unified snapshots;
+`delivery:persisted` reports a successful durable write. The existing
+`plugin.getStatus()` remains the storage-specific diagnostic API.
+
 ---
 
 ## 🚧 Known limitations
 
-**Multiple tabs can replay the same entry.** Each tab holds its own storage handle,
-so one entry may be replayed by several tabs at once. Deduplicate by `logId` on the
-backend — it stays stable across retries and replays. (Cross-tab locking is planned.)
+**In 2.5, multiple tabs can replay the same entry.** Each tab holds its own storage handle,
+so one entry may be replayed by several tabs at once. The backend must deduplicate by
+`logId` and treat duplicates as success.
 
 **Best effort, not transactional.** IndexedDB writes are async; if the process is
 killed (a crash, or shutting down right after `window.close()`), the last few
 in-flight writes are lost.
 
-**Give each instance its own `dbName` when a page runs several.** `dbName` defaults to
-`'aemeath-offline'`. If two instances share a store, logs one project buffered offline get
+**Give each instance its own `dbName` and `key` when a page runs several.** `dbName`
+identifies IndexedDB while `key` identifies the KV fallback. If two instances share either
+resource, logs one project buffered offline can get
 replayed automatically to the other project's endpoint — and because replay happens on its own,
 this kind of cross-wiring is especially hard to trace. When the SDK detects the collision it
 **deactivates the second instance** (`getStatus().backend` returns `'noop'`) and warns on the
-console. To persist on both, name the stores apart:
+console. To persist on both across either backend, name both resources apart:
 
 ```ts
-new OfflinePersistencePlugin({ dbName: 'host-offline' });
-new OfflinePersistencePlugin({ dbName: 'widget-offline' });
+new OfflinePersistencePlugin({ dbName: 'host-offline', key: 'host-offline' });
+new OfflinePersistencePlugin({ dbName: 'widget-offline', key: 'widget-offline' });
 ```
 
 `UploadPlugin.cache.key` has the same requirement; see
 [Upload plugin](./4-upload-plugin.md).
 
-**No encryption.** Records are stored as plain JSON. If your logs carry sensitive
+**No encryption.** Records are stored as plain JSON with a seven-day default TTL. If your logs carry sensitive
 data, redact in [`beforeSend`](./9-before-send.md) — it runs before anything is persisted.
 
-**Relies on `logId` idempotency.** Replays reuse the original `logId` (`requestId`
-changes every attempt), so your backend must deduplicate by `logId`.
+**Requires `logId` idempotency.** Replays reuse the original `logId` (`requestId` changes
+every attempt). Enforce uniqueness on `(projectId/tenantId, logId)` and treat duplicates
+as success.
 
 ---
 

@@ -484,6 +484,7 @@ import { initAemeath, setBeforeSend, setUpload } from 'aemeath-js';
 Use `setUpload(callback)` once a logger exists to bind or replace the upload hook (e.g. token or endpoint known only after login).
 
 - **Mini-program**: export from the miniprogram entry; semantics match web.
-- **Passing `null`**: installs a noop that always `{ success: true }` — queued items **drain as successful uploads** and are dropped, **not** “failure + retry”; it does **not** mean “freeze the whole offline journal”.
+- **Passing `null`**: truly freezes the queue and durable copies. The old callback is not called and retry budgets are untouched; binding a callback later resumes from the same position.
+- **Tenant isolation**: `setUpload` is for refreshing credentials/implementation within the same delivery target. `setUpload(fn, { deliveryScope: 'tenant-b' })` refuses to change scope while anything remains pending. Separate tenants must also use distinct `cache.key`, `offlinePersistence.dbName`, and `key` values.
 - **Lazy install**: if `UploadPlugin` is missing, `setUpload(fn)` installs one with default queue settings.
 - **Incremental `initAemeath` caveat**: after `UploadPlugin` exists via `setUpload`, a later `initAemeath({ upload, queue })` may **ignore** those fields (warnings in console); keep using `setUpload(...)`, or `resetAemeath()` and re-init fully when queue options must apply.

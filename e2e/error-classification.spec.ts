@@ -1,18 +1,23 @@
 /**
  * 错误分类：服务端 5xx ≠ 断网
  *
- * 5xx 应消耗重试预算并最终 drop；断网应暂停、不烧预算，恢复后补发。
+ * 5xx 应消耗热重试预算并进入 parked；断网应暂停、不烧预算，恢复后补发。
  */
 import { test, expect, openPage } from './fixture';
 
-test('服务端 5xx 消耗重试预算并 drop，不会永久暂停', async ({ page, collected }) => {
-  const drops: Array<{ reason?: string; message?: string }> = [];
-  await page.exposeFunction('__drop5xx', (p: unknown) => {
+test('服务端 5xx 消耗热重试预算并 parked，不会永久暂停', async ({ page, collected }) => {
+  const parked: Array<{ reason?: string; message?: string; retryCount?: number }> = [];
+  await page.exposeFunction('__park5xx', (p: unknown) => {
     const parsed = JSON.parse(JSON.stringify(p)) as {
       reason?: string;
+      retryCount?: number;
       log?: { message?: string };
     };
-    drops.push({ reason: parsed.reason, message: parsed.log?.message });
+    parked.push({
+      reason: parsed.reason,
+      message: parsed.log?.message,
+      retryCount: parsed.retryCount,
+    });
   });
 
   // 一直 500
@@ -48,18 +53,18 @@ test('服务端 5xx 消耗重试预算并 drop，不会永久暂停', async ({ p
       network: { enabled: false },
       cache: { enabled: false },
     });
-    window.__aemeath__.getAemeath().on('upload:drop', (p: unknown) => {
-      (window as unknown as { __drop5xx: (x: unknown) => void }).__drop5xx(p);
+    window.__aemeath__.getAemeath().on('upload:parked', (p: unknown) => {
+      (window as unknown as { __park5xx: (x: unknown) => void }).__park5xx(p);
     });
     window.__aemeath__.getAemeath().error('server is down');
   });
 
   await expect
-    .poll(() => drops.some((d) => d.message === 'server is down'), { timeout: 15000 })
+    .poll(() => parked.some((item) => item.message === 'server is down'), { timeout: 15000 })
     .toBe(true);
 
-  const drop = drops.find((d) => d.message === 'server is down');
-  expect(drop?.reason).toBe('max-retries');
+  const parkedItem = parked.find((item) => item.message === 'server is down');
+  expect(parkedItem).toMatchObject({ reason: 'server', retryCount: 2 });
 
   // 恢复服务后新日志应能发出（队列没被永久 pause）
   collected.failNext = 0;

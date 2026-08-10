@@ -27,7 +27,9 @@ With the `miniprogram` field in `package.json`, DevTools copies the entire `dist
 
 ## 2. Slim API surface
 
-The miniprogram bundle exports **only APIs that make sense inside a miniprogram runtime** (current minified size ~50KB):
+The miniprogram bundle exports **only APIs that make sense inside a miniprogram runtime**.
+The repository keeps the minified single-file artifact below a 160 KiB regression budget;
+that budget is deliberately far below WeChat's package limit and is not a platform limit.
 
 ### Available exports
 
@@ -89,7 +91,11 @@ Open WeChat DevTools, then **Tools → Build npm**. On success, `miniprogram_npm
 ### 3.3 Initialize in `app.js`
 
 ```javascript
-const { initAemeath, createMiniAppAdapter } = require('aemeath-js');
+const {
+  initAemeath,
+  createMiniAppAdapter,
+  classifyHttpUploadResponse,
+} = require('aemeath-js');
 
 App({
   onLaunch() {
@@ -109,10 +115,14 @@ App({
           url: 'https://your-server.com/api/logs',
           method: 'POST',
           data: log,
-          success: () => resolve({ success: true }),
+          success: (res) => resolve(classifyHttpUploadResponse(
+            res.statusCode,
+            res.header?.['Retry-After'] ?? res.header?.['retry-after'],
+          )),
           fail: (err) => resolve({
             success: false,
             shouldRetry: true,
+            retryReason: 'network',
             error: err.errMsg,
           }),
         });
@@ -166,7 +176,7 @@ Taro's `@tarojs/taro` polyfills `wx` / `my` / `tt` at the call site. Pass `Taro`
 
 ```javascript
 import Taro from '@tarojs/taro';
-import { initAemeath, createMiniAppAdapter } from 'aemeath-js';
+import { initAemeath, createMiniAppAdapter, classifyHttpUploadResponse } from 'aemeath-js';
 
 initAemeath({
   platform: createMiniAppAdapter('wechat', Taro),
@@ -176,7 +186,10 @@ initAemeath({
       method: 'POST',
       data: log,
     });
-    return { success: res.statusCode === 200 };
+    return classifyHttpUploadResponse(
+      res.statusCode,
+      res.header?.['Retry-After'] ?? res.header?.['retry-after'],
+    );
   },
 });
 ```
@@ -186,7 +199,7 @@ initAemeath({
 ### 4.2 uni-app
 
 ```javascript
-import { initAemeath, createMiniAppAdapter } from 'aemeath-js';
+import { initAemeath, createMiniAppAdapter, classifyHttpUploadResponse } from 'aemeath-js';
 
 initAemeath({
   platform: createMiniAppAdapter('wechat', uni),
@@ -195,8 +208,16 @@ initAemeath({
       url: 'https://your-server.com/api/logs',
       method: 'POST',
       data: log,
-      success: () => resolve({ success: true }),
-      fail: (err) => resolve({ success: false, shouldRetry: true, error: err.errMsg }),
+      success: (res) => resolve(classifyHttpUploadResponse(
+        res.statusCode,
+        res.header?.['Retry-After'] ?? res.header?.['retry-after'],
+      )),
+      fail: (err) => resolve({
+        success: false,
+        shouldRetry: true,
+        retryReason: 'network',
+        error: err.errMsg,
+      }),
     });
   }),
 });
@@ -232,7 +253,8 @@ No. `dist-miniprogram/index.js` is compiled to ES2017 and has been verified to r
 
 ### Q: Can I use `NetworkPlugin` without `UploadPlugin`?
 
-Yes. All plugins are opt-in — omit the relevant option:
+Yes. `UploadPlugin` is opt-in; its persistence companion is installed by default with it
+unless `offlinePersistence: false` is set:
 
 ```javascript
 initAemeath({

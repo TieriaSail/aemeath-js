@@ -4,7 +4,7 @@
  * 带认证的上传示例
  */
 
-import { AemeathLogger, UploadPlugin } from 'aemeath-js';
+import { AemeathLogger, UploadPlugin, classifyHttpUploadResponse } from 'aemeath-js';
 
 // 模拟获取 token 的函数
 function getAuthToken(): string {
@@ -29,6 +29,13 @@ logger.use(
           body: JSON.stringify(log),
         });
 
+        if (!response.ok) {
+          return classifyHttpUploadResponse(
+            response.status,
+            response.headers.get('Retry-After'),
+          );
+        }
+
         const data = await response.json();
 
         if (data.code === 200) {
@@ -44,6 +51,7 @@ logger.use(
         return {
           success: false,
           shouldRetry: true,
+          retryReason: 'network',
           error: error instanceof Error ? error.message : String(error),
         };
       }

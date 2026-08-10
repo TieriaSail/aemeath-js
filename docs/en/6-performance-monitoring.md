@@ -291,6 +291,8 @@ All performance logs follow a consistent `message` + `tags` + `context` structur
 Use UploadPlugin's `onUpload` callback for flexible filtering:
 
 ```typescript
+import { classifyHttpUploadResponse } from 'aemeath-js';
+
 new UploadPlugin({
   onUpload: async (log) => {
     // Only upload performance logs
@@ -303,8 +305,8 @@ new UploadPlugin({
       return { success: false, shouldRetry: false };
     }
 
-    await fetch('/api/metrics', { method: 'POST', body: JSON.stringify(log) });
-    return { success: true };
+    const response = await fetch('/api/metrics', { method: 'POST', body: JSON.stringify(log) });
+    return classifyHttpUploadResponse(response.status, response.headers.get('Retry-After'));
   },
 })
 ```
@@ -433,7 +435,12 @@ const duration = logger.measure(
 ### Recommended Configuration
 
 ```typescript
-import { AemeathLogger, PerformancePlugin, UploadPlugin } from 'aemeath-js';
+import {
+  AemeathLogger,
+  PerformancePlugin,
+  UploadPlugin,
+  classifyHttpUploadResponse,
+} from 'aemeath-js';
 
 const logger = new AemeathLogger();
 
@@ -453,11 +460,14 @@ logger.use(
   new UploadPlugin({
     onUpload: async (log) => {
       if (log.tags?.category === 'performance') {
-        await fetch('/api/metrics', {
+        const response = await fetch('/api/metrics', {
           method: 'POST',
           body: JSON.stringify(log),
         });
-        return { success: true };
+        return classifyHttpUploadResponse(
+          response.status,
+          response.headers.get('Retry-After'),
+        );
       }
       return { success: false, shouldRetry: false };
     },
@@ -549,7 +559,12 @@ See [Reporting Strategy > Custom Filtering](#custom-filtering) above.
 ## 📝 Complete Example
 
 ```typescript
-import { AemeathLogger, PerformancePlugin, UploadPlugin } from 'aemeath-js';
+import {
+  AemeathLogger,
+  PerformancePlugin,
+  UploadPlugin,
+  classifyHttpUploadResponse,
+} from 'aemeath-js';
 
 const logger = new AemeathLogger();
 
@@ -568,11 +583,14 @@ logger.use(
 logger.use(
   new UploadPlugin({
     onUpload: async (log) => {
-      await fetch('/api/logs', {
+      const response = await fetch('/api/logs', {
         method: 'POST',
         body: JSON.stringify(log),
       });
-      return { success: true };
+      return classifyHttpUploadResponse(
+        response.status,
+        response.headers.get('Retry-After'),
+      );
     },
   }),
 );

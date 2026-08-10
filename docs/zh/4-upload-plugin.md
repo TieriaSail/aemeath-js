@@ -4,6 +4,10 @@
 
 > 💡 **隐私保护提示**：UploadPlugin 不内置脱敏。如需对每条日志做隐私过滤 / 字段裁剪，请使用 [`beforeSend` 钩子](./9-before-send.md)（v2.4.0+），它会在 UploadPlugin 接收日志**之前**生效。
 
+> ⚠️ **后端幂等是强制接入要求**：可靠投递采用至少一次语义。后端必须对
+> `(projectId/tenantId, logId)` 建立唯一约束，已经接收过的 `logId` 应返回成功语义。
+> `requestId` 每次尝试都会变化，只能用于链路排障，不能用于去重。
+
 ---
 
 ## 📦 核心特性
@@ -16,8 +20,14 @@
 interface UploadResult {
   success: boolean;
   shouldRetry?: boolean;
-  /** v2.5.0+：失败语义。传 'network' 可让本次失败不消耗重试预算 */
-  retryReason?: 'network' | 'server' | 'payload';
+  /** 失败分类决定调度方式，不再决定是否保留日志 */
+  retryReason?:
+    | 'network' | 'server' | 'payload' | 'auth' | 'rate-limit'
+    | 'unknown' | 'callback-error' | 'cancelled';
+  /** 服务端建议的最短等待时间，例如解析 HTTP Retry-After 后的毫秒数 */
+  retryAfterMs?: number;
+  /** 原始 HTTP Retry-After 响应头；支持秒数和 HTTP-date */
+  retryAfter?: string | null;
   error?: string;
 }
 ```
@@ -37,7 +47,8 @@ interface UploadResult {
 - 失败自动降低优先级（-10）
 - 按 1s → 2s → 4s…（上限 30s）退避后重新入队
 - 最多重试 3 次（可配置）
-- 通过 `shouldRetry` 控制是否重试
+- 热重试预算耗尽后进入 `parked` 冷却区，不再冒充“已丢弃”
+- `shouldRetry` 表示是否重试，`retryReason` 只负责失败分类与调度
 
 ### 5. 断网暂停 ⭐ v2.4.0
 
@@ -46,7 +57,8 @@ interface UploadResult {
 
 ### 6. 丢弃可观测 ⭐ v2.4.0
 
-任何一条日志被放弃都会触发 `onDrop` 回调和 `upload:drop` 事件，并附带原因。
+只有日志生命周期真正终止时才触发 `onDrop` 和 `upload:drop`。进入 `parked`
+不是丢弃，会单独触发 `upload:parked`。
 
 ### 7. 本地缓存
 
@@ -64,7 +76,7 @@ interface UploadResult {
 `initAemeath()` 直接接受 `upload` 回调，无需手动注册 `UploadPlugin`：
 
 ```typescript
-import { initAemeath, getAemeath } from 'aemeath-js';
+import { initAemeath, getAemeath, classifyHttpUploadResponse } from 'aemeath-js';
 
 initAemeath({
   upload: async (log) => {
@@ -73,11 +85,17 @@ initAemeath({
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(log),
     });
+    if (!response.ok) {
+      return classifyHttpUploadResponse(
+        response.status,
+        response.headers.get('Retry-After'),
+      );
+    }
     const data = await response.json();
     if (data.code === 200) {
       return { success: true };
     }
-    return { success: false, shouldRetry: true, error: data.message };
+    return { success: false, shouldRetry: true, retryReason: 'server', error: data.message };
   },
 });
 
@@ -93,7 +111,7 @@ logger.error('Something went wrong', { error });
 ### 手动组装
 
 ```typescript
-import { AemeathLogger, UploadPlugin } from 'aemeath-js';
+import { AemeathLogger, UploadPlugin, classifyHttpUploadResponse } from 'aemeath-js';
 
 const logger = new AemeathLogger();
 
@@ -106,13 +124,19 @@ logger.use(
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(log),
         });
+        if (!response.ok) {
+          return classifyHttpUploadResponse(
+            response.status,
+            response.headers.get('Retry-After'),
+          );
+        }
         const data = await response.json();
         if (data.code === 200) {
           return { success: true };
         }
-        return { success: false, shouldRetry: true, error: data.message };
+        return { success: false, shouldRetry: true, retryReason: 'server', error: data.message };
       } catch (error) {
-        return { success: false, shouldRetry: true, error: error.message };
+        return { success: false, shouldRetry: true, retryReason: 'network', error: error.message };
       }
     },
   }),
@@ -139,6 +163,13 @@ logger.use(
           body: JSON.stringify(log),
         });
 
+        if (!response.ok) {
+          return classifyHttpUploadResponse(
+            response.status,
+            response.headers.get('Retry-After'),
+          );
+        }
+
         const data = await response.json();
 
         if (data.code === 200) {
@@ -147,6 +178,7 @@ logger.use(
           return {
             success: false,
             shouldRetry: true,
+            retryReason: 'server',
             error: data.message,
           };
         }
@@ -154,6 +186,7 @@ logger.use(
         return {
           success: false,
           shouldRetry: true,
+          retryReason: 'network',
           error: error.message,
         };
       }
@@ -172,7 +205,7 @@ logger.use(
         method: 'POST',
         body: JSON.stringify(log),
       });
-      return { success: res.ok };
+      return classifyHttpUploadResponse(res.status, res.headers.get('Retry-After'));
     },
 
     // 优先级回调
@@ -214,7 +247,9 @@ logger.use(
     ↓
 成功 → 从队列移除
     ↓
-失败 → 降低优先级（-10），重新入队重试
+可恢复失败 → 降低优先级（-10），重新入队热重试
+    ↓
+热预算耗尽 → parked 冷却，稍后重新探测（不是 drop）
 ```
 
 ### 优先级系统
@@ -232,7 +267,9 @@ logger.use(
 1. 上传失败
 2. 降低优先级 10 个单位
 3. 按指数退避（1s → 2s → 4s…，上限 30s）安排下次尝试
-4. 重复最多 3 次（可配置），预算耗尽才丢弃
+4. 重复最多 3 次（可配置）
+5. 热预算耗尽后进入 `parked`；冷却/`Retry-After` 到期或显式 `flush()` 才会重试。
+   `online` 只放行因网络暂停的活跃队列，不会覆盖服务端等待时间。
 
 ### 串行处理
 
@@ -258,7 +295,9 @@ logger.use(
     ↓
 5s → 10s → 20s…（上限 60s）发起一次「半开」探测
     ↓
-探测成功 或 收到 online 事件 → emit upload:resumed，继续正常消费
+收到 online 事件 → 只放行一条半开探测
+    ↓
+探测成功/收到服务端响应 → emit upload:resumed，继续正常消费
 ```
 
 判定依据有两条，缺一不可：
@@ -282,33 +321,38 @@ logger.use(
 
 两者防的是不同的事，不要混淆：
 
-- **`maxRetries`** 防的是**单条毒丸日志** —— 整体链路正常，只有这一条反复被服务端拒绝。
+- **`maxRetries`** 限制单条日志在一个周期里的**热重试**，避免请求风暴；它不再等于日志生命周期上限。
 - **`offlinePolicy`** 防的是**整条链路断掉** —— 此时队列暂停，根本不消耗重试预算。
 
 因此断网场景下 `maxRetries` 不会被秒级耗尽，这正是 v2.5.0 修复的核心问题。
 
-反过来也成立：后端整体故障（持续 5xx）走的是重试预算，队列不会暂停，日志按
-`maxRetries` 耗尽后以 `max-retries` 明确丢弃。把它误判成"离线"会让队列无限期
-挂起、预算永远耗不完，日志一路堆到溢出。
+反过来也成立：后端整体故障（持续 5xx）走的是热重试预算，队列不会误判为离线。
+预算耗尽的日志进入 `parked`，首次冷却 60 秒，后续按指数增长到最多 15 分钟；
+每次只唤醒一条作为恢复探测。`parked` 与活跃队列共用 `queue.maxSize`，所以总内存
+仍然有界；容量不足时才会以 `queue-overflow` 明确淘汰。
 
 链路长时间不可用时，队列会涨到 `maxSize` 并按优先级从低到高溢出丢弃
 （原因 `queue-overflow`），这是有界的、可观测的降级，不是静默丢失。
 
 ### 精确告诉 SDK 失败原因
 
-`retryReason` 不是必填项，但填了效果更好：
+`shouldRetry` 与 `retryReason` 是正交的：前者表达意图，后者决定调度。兼容规则如下：
+
+- `{ success: false, shouldRetry: true }`：重试，原因归为 `unknown`。
+- `{ success: false, retryReason: 'server' }`：有明确失败分类，也视为重试意图。
+- `{ success: false, shouldRetry: false }`：终态，不重试。
+- 裸 `{ success: false }`：为兼容旧版本仍按终态处理。
+- `retryReason: 'payload'`：终态；`network` 不消耗热重试预算。
+
+推荐同时填写两者：
 
 ```typescript
+import { classifyHttpUploadResponse } from 'aemeath-js';
+
 upload: async (log) => {
   try {
     const res = await fetch('/api/logs', { method: 'POST', body: JSON.stringify(log) });
-    if (res.ok) return { success: true };
-    if (res.status === 413 || res.status === 400) {
-      // 日志本身有问题，重试没有意义
-      return { success: false, shouldRetry: false, retryReason: 'payload' };
-    }
-    // 服务端明确响应了失败 → 消耗重试预算
-    return { success: false, shouldRetry: true, retryReason: 'server' };
+    return classifyHttpUploadResponse(res.status, res.headers.get('Retry-After'));
   } catch {
     // 请求根本没发出去 → 不该算在这条日志头上
     return { success: false, shouldRetry: true, retryReason: 'network' };
@@ -316,7 +360,9 @@ upload: async (log) => {
 };
 ```
 
-不传 `retryReason` 时按 `server` 处理，与旧版行为一致。
+服务端返回 `Retry-After` 时，把原始响应头放进 `retryAfter` 即可。SDK 自动解析
+delta-seconds（如 `120`）和 HTTP-date，并取服务端等待时间与本地指数退避中的较大值。
+如果业务已经完成换算，可继续传 `retryAfterMs`；两者同时存在时它优先。
 
 #### 回调抛异常时怎么判定
 
@@ -326,18 +372,21 @@ upload: async (log) => {
 | 抛出的值 | 判定为 |
 | --- | --- |
 | `TypeError`（fetch 网络失败抛的就是它） | `network` |
-| `AbortError` / `TimeoutError`，以及插件自己的上传超时 | `network` |
+| `TimeoutError`，以及插件自己的上传超时 | `network` |
+| `AbortError` | `cancelled`（不作为整条链路断开的证据） |
 | `code` 为 `ERR_NETWORK`、`ECONNRESET`、`ETIMEDOUT` 等 | `network` |
-| 异常上挂着 `response`（axios / ky / got 遇到 4xx、5xx） | `server` |
-| 其余一切，包括你回调里自己的 bug | `server` |
+| 异常 `response.status` 为 400/404/405/410/413/422 | `payload`（终态） |
+| 异常 `response.status` 为 401/403 | `auth`（可恢复，例如刷新凭证） |
+| 异常 `response.status` 为 429 | `rate-limit`；常见 `response.headers` 形态中的 `Retry-After` 会自动解析 |
+| 异常上挂着其它 `response`（axios / ky / got） | `server` |
+| 其余一切，包括你回调里自己的 bug | `callback-error` |
 
 这个不对称是刻意的。把服务端失败误判成 `network`，整个队列会暂停，上报静默停摆；
-把网络失败误判成 `server`，只是消耗重试预算，最后以 `max-retries` 丢弃 —— 而这是
-你能在 `onDrop` 里看见的。有界且可观测的损失优于无界且无声的停摆，所以举证责任
-落在"离线"这一侧。
+把网络失败误判成其它可恢复原因，只会消耗热重试预算并进入 `parked`，不会暂停整条
+队列，也不会伪造一次 drop。因此举证责任仍落在“离线”这一侧。
 
 用 axios / ky / got 这类默认对非 2xx 抛异常的客户端，这条直接关系到你：后端故障
-会走重试预算，而不是暂停队列 —— 与 2.4 的行为一致。想要确定性而不是启发式，就在
+会走热重试预算，而不是暂停队列。想要确定性而不是启发式，就在
 `onUpload` 里显式返回 `retryReason`。
 
 ### 知道自己丢了什么
@@ -346,8 +395,9 @@ upload: async (log) => {
 initAemeath({
   upload,
   onDrop: (log, info) => {
-    // info.reason: 'no-retry' | 'max-retries' | 'queue-overflow' | 'cache-expired'
-    //            | 'storage-quota' | 'payload-too-large' | 'offline-give-up'
+    // info.reason: 'no-retry' | 'queue-overflow' | 'cache-expired'
+    //            | 'storage-quota' | 'storage-rejected' | 'payload-too-large'
+    // max-retries / offline-give-up 只会出现在 legacy 兼容链路
     console.warn('[log dropped]', info.reason, log.logId);
   },
 });
@@ -359,30 +409,42 @@ getAemeath().on('upload:drop', ({ log, reason }) => { /* ... */ });
 | 原因                | 什么时候出现                                       |
 | ------------------- | -------------------------------------------------- |
 | `no-retry`          | 服务端明确表示不必重试（`shouldRetry: false`）      |
-| `max-retries`       | 重试预算耗尽                                       |
+| `max-retries`       | 仅 `offlinePolicy: 'legacy'`：重试预算耗尽         |
 | `queue-overflow`    | 队列超过 `maxSize`，挤掉优先级最低的日志            |
 | `cache-expired`     | 本地缓存中的日志超过 `cache.ttl`                    |
 | `payload-too-large` | 单字段体积超限（见 [载荷清洗](./10-payload-sanitize.md)） |
-| `storage-quota`     | 离线持久层写入失败或配额已满                        |
-| `offline-give-up`   | 离线补传反复失败，放弃该条                          |
+| `storage-quota`     | 离线持久层配额已满                                  |
+| `storage-rejected`  | 日志无法被持久化引擎接受（非配额问题）              |
+| `offline-give-up`   | legacy 补传链路反复失败，放弃该条                   |
 
 ### 可用事件
 
 | 事件               | 载荷                                    |
 | ------------------ | --------------------------------------- |
 | `upload:enqueued`  | `{ log, priority, source, paused }`     |
+| `upload:attempt`   | `{ log, source, retryCount }`           |
+| `upload:retry-scheduled` | `{ log, source, reason, retryCount, nextAttemptAt }` |
+| `upload:parked`    | `{ log, priority, source, reason, retryCount, parkedUntil }` |
+| `upload:unparked`  | `{ log, source, reason }`                |
 | `upload:success`   | `{ log, source }`                       |
 | `upload:drop`      | `{ log, reason, retryCount, error, source }` |
 | `upload:paused`    | `{ reason, queued, logs }`              |
 | `upload:resumed`   | `{ queued }`                            |
 
+2.5.1 同时提供统一别名：`delivery:queued`、`delivery:attempt`、
+`delivery:retry-scheduled`、`delivery:parked`、`delivery:unparked`、
+`delivery:delivered`、`delivery:dropped`、`delivery:paused` 和 `delivery:resumed`。
+持久层另有 `delivery:persisted`、`delivery:persistence-unavailable`；
+`delivery:status` 在统一状态变化时给出完整快照。原有 `upload:*` 事件保持兼容。
+
 ### 随日志带出的上报期元数据
 
-每条发出去的日志副本上会自动补两个字段（**不会**修改队列里的原始 entry）：
+每条发出去的日志副本会补充上报期元数据（**不会**修改队列里的原始 entry）：
 
 | 字段                            | 含义                                                        |
 | ------------------------------- | ----------------------------------------------------------- |
-| `requestId`                     | 每次上报尝试都不同，供消费端幂等去重                          |
+| `requestId`                     | 每次上报尝试都不同，用于请求关联与排障                        |
+| `logId`                         | 跨重试、parked 与离线补传保持不变；后端必须以它做幂等去重      |
 | `tags.uploadedAt`               | **发出时刻**。与 `timestamp`（捕获时刻）配合，一眼看出是实时上报还是补传 |
 | `tags.droppedSinceLastReport`   | 上次成功上报以来丢了多少条（有丢弃时才出现）                   |
 
@@ -392,11 +454,30 @@ getAemeath().on('upload:drop', ({ log, reason }) => { /* ... */ });
 ### 排查现场状态
 
 ```typescript
-const upload = getAemeath().getPluginInstance('upload');
+const logger = getAemeath();
+console.log(logger.getDeliveryStatus());
+// {
+//   state: 'idle' | 'delivering' | 'paused' | 'degraded' | 'disabled',
+//   totalPending,       // 按 logId 合并内存和磁盘，不重复计数
+//   queued, inFlight, parked, persisted, persistedOnly, replaying,
+//   oldestPendingAgeMs, consecutiveFailures,
+//   attempts: { total, byReason },
+//   drops: { total, byReason },
+//   persistence: { enabled, backend, bytes, quotaDrops, giveUps, replayed },
+// }
+
+logger.on('delivery:status', (status) => {
+  // 只在注册监听器后构建并推送状态快照
+});
+
+// 需要插件调试细节时，旧接口仍然可用：
+const upload = logger.getPluginInstance('upload');
 console.log(upload.getQueueStatus());
-// { length, isProcessing, paused, consecutiveFailures,
-//   drops: { total, byReason }, items }
 ```
+
+为保持补丁版本兼容，`getQueueStatus().items` 仍然只是活跃队列快照，继续满足
+`items.length === length`。需要 queued + in-flight + parked 的全量条目时请用
+`pendingItems`；`getDeliveryStatus()` 已经使用这个全量视图。
 
 ### 回退到旧行为
 
@@ -404,7 +485,7 @@ console.log(upload.getQueueStatus());
 initAemeath({ upload, queue: { offlinePolicy: 'legacy' } });
 ```
 
-`legacy` 关闭离线暂停与退避，完整回到 v2.4 行为：任何失败都消耗重试预算（包括
+`legacy` 关闭离线暂停、parked 与退避，完整回到旧行为：任何失败都消耗重试预算（包括
 传输层失败），预算耗尽即丢弃。仅用于回归对比，不建议生产使用 —— 断网时日志会在
 几秒内被打光。
 
@@ -419,11 +500,14 @@ logger.use(
   new UploadPlugin({
     // 上传回调（必需）
     onUpload: async (log) => {
-      await fetch('/api/logs', {
+      const response = await fetch('/api/logs', {
         method: 'POST',
         body: JSON.stringify(log),
       });
-      return { success: true };
+      return classifyHttpUploadResponse(
+        response.status,
+        response.headers.get('Retry-After'),
+      );
     },
 
     // 优先级回调（可选）
@@ -471,7 +555,7 @@ logger.use(
 | `onDrop`                          | `(log, info) => void`                      | —                         | 日志被丢弃时的回调（v2.5.0+）               |
 | `queue.maxSize`                   | `number`                                   | `100`                     | 队列最大长度                                |
 | `queue.concurrency`               | `number`                                   | `1`                       | 并发上传数                                  |
-| `queue.maxRetries`                | `number`                                   | `3`                       | 最大重试次数（防单条毒丸日志）              |
+| `queue.maxRetries`                | `number`                                   | `3`                       | 每周期热重试次数，耗尽后进入 parked         |
 | `queue.uploadInterval`            | `number`                                   | `30000`                   | 自动上传间隔（毫秒）                        |
 | `queue.offlinePolicy`             | `'pause' \| 'legacy'`                      | `'pause'`                 | 断网策略（v2.5.0+）                         |
 | `queue.retryBackoff`              | `boolean \| { baseMs, maxMs }`             | `true`                    | 指数退避（v2.5.0+）                         |
@@ -500,7 +584,7 @@ new UploadPlugin({ onUpload, cache: { key: 'host-queue' } });
 new UploadPlugin({ onUpload, cache: { key: 'widget-queue' } });
 ```
 
-`OfflinePersistencePlugin` 同理，用 `dbName` 区分（见
+`OfflinePersistencePlugin` 同理，需要同时区分 `dbName` 与降级 `key`（见
 [离线持久化](./11-offline-persistence.md)）。
 
 > SDK 无法自动区分两个实例分属哪个项目 —— 它手上没有任何稳定的项目身份标识，
@@ -517,22 +601,22 @@ new UploadPlugin({ onUpload, cache: { key: 'widget-queue' } });
 // ❌ 错误 - 会导致无限循环
 onUpload: async (log) => {
   try {
-    await fetch('/api/logs', { body: JSON.stringify(log) });
-    return { success: true };
+    const response = await fetch('/api/logs', { body: JSON.stringify(log) });
+    return classifyHttpUploadResponse(response.status, response.headers.get('Retry-After'));
   } catch (error) {
     logger.error('Upload failed', { error }); // 这会再次触发上传！
-    return { success: false, shouldRetry: true };
+    return { success: false, shouldRetry: true, retryReason: 'network' };
   }
 };
 
 // ✅ 正确 - 使用 console
 onUpload: async (log) => {
   try {
-    await fetch('/api/logs', { body: JSON.stringify(log) });
-    return { success: true };
+    const response = await fetch('/api/logs', { body: JSON.stringify(log) });
+    return classifyHttpUploadResponse(response.status, response.headers.get('Retry-After'));
   } catch (error) {
     console.error('Upload failed:', error); // 安全
-    return { success: false, shouldRetry: true };
+    return { success: false, shouldRetry: true, retryReason: 'network' };
   }
 };
 ```
@@ -574,7 +658,10 @@ onUpload: async (log) => {
     });
   }
 
-  return { success: response.ok };
+  return classifyHttpUploadResponse(
+    response.status,
+    response.headers.get('Retry-After'),
+  );
 };
 ```
 

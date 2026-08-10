@@ -134,6 +134,7 @@ import {
   ErrorCapturePlugin,
   UploadPlugin,
   SafeGuardPlugin,
+  classifyHttpUploadResponse,
 } from 'aemeath-js';
 
 const logger = new AemeathLogger();
@@ -163,7 +164,7 @@ logger.use(
         method: 'POST',
         body: JSON.stringify(log),
       });
-      return { success: res.ok };
+      return classifyHttpUploadResponse(res.status, res.headers.get('Retry-After'));
     },
   }),
 );

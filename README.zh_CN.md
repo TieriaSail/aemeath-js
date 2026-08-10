@@ -72,7 +72,7 @@ pnpm add aemeath-js
 
 ```typescript
 // 初始化一次（如在 main.ts 中）
-import { initAemeath } from 'aemeath-js';
+import { initAemeath, classifyHttpUploadResponse } from 'aemeath-js';
 
 initAemeath({
   upload: async (log) => {
@@ -80,6 +80,9 @@ initAemeath({
       method: 'POST',
       body: JSON.stringify(log),
     });
+    if (!res.ok) {
+      return classifyHttpUploadResponse(res.status, res.headers.get('Retry-After'));
+    }
     const data = await res.json();
     return data.code === 200
       ? { success: true }
@@ -110,6 +113,7 @@ logger.updateContext('userId', '67890');
 | `SafeGuardPlugin` | ✅ 默认启用 | `safeGuard: { enabled: false }` |
 | `NetworkPlugin` | ✅ 默认启用 | `network: { enabled: false }` |
 | `UploadPlugin` | 传入 `upload` 时启用 | 不传 `upload` 即可 |
+| `OfflinePersistencePlugin` | 传入 `upload` 时启用 | `offlinePersistence: false` |
 | `EarlyErrorCapturePlugin` | 配置了构建插件时自动启用 | — |
 
 > 💡 **需要更多能力？** 你可以随时通过 `.use()` 追加插件。重复调用 `.use()` 是安全的——已安装的插件不会被重复添加。
@@ -152,20 +156,29 @@ logger.updateContext('userId', '67890');
 
 ### 别再因为网络抖动丢日志
 
+> ⚠️ **后端幂等是强制接入要求。** 可靠投递是至少一次语义；后端必须对
+> `(project/tenant, logId)` 建立唯一约束，并把已经接收过的 `logId` 当作成功。
+> `requestId` 每次尝试都会变化，不能用于去重。
+
 ```ts
+import { initAemeath, classifyHttpUploadResponse } from 'aemeath-js';
+
 initAemeath({
   upload: async (log) => {
     const res = await fetch('/api/logs', { method: 'POST', body: JSON.stringify(log) });
-    // 告诉 SDK 失败的**原因**：'network' 类失败不消耗重试预算
-    return { success: res.ok, retryReason: res.ok ? undefined : 'server' };
+    return classifyHttpUploadResponse(res.status, res.headers.get('Retry-After'));
   },
-  offlinePersistence: true, // 断网落盘，联网自动补传
+  // offlinePersistence 默认开启；不允许本地留存时显式设为 false
   onDrop: (log, info) => console.warn('dropped', info.reason, log.logId),
 });
 ```
 
-现在断网会**暂停队列**而不是把重试预算烧光，重试之间按指数退避，任何丢弃都有明确通知。
+现在断网会暂停队列而不是把重试预算烧光；可恢复失败耗尽热重试预算后进入
+`parked`，不会伪装成已经丢弃。只有终态拒收和有界容量淘汰才是 drop。
 详见 [上报插件](./docs/zh/4-upload-plugin.md) 与 [断网续传](./docs/zh/11-offline-persistence.md)。
+
+跨内存和磁盘查看一份去重后的状态，使用 `getAemeath().getDeliveryStatus()`；其中
+`totalPending` 按稳定 `logId` 取并集，不会把同一条日志重复相加。
 
 ### `beforeSend` — 隐私保护与脱敏
 
@@ -490,7 +503,7 @@ module.exports = {
 
 ```javascript
 // app.js
-const { initAemeath, createMiniAppAdapter } = require('aemeath-js');
+const { initAemeath, createMiniAppAdapter, classifyHttpUploadResponse } = require('aemeath-js');
 
 App({
   onLaunch() {
@@ -501,8 +514,16 @@ App({
           url: 'https://your-server.com/api/logs',
           method: 'POST',
           data: log,
-          success: () => resolve({ success: true }),
-          fail: (err) => resolve({ success: false, shouldRetry: true, error: err.errMsg }),
+          success: (res) => resolve(classifyHttpUploadResponse(
+            res.statusCode,
+            res.header?.['Retry-After'] ?? res.header?.['retry-after'],
+          )),
+          fail: (err) => resolve({
+            success: false,
+            shouldRetry: true,
+            retryReason: 'network',
+            error: err.errMsg,
+          }),
         });
       }),
     });
@@ -572,4 +593,3 @@ App({
 ---
 
 > 本项目使用 AI 辅助开发。
-

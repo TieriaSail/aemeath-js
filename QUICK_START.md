@@ -99,7 +99,7 @@ npm install aemeath-js
 
 ```typescript
 // src/main.ts - Initialize once
-import { initAemeath } from 'aemeath-js';
+import { initAemeath, classifyHttpUploadResponse } from 'aemeath-js';
 
 initAemeath({
   upload: async (log) => {
@@ -107,7 +107,7 @@ initAemeath({
       method: 'POST',
       body: JSON.stringify(log),
     });
-    return { success: res.ok };
+    return classifyHttpUploadResponse(res.status, res.headers.get('Retry-After'));
   },
   context: {
     userId: '12345',
@@ -301,6 +301,8 @@ const result = await parser.parse(errorStack);
 Automatically monitors fetch and XMLHttpRequest. Large resources (mp3/mp4/png/jpg, etc.) are excluded from slow request detection by default.
 
 ```typescript
+import { initAemeath, classifyHttpUploadResponse } from 'aemeath-js';
+
 initAemeath({
   network: {
     logTypes: ['error', 'slow'],  // Only log errors and slow requests
@@ -507,8 +509,7 @@ initAemeath({
   upload: async (log) => {
     try {
       const res = await fetch('/api/logs', { method: 'POST', body: JSON.stringify(log) });
-      // Telling the SDK *why* it failed is what makes retries smart
-      return { success: res.ok, retryReason: res.ok ? undefined : 'server' };
+      return classifyHttpUploadResponse(res.status, res.headers.get('Retry-After'));
     } catch {
       // 'network' never burns the retry budget — the queue pauses instead
       return { success: false, retryReason: 'network' };

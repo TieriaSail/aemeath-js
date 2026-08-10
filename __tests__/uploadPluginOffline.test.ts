@@ -107,6 +107,88 @@ describe('UploadPlugin — 离线与恢复', () => {
     expect(plugin.getQueueStatus().paused).toBe(false);
   });
 
+  it('半开探测收到可恢复服务端失败并立即 parked 时也应退出半开', async () => {
+    let reachable = false;
+    const resumed = vi.fn();
+    const plugin = new UploadPlugin({
+      onUpload: async () => {
+        if (!reachable) throw new TypeError('Failed to fetch');
+        return { success: false, shouldRetry: true, retryReason: 'server' as const };
+      },
+      queue: { deduplicationDelay: 10, maxRetries: 0, suspectedOfflineThreshold: 1 },
+      cache: { enabled: false },
+      saveOnUnload: false,
+    });
+    logger.use(plugin);
+    logger.on('upload:resumed', resumed);
+
+    logger.error('probe parks immediately');
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(plugin.getQueueStatus().paused).toBe(true);
+
+    reachable = true;
+    window.dispatchEvent(new Event('online'));
+    await vi.advanceTimersByTimeAsync(1000);
+
+    expect(plugin.getQueueStatus()).toMatchObject({ paused: false, length: 0, parked: 1 });
+    expect(resumed).toHaveBeenCalledOnce();
+  });
+
+  it('online 事件不能提前唤醒仍受 Retry-After 约束的 parked 日志', async () => {
+    const uploadFn = vi.fn(async () => ({
+      success: false,
+      shouldRetry: true,
+      retryReason: 'rate-limit' as const,
+      retryAfter: '120',
+    }));
+    const plugin = new UploadPlugin({
+      onUpload: uploadFn,
+      queue: { deduplicationDelay: 10, maxRetries: 0 },
+      cache: { enabled: false },
+      saveOnUnload: false,
+    });
+    logger.use(plugin);
+    logger.error('respect server delay');
+    await vi.advanceTimersByTimeAsync(1000);
+
+    expect(uploadFn).toHaveBeenCalledTimes(1);
+    expect(plugin.getQueueStatus()).toMatchObject({ length: 0, parked: 1 });
+
+    window.dispatchEvent(new Event('online'));
+    await vi.advanceTimersByTimeAsync(30_000);
+
+    expect(uploadFn).toHaveBeenCalledTimes(1);
+    expect(plugin.getQueueStatus()).toMatchObject({ length: 0, parked: 1 });
+  });
+
+  it('多条 parked 同时到期时一次 processQueue 只放行一个恢复探针', async () => {
+    const failing = vi.fn(async () => ({
+      success: false,
+      shouldRetry: true,
+      retryReason: 'server' as const,
+    }));
+    const plugin = new UploadPlugin({
+      onUpload: failing,
+      queue: { deduplicationDelay: 0, maxRetries: 0, concurrency: 2 },
+      cache: { enabled: false },
+      saveOnUnload: false,
+    });
+    logger.use(plugin);
+    logger.error('park-1');
+    logger.error('park-2');
+    logger.error('park-3');
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(plugin.getQueueStatus().parked).toBe(3);
+
+    const recovered = vi.fn(async () => ({ success: true } as UploadResult));
+    plugin.setOnUpload(recovered);
+    vi.setSystemTime(Date.now() + 61_000);
+    await (plugin as unknown as { processQueue(): Promise<void> }).processQueue();
+
+    expect(recovered).toHaveBeenCalledTimes(1);
+    expect(plugin.getQueueStatus()).toMatchObject({ parked: 2, length: 0 });
+  });
+
   it('暂停后的定时探测成功即自动恢复，无需 online 事件', async () => {
     let online = false;
     const uploadFn = vi.fn(async () => {

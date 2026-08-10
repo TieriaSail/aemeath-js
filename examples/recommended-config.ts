@@ -11,6 +11,7 @@ import {
   OfflinePersistencePlugin,
   PayloadSanitizePlugin,
   UploadPlugin,
+  classifyHttpUploadResponse,
 } from 'aemeath-js';
 
 // ==================== 推荐配置：统一接口 ====================
@@ -70,6 +71,13 @@ export function createLogger() {
             },
             body: JSON.stringify(log),
           });
+
+          if (!response.ok) {
+            return classifyHttpUploadResponse(
+              response.status,
+              response.headers.get('Retry-After'),
+            );
+          }
 
           const data = await response.json();
 
@@ -178,6 +186,13 @@ export function createLoggerWithFallback() {
             },
             body: JSON.stringify(log),
           });
+
+          if (!response.ok) {
+            return classifyHttpUploadResponse(
+              response.status,
+              response.headers.get('Retry-After'),
+            );
+          }
 
           const data = await response.json();
 

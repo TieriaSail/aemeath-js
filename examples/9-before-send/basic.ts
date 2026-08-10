@@ -17,7 +17,7 @@
  *   context.error（仅当请求出错时）
  */
 
-import { initAemeath, type LogEntry } from 'aemeath-js';
+import { initAemeath, classifyHttpUploadResponse, type LogEntry } from 'aemeath-js';
 
 const SENSITIVE_KEYS = new Set(['password', 'token']);
 
@@ -49,7 +49,7 @@ initAemeath({
       method: 'POST',
       body: JSON.stringify(log),
     });
-    return { success: res.ok };
+    return classifyHttpUploadResponse(res.status, res.headers.get('Retry-After'));
   },
 
   beforeSend: (entry: LogEntry) => {

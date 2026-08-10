@@ -304,6 +304,8 @@ UploadPlugin（如已安装）→ 服务端
 通过 UploadPlugin 的 `onUpload` 回调可以灵活过滤：
 
 ```typescript
+import { classifyHttpUploadResponse } from 'aemeath-js';
+
 new UploadPlugin({
   onUpload: async (log) => {
     // 只上传性能日志
@@ -316,8 +318,8 @@ new UploadPlugin({
       return { success: false, shouldRetry: false };
     }
 
-    await fetch('/api/metrics', { method: 'POST', body: JSON.stringify(log) });
-    return { success: true };
+    const response = await fetch('/api/metrics', { method: 'POST', body: JSON.stringify(log) });
+    return classifyHttpUploadResponse(response.status, response.headers.get('Retry-After'));
   },
 })
 ```
@@ -446,7 +448,12 @@ const duration = logger.measure(
 ### 推荐配置
 
 ```typescript
-import { AemeathLogger, PerformancePlugin, UploadPlugin } from 'aemeath-js';
+import {
+  AemeathLogger,
+  PerformancePlugin,
+  UploadPlugin,
+  classifyHttpUploadResponse,
+} from 'aemeath-js';
 
 const logger = new AemeathLogger();
 
@@ -466,11 +473,14 @@ logger.use(
   new UploadPlugin({
     onUpload: async (log) => {
       if (log.tags?.category === 'performance') {
-        await fetch('/api/metrics', {
+        const response = await fetch('/api/metrics', {
           method: 'POST',
           body: JSON.stringify(log),
         });
-        return { success: true };
+        return classifyHttpUploadResponse(
+          response.status,
+          response.headers.get('Retry-After'),
+        );
       }
       return { success: false, shouldRetry: false };
     },
@@ -562,7 +572,12 @@ longTaskThreshold: 100; // 只记录 >100ms 的任务
 ## 📝 完整示例
 
 ```typescript
-import { AemeathLogger, PerformancePlugin, UploadPlugin } from 'aemeath-js';
+import {
+  AemeathLogger,
+  PerformancePlugin,
+  UploadPlugin,
+  classifyHttpUploadResponse,
+} from 'aemeath-js';
 
 const logger = new AemeathLogger();
 
@@ -581,11 +596,14 @@ logger.use(
 logger.use(
   new UploadPlugin({
     onUpload: async (log) => {
-      await fetch('/api/logs', {
+      const response = await fetch('/api/logs', {
         method: 'POST',
         body: JSON.stringify(log),
       });
-      return { success: true };
+      return classifyHttpUploadResponse(
+        response.status,
+        response.headers.get('Retry-After'),
+      );
     },
   }),
 );

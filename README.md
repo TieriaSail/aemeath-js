@@ -72,7 +72,7 @@ pnpm add aemeath-js
 
 ```typescript
 // Initialize once (e.g. in main.ts)
-import { initAemeath } from 'aemeath-js';
+import { initAemeath, classifyHttpUploadResponse } from 'aemeath-js';
 
 initAemeath({
   upload: async (log) => {
@@ -80,10 +80,13 @@ initAemeath({
       method: 'POST',
       body: JSON.stringify(log),
     });
+    if (!res.ok) {
+      return classifyHttpUploadResponse(res.status, res.headers.get('Retry-After'));
+    }
     const data = await res.json();
     return data.code === 200
       ? { success: true }
-      : { success: false, shouldRetry: true, error: data.message };
+      : { success: false, shouldRetry: true, retryReason: 'server', error: data.message };
   },
   context: {
     userId: '12345',
@@ -110,6 +113,7 @@ logger.updateContext('userId', '67890');
 | `SafeGuardPlugin` | ✅ Enabled | `safeGuard: { enabled: false }` |
 | `NetworkPlugin` | ✅ Enabled | `network: { enabled: false }` |
 | `UploadPlugin` | When `upload` is provided | Don't pass `upload` |
+| `OfflinePersistencePlugin` | When `upload` is provided | `offlinePersistence: false` |
 | `EarlyErrorCapturePlugin` | When build plugin is configured | — |
 
 > 💡 **Need more capabilities?** You can still `.use()` additional plugins on the singleton at any time. Duplicate `.use()` calls are safely ignored — if a plugin is already installed, it won't be added again.
@@ -157,22 +161,33 @@ All plugins are optional. Only import what you need — unused plugins are tree-
 
 ### Never lose a log to a flaky network
 
+> ⚠️ **Backend idempotency is required.** Reliable delivery is at-least-once: your
+> backend must enforce uniqueness on `(project/tenant, logId)` and treat an already
+> accepted `logId` as success. `requestId` changes on every attempt and must not be used
+> for deduplication.
+
 ```ts
+import { initAemeath, classifyHttpUploadResponse } from 'aemeath-js';
+
 initAemeath({
   upload: async (log) => {
     const res = await fetch('/api/logs', { method: 'POST', body: JSON.stringify(log) });
-    // Tell the SDK *why* it failed: 'network' failures never burn the retry budget
-    return { success: res.ok, retryReason: res.ok ? undefined : 'server' };
+    return classifyHttpUploadResponse(res.status, res.headers.get('Retry-After'));
   },
-  offlinePersistence: true, // persist while offline, replay when back online
+  // offlinePersistence defaults to true; set false to forbid local persistence
   onDrop: (log, info) => console.warn('dropped', info.reason, log.logId),
 });
 ```
 
-Going offline now pauses the queue instead of burning through the retry budget,
-retries back off exponentially, and nothing is ever dropped silently. See
+Going offline now pauses the queue instead of burning through the retry budget.
+Retryable failures back off and enter a recoverable `parked` state after the hot retry
+budget is exhausted; only terminal failures and bounded-capacity eviction are drops. See
 [UploadPlugin](./docs/en/4-upload-plugin.md) and
 [Offline Persistence](./docs/en/11-offline-persistence.md).
+
+For one deduplicated view across memory and disk, call
+`getAemeath().getDeliveryStatus()`. Its `totalPending` is a union by stable `logId`, not
+the sum of two overlapping queues.
 
 ### `beforeSend` — privacy & redaction
 
@@ -497,7 +512,7 @@ Since `2.3.0-beta.0`, aemeath-js ships a dedicated slim bundle at `dist-miniprog
 
 ```javascript
 // app.js
-const { initAemeath, createMiniAppAdapter } = require('aemeath-js');
+const { initAemeath, createMiniAppAdapter, classifyHttpUploadResponse } = require('aemeath-js');
 
 App({
   onLaunch() {
@@ -508,8 +523,16 @@ App({
           url: 'https://your-server.com/api/logs',
           method: 'POST',
           data: log,
-          success: () => resolve({ success: true }),
-          fail: (err) => resolve({ success: false, shouldRetry: true, error: err.errMsg }),
+          success: (res) => resolve(classifyHttpUploadResponse(
+            res.statusCode,
+            res.header?.['Retry-After'] ?? res.header?.['retry-after'],
+          )),
+          fail: (err) => resolve({
+            success: false,
+            shouldRetry: true,
+            retryReason: 'network',
+            error: err.errMsg,
+          }),
         });
       }),
     });

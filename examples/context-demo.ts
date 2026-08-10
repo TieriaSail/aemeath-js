@@ -11,18 +11,21 @@
 
 /* eslint-disable @typescript-eslint/no-unused-vars */
 
-import { initAemeath, getAemeath } from 'aemeath-js';
+import { initAemeath, getAemeath, classifyHttpUploadResponse } from 'aemeath-js';
 
 // ==================== 示例 1: 基础用法 ====================
 
 // 在应用入口配置全局上下文
 initAemeath({
   upload: async (log) => {
-    await fetch('/api/logs', {
+    const response = await fetch('/api/logs', {
       method: 'POST',
       body: JSON.stringify(log),
     });
-    return { success: true };
+    return classifyHttpUploadResponse(
+      response.status,
+      response.headers.get('Retry-After'),
+    );
   },
   context: {
     userId: '12345',
@@ -105,8 +108,7 @@ function resetContext() {
 
 // ==================== 示例 5: 实际应用场景 ====================
 
-// App.tsx
-import { initAemeath, getAemeath } from 'aemeath-js';
+// App.tsx（本文件顶部已导入 initAemeath / getAemeath / HTTP 分类器）
 
 // 这些是你的业务工具函数，非 aemeath-js 导出
 declare function getDeviceInfo(): Record<string, string>;
@@ -121,7 +123,7 @@ function initApp() {
 
   initAemeath({
     upload: async (log) => {
-      await fetch('/api/logs', {
+      const response = await fetch('/api/logs', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -129,7 +131,10 @@ function initApp() {
         },
         body: JSON.stringify(log),
       });
-      return { success: true };
+      return classifyHttpUploadResponse(
+        response.status,
+        response.headers.get('Retry-After'),
+      );
     },
     context: {
       // 设备信息

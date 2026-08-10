@@ -80,7 +80,7 @@ If using `file` mode, manually add to your HTML:
 `initAemeath()` automatically registers `EarlyErrorCapturePlugin` when build-time early errors are detected:
 
 ```typescript
-import { initAemeath, getAemeath } from 'aemeath-js';
+import { initAemeath, getAemeath, classifyHttpUploadResponse } from 'aemeath-js';
 
 initAemeath({
   upload: async (log) => {
@@ -93,10 +93,10 @@ initAemeath({
       body: JSON.stringify(log),
     });
 
-    if (!response.ok) {
-      return { success: false, shouldRetry: true, error: `Upload failed: ${response.status}` };
-    }
-    return { success: true };
+    return classifyHttpUploadResponse(
+      response.status,
+      response.headers.get('Retry-After'),
+    );
   },
 });
 
@@ -106,7 +106,12 @@ const logger = getAemeath();
 #### Manual Assembly
 
 ```typescript
-import { AemeathLogger, EarlyErrorCapturePlugin, UploadPlugin } from 'aemeath-js';
+import {
+  AemeathLogger,
+  EarlyErrorCapturePlugin,
+  UploadPlugin,
+  classifyHttpUploadResponse,
+} from 'aemeath-js';
 
 const logger = new AemeathLogger();
 
@@ -124,10 +129,10 @@ logger.use(
         body: JSON.stringify(log),
       });
 
-      if (!response.ok) {
-        return { success: false, shouldRetry: true, error: `Upload failed: ${response.status}` };
-      }
-      return { success: true };
+      return classifyHttpUploadResponse(
+        response.status,
+        response.headers.get('Retry-After'),
+      );
     },
   }),
 );

@@ -15,7 +15,7 @@
 ## 基础使用
 
 ```typescript
-import { AemeathLogger, PerformancePlugin } from 'aemeath-js';
+import { AemeathLogger, PerformancePlugin, classifyHttpUploadResponse } from 'aemeath-js';
 
 const logger = new AemeathLogger();
 
@@ -139,7 +139,12 @@ logger.measure?.('operation', 'start', 'end');
 推荐的生产环境配置：
 
 ```typescript
-import { AemeathLogger, PerformancePlugin, UploadPlugin } from 'aemeath-js';
+import {
+  AemeathLogger,
+  PerformancePlugin,
+  UploadPlugin,
+  classifyHttpUploadResponse,
+} from 'aemeath-js';
 
 const logger = new AemeathLogger();
 
@@ -159,11 +164,14 @@ logger.use(
   new UploadPlugin({
     onUpload: async (log) => {
       if (log.tags?.category === 'performance') {
-        await fetch('/api/metrics', {
+        const response = await fetch('/api/metrics', {
           method: 'POST',
           body: JSON.stringify(log),
         });
-        return { success: true };
+        return classifyHttpUploadResponse(
+          response.status,
+          response.headers.get('Retry-After'),
+        );
       }
       return { success: false, shouldRetry: false };
     },
@@ -176,7 +184,12 @@ logger.use(
 ## 完整示例
 
 ```typescript
-import { AemeathLogger, PerformancePlugin, UploadPlugin } from 'aemeath-js';
+import {
+  AemeathLogger,
+  PerformancePlugin,
+  UploadPlugin,
+  classifyHttpUploadResponse,
+} from 'aemeath-js';
 
 const logger = new AemeathLogger();
 
@@ -197,7 +210,7 @@ logger.use(new UploadPlugin({
       method: 'POST',
       body: JSON.stringify(log)
     });
-    return { success: res.ok };
+    return classifyHttpUploadResponse(res.status, res.headers.get('Retry-After'));
   }
 }));
 

@@ -32,6 +32,8 @@ export type {
   BundleConfig,
   ContextUpdater,
   ContextValue,
+  DeliveryState,
+  DeliveryStatus,
 } from './types';
 
 export { LogLevel as LogLevelEnum, ErrorCategory, PluginPriority } from './types';
@@ -51,16 +53,23 @@ export type {
 } from './plugins/EarlyErrorCapturePlugin';
 
 // ==================== Upload Plugin（推荐） ====================
-export { UploadPlugin } from './plugins/UploadPlugin';
+export {
+  UploadPlugin,
+  parseRetryAfter,
+  classifyHttpUploadResponse,
+} from './plugins/UploadPlugin';
 export type {
   UploadPluginOptions,
   UploadResult,
   UploadCallback,
+  UploadBindingOptions,
   PriorityCallback,
   UploadRetryReason,
   UploadDropReason,
   UploadDropInfo,
   UploadDropCallback,
+  UploadQueueStatus,
+  UploadQueueStatusItem,
 } from './plugins/UploadPlugin';
 
 // ==================== 载荷清洗（默认启用） ====================
@@ -76,7 +85,7 @@ export type {
   PayloadStrip,
 } from './utils/payloadSanitize';
 
-// ==================== 断网续传（可选） ====================
+// ==================== 断网续传（标准入口随 upload 默认启用，可显式关闭） ====================
 export { OfflinePersistencePlugin } from './plugins/OfflinePersistencePlugin';
 export type {
   OfflinePersistencePluginOptions,

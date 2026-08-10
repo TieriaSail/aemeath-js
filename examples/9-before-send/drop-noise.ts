@@ -18,7 +18,7 @@
  *    比 beforeSend 更省的捕获层过滤：network: { ignoreErrorTypes: [...] }。
  */
 
-import { initAemeath } from 'aemeath-js';
+import { initAemeath, classifyHttpUploadResponse } from 'aemeath-js';
 
 const IGNORED_NETWORK_STATUSES = new Set([401, 403]);
 
@@ -28,7 +28,7 @@ initAemeath({
       method: 'POST',
       body: JSON.stringify(log),
     });
-    return { success: res.ok };
+    return classifyHttpUploadResponse(res.status, res.headers.get('Retry-After'));
   },
 
   // 也可以直接在捕获层过滤（不记录、不产生 console 输出）：

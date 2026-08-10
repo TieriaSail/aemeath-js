@@ -7,12 +7,12 @@
 `initAemeath()` 默认启用 `ErrorCapturePlugin`，无需额外配置：
 
 ```typescript
-import { initAemeath, getAemeath } from 'aemeath-js';
+import { initAemeath, getAemeath, classifyHttpUploadResponse } from 'aemeath-js';
 
 initAemeath({
   upload: async (log) => {
     const res = await fetch('/api/logs', { method: 'POST', body: JSON.stringify(log) });
-    return { success: res.ok };
+    return classifyHttpUploadResponse(res.status, res.headers.get('Retry-After'));
   },
 });
 

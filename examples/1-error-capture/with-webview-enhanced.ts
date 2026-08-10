@@ -6,7 +6,7 @@
  * BrowserApiErrorsPlugin 通过包裹回调函数解决此问题。
  */
 
-import { initAemeath, getAemeath } from 'aemeath-js';
+import { initAemeath, getAemeath, classifyHttpUploadResponse } from 'aemeath-js';
 
 // ==================== 基础用法（默认启用） ====================
 
@@ -16,7 +16,7 @@ initAemeath({
       method: 'POST',
       body: JSON.stringify(log),
     });
-    return { success: res.ok };
+    return classifyHttpUploadResponse(res.status, res.headers.get('Retry-After'));
   },
   // browserApiErrors 默认为 true，无需显式设置
 });

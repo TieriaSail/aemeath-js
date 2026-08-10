@@ -188,7 +188,7 @@ logger.getPlugins().forEach((p) => {
 // [-100]  safe-guard
 // [0]     network
 // [100]   upload
-// [101]   offline-persistence   ← 仅当开启 offlinePersistence
+// [101]   offline-persistence   ← 配置 upload 时默认启用，显式关闭时除外
 // [900]   payload-sanitize
 // [1000]  before-send
 ```

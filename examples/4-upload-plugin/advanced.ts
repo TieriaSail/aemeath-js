@@ -4,7 +4,7 @@
  * 高级用法：返回值控制、错误处理、监控
  */
 
-import { AemeathLogger, UploadPlugin } from 'aemeath-js';
+import { AemeathLogger, UploadPlugin, classifyHttpUploadResponse } from 'aemeath-js';
 import type { LogEntry, UploadResult } from 'aemeath-js';
 
 // 创建一个完整的上传函数（返回 UploadResult）
@@ -20,33 +20,15 @@ async function uploadLog(log: LogEntry): Promise<UploadResult> {
       signal: AbortSignal.timeout(5000), // 5秒超时
     });
 
-    // 检查 HTTP 状态码
+    // 401 时先刷新凭证；仍失败则交给统一 HTTP 分类器决定是否重试。
     if (!response.ok) {
       if (response.status === 401) {
-        // Token 过期，需要重试
         await refreshAuthToken();
-        return {
-          success: false,
-          shouldRetry: true,
-          error: 'Token expired, will retry',
-        };
       }
-
-      if (response.status >= 500) {
-        // 服务器错误，需要重试
-        return {
-          success: false,
-          shouldRetry: true,
-          error: `Server error: ${response.status}`,
-        };
-      }
-
-      // 客户端错误（4xx），不重试
-      return {
-        success: false,
-        shouldRetry: false,
-        error: `Client error: ${response.status}`,
-      };
+      return classifyHttpUploadResponse(
+        response.status,
+        response.headers.get('Retry-After'),
+      );
     }
 
     // 检查业务返回码
@@ -61,12 +43,9 @@ async function uploadLog(log: LogEntry): Promise<UploadResult> {
       };
     }
   } catch (error) {
-    // 网络错误，需要重试
-    return {
-      success: false,
-      shouldRetry: true,
-      error: error instanceof Error ? error.message : String(error),
-    };
+    // 交回 SDK 区分 fetch 网络失败、超时与业务主动取消。
+    // UploadPlugin 会把异常收敛成 UploadResult，不会向日志主链路抛出。
+    throw error;
   }
 }
 

@@ -26,6 +26,14 @@ export interface OfflineRecordMeta {
   bytes: number;
   /** 已经补传失败的次数 */
   replayAttempts: number;
+  /** 服务端/冷却策略要求的最早再次尝试时间 */
+  notBefore?: number;
+  /** parked 的跨生命周期退避次数 */
+  parkCount?: number;
+  /** 最近一次可重试失败的分类 */
+  lastRetryReason?: string;
+  /** 已进入终态但物理删除失败；hydrate 时只能继续删除，绝不能重放 */
+  terminal?: true;
 }
 
 export interface OfflineRecord extends OfflineRecordMeta {
@@ -55,6 +63,10 @@ function toMeta(record: OfflineRecord): OfflineRecordMeta {
     priority: record.priority,
     bytes: record.bytes,
     replayAttempts: record.replayAttempts,
+    notBefore: record.notBefore,
+    parkCount: record.parkCount,
+    lastRetryReason: record.lastRetryReason,
+    terminal: record.terminal,
   };
 }
 
@@ -104,7 +116,20 @@ export function createKeyValueStore(
       const raw = platform.storage.getItem(indexKey);
       if (!raw) return [];
       const parsed = JSON.parse(raw);
-      return Array.isArray(parsed) ? (parsed as OfflineRecordMeta[]) : [];
+      if (!Array.isArray(parsed)) return [];
+      // KV 内容可能被宿主、旧版本或损坏写入污染。一条坏元数据不能让整个索引
+      // 的 filter/sort 因 null.logId 抛错，从而把后面的健康记录全部隐藏。
+      return parsed.filter((value): value is OfflineRecordMeta => {
+        if (value == null || typeof value !== 'object') return false;
+        const meta = value as Partial<OfflineRecordMeta>;
+        return typeof meta.logId === 'string'
+          && meta.logId.length > 0
+          && Number.isFinite(meta.storedAt)
+          && Number.isFinite(meta.capturedAt)
+          && Number.isFinite(meta.priority)
+          && Number.isFinite(meta.bytes)
+          && Number.isFinite(meta.replayAttempts);
+      });
     } catch {
       return [];
     }

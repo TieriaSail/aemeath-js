@@ -1,5 +1,124 @@
 # Changelog
 
+## 2.5.1-beta.0
+
+Completes two observability and protocol gaps left in the first reliable-delivery beta.
+
+### Added
+
+- `UploadResult.retryAfter` accepts the raw HTTP `Retry-After` header and parses both
+  delta-seconds and HTTP-date. Existing `retryAfterMs` remains the explicit override, and
+  retry scheduling uses the greater of the server delay and local backoff.
+- Exported `parseRetryAfter()` for integrations which need the same standards-compliant
+  parsing outside `UploadPlugin`.
+- Exported `classifyHttpUploadResponse()` so fetch, XHR and miniprogram integrations share
+  the same safe HTTP policy: 2xx succeeds; 408/425/429/5xx retry; other 4xx are terminal.
+- `logger.getDeliveryStatus()` provides one deduplicated view across the active queue,
+  in-flight attempts, parked entries and durable offline records. `totalPending` is a union
+  by stable `logId`, not a misleading sum of memory and disk counts.
+- Unified `delivery:*` lifecycle aliases and a listener-gated `delivery:status` event.
+  Existing `upload:*` events and plugin-specific status methods remain fully supported.
+- Upload status adds `pendingItems` for queued, in-flight and parked entries, while the
+  existing `items` array remains queue-only for patch-version compatibility. It also exposes
+  per-attempt outcome counts and stable IDs; offline status exposes the durable snapshot.
+
+### Fixed
+
+- Long `Retry-After` delays are scheduled in safe timer-sized segments instead of
+  overflowing the host's `setTimeout` range and retrying immediately.
+- Thrown axios/ky/got-style HTTP errors now preserve `Retry-After` from common
+  `response.headers` shapes instead of retaining only the status classification.
+- Browser `online` hints no longer wake a parked server/rate-limit item before its
+  `Retry-After` deadline; they only probe work whose delay has actually expired.
+- `oldestPendingAgeMs` now uses the original log capture timestamp, including replayed and
+  in-flight entries, rather than only the most recent in-memory enqueue time.
+- Delivery status snapshots tolerate missing or failing third-party status providers and
+  now cover Upload/Offline plugin install and uninstall transitions without affecting the
+  logging path.
+- Offline deletion intent now survives a failed storage delete for every terminal path
+  (success, rejection, TTL and quota eviction), preventing a deleted record from reappearing
+  after remount. Replay also admits split entries as an atomic group within queue capacity.
+- Incremental initialization can re-enable persistence in one call after an earlier explicit
+  opt-out, and a rejected miniprogram initialization no longer leaks its persistence option
+  into the next valid initialization.
+- Multiple offline instances now claim the IndexedDB `dbName` and KV fallback `key`
+  independently, closing cross-project replay gaps hidden by differing only one of them.
+- Published `./plugins/*` subpaths now include every public plugin entry, including
+  `OfflinePersistencePlugin`, `PayloadSanitizePlugin`, `BrowserApiErrorsPlugin`, and
+  `BeforeSendPlugin`, instead of resolving to files absent from the npm tarball.
+- `setUpload(null)` now truly pauses delivery without acknowledging queued logs. Rebinding a
+  callback resumes the same queue, and an optional `deliveryScope` rejects unsafe target or
+  tenant switches while pending work still exists.
+- The browser/IIFE callback now preserves a returned `UploadResult` (including
+  `Retry-After`) while continuing to accept legacy callbacks that return `void`.
+- `offlinePersistence: false` is now a complete persistence master switch: it purges both
+  OfflinePersistence records and UploadPlugin's queue cache, including a dormant KV
+  fallback left by an earlier IndexedDB failure. An immediate re-enable waits for that
+  purge and restores the last explicit storage options. Purging also protects storage
+  currently owned by another active logger instance.
+- Retry deadlines and parked state survive reloads in both persistence layers. Expiring the
+  short Upload queue mirror no longer deletes a still-valid OfflinePersistence record.
+- Durable terminal deletion markers prevent a record from resurrecting after a failed
+  IndexedDB/KV delete, including across a fresh module lifecycle.
+- Corrupt cache timestamps and malformed KV index elements are discarded independently
+  without hiding healthy records; a single record larger than `maxTotalBytes` is rejected
+  instead of violating the configured storage ceiling.
+- Parked recovery now releases one half-open probe at a time, and compatibility normalization
+  preserves count-only third-party status providers without fabricating `undefined` log IDs.
+- `setUpload(null)` now also stops an already-running queue loop after its current in-flight
+  request, and rebinding a callback no longer emits a false `resumed` event while the network
+  state machine remains paused.
+- A split group larger than the configured upload queue stays durable for a future launch
+  with a viable `maxSize`, without starting a permanent one-second replay wake loop.
+- Upload lifecycle events are fail-safe even when a hand-written `AemeathInterface.emit()`
+  throws, preventing an event observer from stranding an entry in `in-flight`.
+
+## 2.5.0-beta.1
+
+Reliable-delivery correction for the first 2.5 beta. Retry scheduling and log lifecycle
+are now separate: exhausting the hot retry budget no longer claims that a recoverable log
+was dropped.
+
+### Changed
+
+- `shouldRetry: true` retries even when `retryReason` is omitted; the reason is normalized
+  to `unknown`. Conversely, an explicit non-payload `retryReason` is itself treated as retry
+  intent when `shouldRetry` is omitted. Bare `{ success: false }` remains terminal for
+  backward compatibility, and `shouldRetry: false` always wins.
+- Recoverable server, auth, rate-limit, callback and cancellation failures move to a bounded
+  `parked` area after `maxRetries`. The first cooling period is 60 seconds and subsequent
+  periods back off to 15 minutes. Active and parked entries share `queue.maxSize`; only real
+  terminal rejection or capacity eviction emits `upload:drop`.
+- `online` is now a wake-up hint, not proof of end-to-end recovery. It releases one half-open
+  probe and resumes the full queue only after the probe reaches the server or succeeds.
+- `AbortError` is classified as `cancelled`, not as evidence that the whole channel is down.
+  Thrown HTTP responses now distinguish permanent payload statuses, auth, rate limiting and
+  retryable server failures. `UploadResult.retryAfterMs` can extend local backoff.
+- The built-in cache persists parked state across reloads, coalesces hot-path writes, includes
+  in-flight entries on teardown, and also saves on `pagehide` for Safari/WKWebView.
+- `requestId` is documented correctly as a per-attempt correlation identifier. Backends must
+  use the stable `logId` as their idempotency key.
+
+### Added
+
+- Typed events `upload:attempt`, `upload:retry-scheduled`, `upload:parked`, and
+  `upload:unparked`.
+- `getQueueStatus()` now reports `parked`, `maxSize`, `oldestPendingAgeMs`, and an item
+  `state` of `queued` or `parked`.
+- `storage-rejected` distinguishes entries the persistence engine cannot store from actual
+  quota exhaustion.
+
+### Fixed
+
+- Offline replay now respects available upload capacity, cools down after local queue
+  overflow, and keeps a durable record while its in-memory copy is parked.
+- Offline initialization is lifecycle-epoch guarded, so a stale async init cannot clear a
+  remounted instance's delivery tombstones. Deletes are read back before a delivered
+  tombstone is cleared, preventing records from being replayed after a swallowed KV failure.
+- `OfflinePersistencePlugin` is now installed by default whenever `upload` is configured,
+  closing the page-restart gap in reliable delivery. Applications which cannot retain
+  plaintext logs locally can opt out with `offlinePersistence: false`.
+
 ## 2.5.0-beta.0
 
 Reliability release: logs should survive a bad network instead of being burned through

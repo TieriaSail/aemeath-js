@@ -2,9 +2,53 @@
  * UploadPlugin 上传插件测试
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { UploadPlugin, type UploadCallback } from '../src/plugins/UploadPlugin';
+import {
+  UploadPlugin,
+  parseRetryAfter,
+  classifyHttpUploadResponse,
+  type UploadCallback,
+} from '../src/plugins/UploadPlugin';
 import { AemeathLogger } from '../src/core/Logger';
 import type { LogEntry } from '../src/types';
+
+describe('parseRetryAfter', () => {
+  it('解析 delta-seconds 与 HTTP-date', () => {
+    const now = Date.UTC(2026, 0, 1, 0, 0, 0);
+    expect(parseRetryAfter('120', now)).toBe(120_000);
+    expect(parseRetryAfter(new Date(now + 90_000).toUTCString(), now)).toBe(90_000);
+  });
+
+  it('过去的日期归零，非法头返回 undefined', () => {
+    const now = Date.UTC(2026, 0, 1, 0, 0, 0);
+    expect(parseRetryAfter(new Date(now - 1000).toUTCString(), now)).toBe(0);
+    expect(parseRetryAfter('1.5', now)).toBeUndefined();
+    expect(parseRetryAfter('-1', now)).toBeUndefined();
+    expect(parseRetryAfter('not-a-date', now)).toBeUndefined();
+    expect(parseRetryAfter(null, now)).toBeUndefined();
+  });
+});
+
+describe('classifyHttpUploadResponse', () => {
+  it('统一区分成功、可恢复服务端失败与永久 4xx', () => {
+    expect(classifyHttpUploadResponse(204)).toEqual({ success: true });
+    expect(classifyHttpUploadResponse(429, '120')).toMatchObject({
+      success: false,
+      shouldRetry: true,
+      retryReason: 'rate-limit',
+      retryAfter: '120',
+    });
+    expect(classifyHttpUploadResponse(503)).toMatchObject({
+      success: false,
+      shouldRetry: true,
+      retryReason: 'server',
+    });
+    expect(classifyHttpUploadResponse(413)).toMatchObject({
+      success: false,
+      shouldRetry: false,
+      retryReason: 'payload',
+    });
+  });
+});
 
 describe('UploadPlugin', () => {
   let uploadFn: ReturnType<typeof vi.fn>;
@@ -135,7 +179,7 @@ describe('UploadPlugin', () => {
   // ==================== 重试机制 ====================
 
   describe('重试机制', () => {
-    it('上传失败且 shouldRetry=true 时应重试', async () => {
+    it('shouldRetry=true 即使省略 retryReason 也应重试', async () => {
       let callCount = 0;
       const retryPlugin = new UploadPlugin({
         onUpload: async () => {
@@ -157,6 +201,111 @@ describe('UploadPlugin', () => {
       await vi.advanceTimersByTimeAsync(10000);
 
       expect(callCount).toBe(3); // 2 次失败 + 1 次成功
+    });
+
+    it('只给 retryReason 也视为明确的重试意图', async () => {
+      const retryFn = vi
+        .fn()
+        .mockResolvedValueOnce({ success: false, retryReason: 'server' })
+        .mockResolvedValueOnce({ success: true });
+      const retryPlugin = new UploadPlugin({
+        onUpload: retryFn,
+        queue: { maxRetries: 2, deduplicationDelay: 10 },
+        cache: { enabled: false },
+        saveOnUnload: false,
+      });
+
+      logger.use(retryPlugin);
+      logger.error('retry by reason');
+      await vi.advanceTimersByTimeAsync(3000);
+
+      expect(retryFn).toHaveBeenCalledTimes(2);
+      expect(retryPlugin.getQueueStatus()).toMatchObject({ length: 0, parked: 0 });
+    });
+
+    it('retryAfterMs 应覆盖较短的本地退避', async () => {
+      const retryFn = vi
+        .fn()
+        .mockResolvedValueOnce({ success: false, retryReason: 'rate-limit', retryAfterMs: 5000 })
+        .mockResolvedValueOnce({ success: true });
+      const retryPlugin = new UploadPlugin({
+        onUpload: retryFn,
+        queue: { maxRetries: 2, deduplicationDelay: 10, retryBackoff: { baseMs: 100 } },
+        cache: { enabled: false },
+        saveOnUnload: false,
+      });
+
+      logger.use(retryPlugin);
+      logger.error('rate limited');
+      await vi.advanceTimersByTimeAsync(4000);
+      expect(retryFn).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1500);
+      expect(retryFn).toHaveBeenCalledTimes(2);
+    });
+
+    it('自动解析原始 Retry-After delta-seconds', async () => {
+      const retryFn = vi
+        .fn()
+        .mockResolvedValueOnce({ success: false, retryReason: 'rate-limit', retryAfter: '5' })
+        .mockResolvedValueOnce({ success: true });
+      const retryPlugin = new UploadPlugin({
+        onUpload: retryFn,
+        queue: { maxRetries: 2, deduplicationDelay: 10, retryBackoff: { baseMs: 100 } },
+        cache: { enabled: false },
+        saveOnUnload: false,
+      });
+
+      logger.use(retryPlugin);
+      logger.error('rate limited by header');
+      await vi.advanceTimersByTimeAsync(4900);
+      expect(retryFn).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(200);
+      expect(retryFn).toHaveBeenCalledTimes(2);
+    });
+
+    it('自动解析 axios 风格抛错 response.headers 中的 Retry-After', async () => {
+      const retryFn = vi
+        .fn()
+        .mockRejectedValueOnce(Object.assign(new Error('HTTP 429'), {
+          response: { status: 429, headers: { 'retry-after': '5' } },
+        }))
+        .mockResolvedValueOnce({ success: true });
+      const retryPlugin = new UploadPlugin({
+        onUpload: retryFn,
+        queue: { maxRetries: 2, deduplicationDelay: 10, retryBackoff: { baseMs: 100 } },
+        cache: { enabled: false },
+        saveOnUnload: false,
+      });
+
+      logger.use(retryPlugin);
+      logger.error('axios rate limited by header');
+      await vi.advanceTimersByTimeAsync(4900);
+      expect(retryFn).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(200);
+      expect(retryFn).toHaveBeenCalledTimes(2);
+    });
+
+    it('retryAfterMs 优先于原始 Retry-After', async () => {
+      const retryFn = vi
+        .fn()
+        .mockResolvedValueOnce({
+          success: false,
+          retryReason: 'rate-limit',
+          retryAfter: '60',
+          retryAfterMs: 1000,
+        })
+        .mockResolvedValueOnce({ success: true });
+      const retryPlugin = new UploadPlugin({
+        onUpload: retryFn,
+        queue: { maxRetries: 2, deduplicationDelay: 0, retryBackoff: { baseMs: 100 } },
+        cache: { enabled: false },
+        saveOnUnload: false,
+      });
+
+      logger.use(retryPlugin);
+      logger.error('explicit milliseconds');
+      await vi.advanceTimersByTimeAsync(1200);
+      expect(retryFn).toHaveBeenCalledTimes(2);
     });
 
     it('重试之间应有指数退避，而不是瞬间打完预算', async () => {
@@ -201,7 +350,7 @@ describe('UploadPlugin', () => {
       expect(noRetryFn).toHaveBeenCalledTimes(1);
     });
 
-    it('超过最大重试次数后应放弃（链路正常、单条毒丸日志）', async () => {
+    it('超过热重试预算后应停放，而不是把可恢复失败当作丢弃', async () => {
       const alwaysFailFn = vi
         .fn()
         .mockResolvedValue({ success: false, shouldRetry: true, retryReason: 'server' });
@@ -222,8 +371,8 @@ describe('UploadPlugin', () => {
 
       // 1 次初始 + 2 次重试 = 3 次
       expect(alwaysFailFn).toHaveBeenCalledTimes(3);
-      expect(onDrop).toHaveBeenCalledTimes(1);
-      expect(onDrop.mock.calls[0]![1]).toMatchObject({ reason: 'max-retries' });
+      expect(onDrop).not.toHaveBeenCalled();
+      expect(maxRetryPlugin.getQueueStatus()).toMatchObject({ length: 0, parked: 1 });
     });
 
     it('连续传输层失败达到阈值后应暂停队列而不是丢弃日志', async () => {
@@ -251,7 +400,7 @@ describe('UploadPlugin', () => {
       expect(onDrop).not.toHaveBeenCalled();
     });
 
-    it('服务端持续 5xx 不应被误判为离线：耗尽预算后丢弃，队列不暂停', async () => {
+    it('服务端持续 5xx 不应被误判为离线：耗尽热预算后停放，队列不暂停', async () => {
       // 服务端回了话就说明链路是通的。若把它算作离线证据，后端故障会让队列
       // 无限期暂停、maxRetries 永远耗不完，日志一路堆到溢出。
       const serverDownFn = vi
@@ -275,7 +424,8 @@ describe('UploadPlugin', () => {
       expect(serverDownFn).toHaveBeenCalledTimes(3);
       expect(plugin.getQueueStatus().paused).toBe(false);
       expect(plugin.getQueueStatus().length).toBe(0);
-      expect(onDrop.mock.calls[0]![1]).toMatchObject({ reason: 'max-retries' });
+      expect(plugin.getQueueStatus().parked).toBe(1);
+      expect(onDrop).not.toHaveBeenCalled();
     });
 
     it('legacy 策略下应保持旧行为：不暂停、失败即耗预算', async () => {
@@ -354,7 +504,7 @@ describe('UploadPlugin', () => {
   // ==================== 缓存（localStorage） ====================
 
   describe('本地缓存', () => {
-    it('启用缓存时应保存到 localStorage', async () => {
+    it('启用缓存时应合并异步写入 localStorage', async () => {
       const cachePlugin = new UploadPlugin({
         onUpload: vi
           .fn()
@@ -367,7 +517,8 @@ describe('UploadPlugin', () => {
       logger.use(cachePlugin);
       logger.info('cached msg');
 
-      // 日志入队后应立即缓存
+      // 热路径只排一个 0ms 合并写，避免每条日志同步序列化并写盘。
+      await vi.advanceTimersByTimeAsync(0);
       expect(localStorage.setItem).toHaveBeenCalledWith(
         '__test_cache__',
         expect.any(String),
@@ -384,8 +535,32 @@ describe('UploadPlugin', () => {
       const status = plugin.getQueueStatus();
       expect(status).toHaveProperty('length');
       expect(status).toHaveProperty('isProcessing');
+      expect(status).toHaveProperty('inFlight');
+      expect(status).toHaveProperty('attempts');
       expect(status).toHaveProperty('items');
+      expect(status).toHaveProperty('pendingItems');
       expect(Array.isArray(status.items)).toBe(true);
+      expect(Array.isArray(status.pendingItems)).toBe(true);
+      expect(status.items).toHaveLength(status.length);
+    });
+
+    it('items 保持仅活跃队列的旧语义，pendingItems 提供全量视图', async () => {
+      const never = new Promise<never>(() => {});
+      const active = new UploadPlugin({
+        onUpload: () => never,
+        queue: { deduplicationDelay: 0 },
+        cache: { enabled: false },
+        saveOnUnload: false,
+      });
+      logger.use(active);
+      logger.error('in flight');
+      await vi.advanceTimersByTimeAsync(0);
+
+      const status = active.getQueueStatus();
+      expect(status).toMatchObject({ length: 0, inFlight: 1 });
+      expect(status.items).toHaveLength(0);
+      expect(status.pendingItems).toHaveLength(1);
+      expect(status.pendingItems![0]).toMatchObject({ state: 'in-flight' });
     });
   });
 
@@ -499,4 +674,3 @@ describe('UploadPlugin', () => {
     });
   });
 });
-

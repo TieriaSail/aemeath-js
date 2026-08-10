@@ -80,7 +80,7 @@ module.exports = {
 `initAemeath()` 在检测到构建时早期错误脚本后，会自动注册 `EarlyErrorCapturePlugin`：
 
 ```typescript
-import { initAemeath, getAemeath } from 'aemeath-js';
+import { initAemeath, getAemeath, classifyHttpUploadResponse } from 'aemeath-js';
 
 initAemeath({
   upload: async (log) => {
@@ -93,10 +93,10 @@ initAemeath({
       body: JSON.stringify(log),
     });
 
-    if (!response.ok) {
-      return { success: false, shouldRetry: true, error: `Upload failed: ${response.status}` };
-    }
-    return { success: true };
+    return classifyHttpUploadResponse(
+      response.status,
+      response.headers.get('Retry-After'),
+    );
   },
 });
 
@@ -106,7 +106,12 @@ const logger = getAemeath();
 #### 手动组装
 
 ```typescript
-import { AemeathLogger, EarlyErrorCapturePlugin, UploadPlugin } from 'aemeath-js';
+import {
+  AemeathLogger,
+  EarlyErrorCapturePlugin,
+  UploadPlugin,
+  classifyHttpUploadResponse,
+} from 'aemeath-js';
 
 const logger = new AemeathLogger();
 
@@ -124,10 +129,10 @@ logger.use(
         body: JSON.stringify(log),
       });
 
-      if (!response.ok) {
-        return { success: false, shouldRetry: true, error: `Upload failed: ${response.status}` };
-      }
-      return { success: true };
+      return classifyHttpUploadResponse(
+        response.status,
+        response.headers.get('Retry-After'),
+      );
     },
   }),
 );

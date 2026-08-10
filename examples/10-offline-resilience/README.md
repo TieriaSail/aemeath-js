@@ -25,14 +25,12 @@ v2.4.0 解决的是同一个问题的三个面：**日志不应该因为网络�
 新的可靠性机制全靠 `retryReason` 区分"网络断了"和"这条日志有问题"：
 
 ```ts
+import { classifyHttpUploadResponse } from 'aemeath-js';
+
 upload: async (log) => {
   try {
     const res = await fetch('/api/logs', { method: 'POST', body: JSON.stringify(log) });
-    if (res.ok) return { success: true };
-    if (res.status >= 400 && res.status < 500 && res.status !== 408 && res.status !== 429) {
-      return { success: false, retryReason: 'payload' }; // 重试无意义，立即丢弃
-    }
-    return { success: false, retryReason: 'server' };    // 消耗重试预算
+    return classifyHttpUploadResponse(res.status, res.headers.get('Retry-After'));
   } catch {
     return { success: false, retryReason: 'network' };   // 不消耗预算，队列暂停
   }

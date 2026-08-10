@@ -121,7 +121,7 @@ export interface LogEntry {
    * 若共用同一个，把 logId 当幂等键的后端会把 N 个分片去重成一个，反而丢数据。
    */
   logId: string;
-  /** 上报请求标识（UploadPlugin 每次上报尝试自动生成，用于消费端幂等去重） */
+  /** 上报请求标识（UploadPlugin 每次尝试都会重新生成，仅用于请求关联与排障，不能用于幂等去重） */
   requestId?: string;
   /** 日志级别 */
   level: LogLevel;
@@ -343,6 +343,41 @@ export type ContextUpdater = (
  */
 export type ContextValue = Record<string, unknown> | ContextUpdater;
 
+export type DeliveryState = 'disabled' | 'idle' | 'delivering' | 'paused' | 'degraded';
+
+/**
+ * UploadPlugin 与 OfflinePersistencePlugin 的统一只读投递状态。
+ *
+ * `totalPending` 按稳定 `logId` 去重，不能由 `queued + persisted` 直接相加：
+ * 同一条日志在内存队列等待时通常也保留着一份持久副本。
+ */
+export interface DeliveryStatus {
+  /** 是否安装了 UploadPlugin */
+  enabled: boolean;
+  state: DeliveryState;
+  /** 内存与持久层中尚未送达的唯一日志数 */
+  totalPending: number;
+  queued: number;
+  inFlight: number;
+  parked: number;
+  persisted: number;
+  /** 只存在于持久层、不在当前上传队列中的数量 */
+  persistedOnly: number;
+  replaying: number;
+  oldestPendingAgeMs: number;
+  consecutiveFailures: number;
+  attempts: { total: number; byReason: Record<string, number> };
+  drops: { total: number; byReason: Record<string, number> };
+  persistence: {
+    enabled: boolean;
+    backend: 'disabled' | 'initializing' | 'indexeddb' | 'localstorage' | 'noop';
+    bytes: number;
+    quotaDrops: number;
+    giveUps: number;
+    replayed: number;
+  };
+}
+
 /**
  * 内置事件的载荷类型
  *
@@ -352,7 +387,7 @@ export type ContextValue = Record<string, unknown> | ContextUpdater;
 export interface AemeathEventMap {
   /** 每条日志走完 pipeline 后触发（不受 level 过滤） */
   log: LogEntry;
-  /** 日志被丢弃（队列溢出 / 重试耗尽 / 缓存过期 / 载荷超限 …） */
+  /** 日志生命周期终止（明确拒收 / 容量淘汰 / 缓存过期 / 载荷超限 …） */
   'upload:drop': {
     log: LogEntry;
     reason: string;
@@ -371,6 +406,37 @@ export interface AemeathEventMap {
   };
   /** 日志上传成功 */
   'upload:success': { log: LogEntry; source?: string };
+  /** 一次上传尝试开始 */
+  'upload:attempt': {
+    log: LogEntry;
+    source?: string;
+    retryCount: number;
+  };
+  /** 可重试失败已安排下一次热重试 */
+  'upload:retry-scheduled': {
+    log: LogEntry;
+    priority: number;
+    source?: string;
+    reason: string;
+    retryCount: number;
+    nextAttemptAt: number;
+  };
+  /** 热重试预算耗尽，日志进入冷却等待区而非被删除 */
+  'upload:parked': {
+    log: LogEntry;
+    priority: number;
+    source?: string;
+    reason: string;
+    retryCount: number;
+    parkedUntil: number;
+    parkCount: number;
+  };
+  /** parked 日志重新进入活跃上传队列 */
+  'upload:unparked': {
+    log: LogEntry;
+    source?: string;
+    reason: string;
+  };
   /** 队列因判定断网而暂停，附暂停瞬间的队列快照 */
   'upload:paused': {
     reason: string;
@@ -381,6 +447,24 @@ export interface AemeathEventMap {
   'upload:resumed': { queued: number };
   /** 断网续传插件找不到任何可用存储后端，已降级为不落盘 */
   'upload:offline-unavailable': { reason: string };
+  /** 统一投递状态变化；旧 `upload:*` 事件继续保留 */
+  'delivery:status': DeliveryStatus;
+  'delivery:queued': AemeathEventMap['upload:enqueued'];
+  'delivery:attempt': AemeathEventMap['upload:attempt'];
+  'delivery:retry-scheduled': AemeathEventMap['upload:retry-scheduled'];
+  'delivery:parked': AemeathEventMap['upload:parked'];
+  'delivery:unparked': AemeathEventMap['upload:unparked'];
+  'delivery:delivered': AemeathEventMap['upload:success'];
+  'delivery:dropped': AemeathEventMap['upload:drop'];
+  'delivery:paused': AemeathEventMap['upload:paused'];
+  'delivery:resumed': AemeathEventMap['upload:resumed'];
+  'delivery:persisted': {
+    logId: string;
+    capturedAt: number;
+    bytes: number;
+    backend: 'indexeddb' | 'localstorage';
+  };
+  'delivery:persistence-unavailable': { reason: string };
   /** 一条超限日志被拆成多条 */
   'payload:split': { splitId: string; chunks: number; bytes: number; maxBytes: number };
   /** 单字段超限，整条日志被拒收 */
@@ -439,6 +523,11 @@ export interface AemeathInterface {
    * 普通用户场景请优先使用 hasPlugin / getPlugins。
    */
   getPluginInstance(name: string): AemeathPlugin | undefined;
+
+  /** 按稳定 logId 聚合内存队列与持久层的统一投递状态 */
+  getDeliveryStatus?(): DeliveryStatus;
+  /** 供投递类插件通知统一状态变化；没有监听器时不会构建状态快照 */
+  notifyDeliveryStatus?(): void;
 
   // 配置
   setConsoleEnabled(enabled: boolean): void;
