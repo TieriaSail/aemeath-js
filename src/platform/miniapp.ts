@@ -113,6 +113,8 @@ export function createMiniAppAdapter(
     );
   }
 
+  let lastStorageError: unknown;
+
   return {
     type: 'miniapp',
     vendor,
@@ -120,27 +122,38 @@ export function createMiniAppAdapter(
 
     storage: {
       getItem(key: string): string | null {
+        lastStorageError = undefined;
         try {
           const val = api.getStorageSync(key);
           // Empty string is treated as "no data" for consistency across vendors
           return val != null && val !== '' ? String(val) : null;
-        } catch {
+        } catch (error) {
+          lastStorageError = error;
           return null;
         }
       },
       setItem(key: string, value: string): void {
+        lastStorageError = undefined;
         try {
           api.setStorageSync(key, value);
-        } catch {
+        } catch (error) {
+          lastStorageError = error;
           // storage full or unavailable
         }
       },
       removeItem(key: string): void {
+        lastStorageError = undefined;
         try {
           api.removeStorageSync(key);
-        } catch {
+        } catch (error) {
+          lastStorageError = error;
           // unavailable
         }
+      },
+      consumeLastError(): unknown {
+        const error = lastStorageError;
+        lastStorageError = undefined;
+        return error;
       },
     },
 

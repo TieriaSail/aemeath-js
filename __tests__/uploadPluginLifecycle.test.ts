@@ -67,6 +67,96 @@ describe('UploadPlugin — 生命周期', () => {
     expect(uploadFn).toHaveBeenCalledTimes(2);
   });
 
+  it('同实例 remount：旧请求未定论前不得从缓存恢复出第二个同 logId 请求', async () => {
+    const releases: Array<(result: UploadResult) => void> = [];
+    let logId = '';
+    const uploadFn = vi.fn((log: LogEntry) => {
+      logId = log.logId;
+      return new Promise<UploadResult>((resolve) => releases.push(resolve));
+    });
+    const plugin = new UploadPlugin({
+      onUpload: uploadFn,
+      queue: { deduplicationDelay: 10 },
+      cache: { enabled: true },
+      saveOnUnload: false,
+    });
+    logger.use(plugin);
+    logger.error('mid-flight');
+    await vi.advanceTimersByTimeAsync(200);
+    expect(uploadFn).toHaveBeenCalledTimes(1);
+
+    logger.uninstall('upload');
+    logger.use(plugin);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(uploadFn).toHaveBeenCalledTimes(1);
+
+    releases[0]!({ success: true });
+    await vi.advanceTimersByTimeAsync(50);
+    expect(plugin.isInFlight(logId)).toBe(false);
+    expect(plugin.getQueueStatus().length).toBe(0);
+    await vi.advanceTimersByTimeAsync(20);
+    expect(cachedIds()).not.toContain(logId);
+  });
+
+  it('缓存恢复也必须经过分片完整性准入，残片不能直接调用 onUpload', async () => {
+    const now = Date.now();
+    localStorage.setItem(CACHE_KEY, JSON.stringify([{
+      log: {
+        logId: 'cached-fragment-1', level: 'error', message: 'partial cached split',
+        timestamp: now, tags: { splitId: 'cached-partial', splitIndex: 1, splitTotal: 2 },
+      },
+      priority: 100, retryCount: 0, timestamp: now, cachedAt: now,
+    }]));
+    const uploadFn = vi.fn(async (): Promise<UploadResult> => ({ success: true }));
+    const plugin = new UploadPlugin({
+      onUpload: uploadFn,
+      queue: { deduplicationDelay: 0 },
+      cache: { enabled: true },
+      saveOnUnload: false,
+    });
+    logger.use(plugin);
+    await vi.advanceTimersByTimeAsync(200);
+
+    expect(uploadFn).not.toHaveBeenCalled();
+    expect(plugin.getQueueStatus().pendingItems).toEqual([]);
+    expect(cachedIds()).toEqual([]);
+  });
+
+  it('缓存分片坐标完整但 logId 重复时也必须整组隔离', async () => {
+    const now = Date.now();
+    localStorage.setItem(CACHE_KEY, JSON.stringify([1, 2].map((index) => ({
+      log: {
+        logId: 'same-id', level: 'error', message: `cached-${index}`, timestamp: now,
+        tags: { splitId: 'duplicate-id-split', splitIndex: index, splitTotal: 2 },
+      },
+      priority: 100, retryCount: 0, timestamp: now, cachedAt: now,
+    }))));
+    const uploadFn = vi.fn(async (): Promise<UploadResult> => ({ success: true }));
+    const plugin = new UploadPlugin({
+      onUpload: uploadFn,
+      queue: { deduplicationDelay: 0 },
+      cache: { enabled: true },
+      saveOnUnload: false,
+    });
+    logger.use(plugin);
+    await vi.advanceTimersByTimeAsync(200);
+
+    expect(uploadFn).not.toHaveBeenCalled();
+    expect(plugin.getQueueStatus().pendingItems).toEqual([]);
+    expect(cachedIds()).toEqual([]);
+  });
+
+  it('损坏的缓存容器会被隔离，不能在每次启动重复触发恢复失败', () => {
+    localStorage.setItem(CACHE_KEY, '{broken');
+    const plugin = new UploadPlugin({
+      onUpload: async () => ({ success: true }) as UploadResult,
+      cache: { enabled: true },
+      saveOnUnload: false,
+    });
+    logger.use(plugin);
+    expect(localStorage.getItem(CACHE_KEY)).toBeNull();
+  });
+
   it('已卸载的实例不能覆盖接任实例的缓存', async () => {
     // 缓存 key 是确定性的 → 跨实例共享。飞行中的请求在卸载后落地时回写，
     // 会把新实例刚存好的队列整个抹掉。

@@ -1,5 +1,70 @@
 # Changelog
 
+## 2.5.2-beta.0
+
+Corrective reliable-delivery release for issues discovered after 2.5.1-beta.0.
+
+### Fixed
+
+- Runtime `deliveryScope` changes are rejected while offline persistence is still
+  initializing. A zero pending count is not trusted until hydration finishes, preventing
+  records from a previous tenant or project from being replayed through a newly bound target.
+- Offline replay validates SDK split groups against `splitTotal` and one-based
+  `splitIndex` values. Partial, duplicated or inconsistent groups are discarded as a unit
+  instead of sending fragments that the backend cannot reconstruct.
+- A callback's ordinary programming `TypeError` is no longer treated as proof that the
+  network is offline. Known fetch network-failure signatures still pause delivery; other
+  type errors follow the bounded, observable callback-error path.
+- KV persistence restores the previous durable record when an index update fails. Updating
+  Retry-After, parking or replay-attempt metadata can no longer erase the last good copy.
+- Unexpected offline-store initialization failures now settle on the public `noop` backend,
+  clear unusable in-memory state and emit the persistence-unavailable lifecycle signal
+  instead of reporting `initializing` forever.
+- KV and upload-cache writes/removals are verified after platform adapters return. Partial
+  clear failures preserve the undeleted index and reject instead of reporting false success.
+- Split chunks are admitted as a complete one-based group before any member can upload. Capacity
+  eviction is planned and applied atomically; groups with an already in-flight member are protected
+  because an issued request cannot be revoked. Split admission/rejection registries are bounded.
+- Retryable attempts that settle after uninstall release their final logger reference, and
+  thrown HTTP 4xx responses now follow the same terminal policy as returned HTTP results.
+- IndexedDB reports persistence only after `IDBTransaction.oncomplete`; request success alone is no
+  longer treated as durable. Malformed bodies fail cursor hydration without hanging it.
+- Storage read failures are distinct from missing records across browser and miniapp adapters.
+  Explicit clear/purge failures reject and preserve in-memory state instead of reporting success.
+- `queue.concurrency` now creates real bounded batches while half-open recovery remains a single
+  probe. Returned and thrown HTTP statuses, including redirects, use the same policy.
+- Independent logical logs remain concurrent, while members of one `splitId` are serialized. A
+  terminal chunk cancels unsent siblings, and one member's Retry-After defers the whole group.
+- Retry counters and count-like configuration are normalized to bounded integer semantics, and
+  temporary split bookkeeping expires or evicts at a hard cap.
+- Persisted records are validated as a complete envelope before use; KV fallback must prove write,
+  read and delete capability, and custom host event errors cannot change persistence outcomes.
+- Explicit purge targets IDB and KV independently without fallback masking, invalid KV index
+  counters cannot poison quota accounting, and the deprecated early-error script helper again
+  accepts its documented optional configuration.
+- `Retry-After` is now a server-owned deadline separate from SDK-local backoff. Explicit `flush()`
+  may accelerate local scheduling but cannot violate the server's rate-limit contract.
+- Cache restore, public requeue and offline replay now share one `logId`/split admission model.
+  Remount cannot issue a second unresolved request, cached fragments cannot bypass completeness,
+  oversized split declarations are rejected before the admission buffer can grow, and incomplete
+  admissions share the same hard capacity with queued and parked work.
+- Content deduplication emits a terminal `deduplicated` outcome so mirrored durable records are
+  reconciled instead of resurfacing as ghost replay work.
+- Persistence initialization is ordered as fallback reconciliation → hydrate → buffered writes.
+  Failed scans degrade to delete-only mode, and KV records left by a previous IDB fallback are
+  commit-first migrated when IndexedDB becomes available again.
+- Persist writes, Retry-After/parking/replay-attempt updates, and terminal deletes now share one
+  commit-aware retry path. Transient write intents are coalesced and bounded, replay waits for
+  metadata commits, and `clear()` is a barrier over both durable data and pending intents.
+- One canonical split-identity contract is shared by Logger, Upload, Offline and storage: a bare
+  business `splitId` no longer couples independent logs, legacy KV records are normalized during
+  hydration, and interleaved fanout groups remain atomic. Cache/live identity conflicts skip the
+  entire cached group, while cleanup uses the hydrated index even if a member body disappeared.
+- Hydration treats body reads and legacy normalization as one integrity scan; failure clears partial
+  in-memory accounting and enters the explicit persistence-unavailable state.
+- The browser IIFE remembers custom persistence locations used in the current runtime so a later
+  explicit `offlinePersistence: false` purges those locations as well as the defaults.
+
 ## 2.5.1-beta.0
 
 Completes two observability and protocol gaps left in the first reliable-delivery beta.
@@ -60,9 +125,10 @@ Completes two observability and protocol gaps left in the first reliable-deliver
   short Upload queue mirror no longer deletes a still-valid OfflinePersistence record.
 - Durable terminal deletion markers prevent a record from resurrecting after a failed
   IndexedDB/KV delete, including across a fresh module lifecycle.
-- Corrupt cache timestamps and malformed KV index elements are discarded independently
-  without hiding healthy records; a single record larger than `maxTotalBytes` is rejected
-  instead of violating the configured storage ceiling.
+- Corrupt cache timestamps and unaddressable KV index elements are isolated without hiding
+  healthy records; invalid metadata that still names a record fails closed so its body cannot
+  become an orphan. A single record larger than `maxTotalBytes` is rejected instead of violating
+  the configured storage ceiling.
 - Parked recovery now releases one half-open probe at a time, and compatibility normalization
   preserves count-only third-party status providers without fabricating `undefined` log IDs.
 - `setUpload(null)` now also stops an already-running queue loop after its current in-flight

@@ -195,13 +195,13 @@ describe('expand-scan fixes', () => {
       level: LogLevel.ERROR,
       message: 'fat',
       timestamp: Date.now(),
-      tags: { splitId, splitIndex: i, splitTotal: 3 },
+      tags: { splitId, splitIndex: i + 1, splitTotal: 3 },
     }));
 
     const upload = new UploadPlugin({
       onUpload: async (log: LogEntry): Promise<UploadResult> => {
         uploaded.push(log.tags?.splitIndex);
-        if (log.tags?.splitIndex === 0) {
+        if (log.tags?.splitIndex === 1) {
           return { success: false, shouldRetry: false, error: 'reject first' };
         }
         return { success: true };
@@ -216,10 +216,10 @@ describe('expand-scan fixes', () => {
       upload.requeue(c, { priority: 50 });
     }
     await new Promise((r) => setTimeout(r, 300));
-    expect(dropped.map((d) => d.idx).sort()).toEqual([0, 1, 2]);
+    expect(dropped.map((d) => d.idx).sort()).toEqual([1, 2, 3]);
     expect(dropped.every((d) => d.reason === 'no-retry')).toBe(true);
     // 第一片被拒后，排队兄弟被级联丢掉，不应再成功上传
-    expect(uploaded.filter((i) => i !== 0)).toHaveLength(0);
+    expect(uploaded).toEqual([1]);
     logger.destroy();
   });
 

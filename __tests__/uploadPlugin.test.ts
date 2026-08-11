@@ -47,6 +47,16 @@ describe('classifyHttpUploadResponse', () => {
       shouldRetry: false,
       retryReason: 'payload',
     });
+    expect(classifyHttpUploadResponse(409)).toMatchObject({
+      success: false,
+      shouldRetry: false,
+      retryReason: 'payload',
+    });
+    expect(classifyHttpUploadResponse(302)).toMatchObject({
+      success: false,
+      shouldRetry: false,
+      retryReason: 'payload',
+    });
   });
 });
 
@@ -283,6 +293,52 @@ describe('UploadPlugin', () => {
       expect(retryFn).toHaveBeenCalledTimes(1);
       await vi.advanceTimersByTimeAsync(200);
       expect(retryFn).toHaveBeenCalledTimes(2);
+    });
+
+    it('axios 风格抛出的 HTTP 409 与返回值分类一致，直接终态丢弃', async () => {
+      const dropped: string[] = [];
+      const conflictFn = vi.fn().mockRejectedValue(Object.assign(new Error('HTTP 409'), {
+        response: { status: 409 },
+      }));
+      const conflictPlugin = new UploadPlugin({
+        onUpload: conflictFn,
+        queue: { maxRetries: 3, deduplicationDelay: 10, retryBackoff: false },
+        cache: { enabled: false },
+        saveOnUnload: false,
+        onDrop: (_log, info) => dropped.push(info.reason),
+      });
+
+      logger.use(conflictPlugin);
+      logger.error('axios conflict');
+      await vi.advanceTimersByTimeAsync(500);
+
+      expect(conflictFn).toHaveBeenCalledTimes(1);
+      expect(dropped).toEqual(['no-retry']);
+    });
+
+    it('HTTP 302 无论由回调返回还是由 client 抛出，都必须采用同一终态策略', async () => {
+      const run = async (mode: 'return' | 'throw'): Promise<{ calls: number; drops: string[] }> => {
+        const drops: string[] = [];
+        const callback = vi.fn(async () => {
+          if (mode === 'return') return classifyHttpUploadResponse(302);
+          throw Object.assign(new Error('redirect response'), { response: { status: 302 } });
+        });
+        const redirectPlugin = new UploadPlugin({
+          onUpload: callback,
+          queue: { maxRetries: 3, deduplicationDelay: 10, retryBackoff: false },
+          cache: { enabled: false },
+          saveOnUnload: false,
+          onDrop: (_log, info) => drops.push(info.reason),
+        });
+        logger.use(redirectPlugin);
+        logger.error(`redirect-${mode}`);
+        await vi.advanceTimersByTimeAsync(500);
+        logger.uninstall('upload');
+        return { calls: callback.mock.calls.length, drops };
+      };
+
+      expect(await run('return')).toEqual({ calls: 1, drops: ['no-retry'] });
+      expect(await run('throw')).toEqual({ calls: 1, drops: ['no-retry'] });
     });
 
     it('retryAfterMs 优先于原始 Retry-After', async () => {

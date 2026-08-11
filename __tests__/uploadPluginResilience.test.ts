@@ -62,6 +62,29 @@ describe('UploadPlugin — 终止性保证', () => {
     emit.mockRestore();
   });
 
+  it('卸载后飞行中的可重试失败落定时会释放最后一个 logger 引用', async () => {
+    let rejectUpload!: (error: Error) => void;
+    const plugin = new UploadPlugin({
+      onUpload: () =>
+        new Promise((_resolve, reject) => {
+          rejectUpload = reject;
+        }),
+      queue: { deduplicationDelay: 0, maxRetries: 3 },
+      cache: { enabled: false },
+      saveOnUnload: false,
+    });
+    logger.use(plugin);
+
+    logger.error('retryable-after-uninstall');
+    await vi.advanceTimersByTimeAsync(50);
+    plugin.uninstall(logger);
+    rejectUpload(new Error('temporary failure'));
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect(plugin.getQueueStatus().inFlight).toBe(0);
+    expect((plugin as unknown as { emitTarget: unknown }).emitTarget).toBeNull();
+  });
+
   it('legacy 策略下 onUpload 抛异常必须耗尽预算后丢弃，不能无限重试', async () => {
     const uploadFn = vi.fn(async (_log: LogEntry): Promise<UploadResult> => {
       throw new Error('network down');
@@ -216,6 +239,29 @@ describe('UploadPlugin — 终止性保证', () => {
     expect(dropped).toEqual([]);
   });
 
+  it('回调自身的 TypeError 不作为断网证据', async () => {
+    const uploadFn = vi.fn(async (_log: LogEntry): Promise<UploadResult> => {
+      throw new TypeError("Cannot read properties of undefined (reading 'token')");
+    });
+    const plugin = new UploadPlugin({
+      onUpload: uploadFn,
+      queue: {
+        deduplicationDelay: 10,
+        maxRetries: 1,
+        suspectedOfflineThreshold: 1,
+      },
+      cache: { enabled: false },
+      saveOnUnload: false,
+    });
+    logger.use(plugin);
+
+    logger.error('type error in callback');
+    await vi.advanceTimersByTimeAsync(30_000);
+
+    expect(plugin.getQueueStatus()).toMatchObject({ paused: false, parked: 1 });
+    expect(plugin.getQueueStatus().attempts.byReason['callback-error']).toBeGreaterThan(0);
+  });
+
   it('AbortError 不作为断网证据，耗尽热预算后进入 parked', async () => {
     const uploadFn = vi.fn(async (): Promise<UploadResult> => {
       const error = new Error('cancelled by host');
@@ -334,6 +380,42 @@ describe('UploadPlugin — 终止性保证', () => {
     expect(dropped).toEqual([]);
     expect(plugin.getQueueStatus().length).toBe(0);
     expect(plugin.getQueueStatus().parked).toBe(1);
+  });
+
+  it('缓存分片任一 logId 已被实时日志持有时必须跳过整组，不能恢复残片', () => {
+    const now = Date.now();
+    const plugin = new UploadPlugin({
+      onUpload: async (): Promise<UploadResult> => ({ success: true }),
+      queue: { deduplicationDelay: 0 },
+      cache: { enabled: true, key: CACHE_KEY },
+      saveOnUnload: false,
+    });
+    plugin.setOnUpload(null);
+    plugin.requeue({
+      logId: 'shared-live-id',
+      level: LogLevel.ERROR,
+      message: 'live owner',
+      timestamp: now,
+    });
+    localStorage.setItem(CACHE_KEY, JSON.stringify([1, 2].map((index) => ({
+      log: {
+        logId: index === 1 ? 'shared-live-id' : 'cached-split-2',
+        level: LogLevel.ERROR,
+        message: `cached split ${index}`,
+        timestamp: now,
+        tags: { splitId: 'cached-identity-conflict', splitIndex: index, splitTotal: 2 },
+      },
+      priority: 50,
+      retryCount: 0,
+      timestamp: now,
+      cachedAt: now,
+    }))));
+
+    logger.use(plugin);
+
+    expect(plugin.getQueueStatus()).toMatchObject({ length: 1, admitting: 0 });
+    expect(plugin.getQueueStatus().pendingItems?.map((item) => item.logId))
+      .toEqual(['shared-live-id']);
   });
 
   it('parked 状态会跨重载恢复，到期后只重新投递一次', async () => {

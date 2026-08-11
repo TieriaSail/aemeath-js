@@ -361,6 +361,8 @@ export interface DeliveryStatus {
   inFlight: number;
   parked: number;
   persisted: number;
+  /** 尚未提交到持久层、正在内存退避重试的写意图数 */
+  buffered: number;
   /** 只存在于持久层、不在当前上传队列中的数量 */
   persistedOnly: number;
   replaying: number;
@@ -372,6 +374,7 @@ export interface DeliveryStatus {
     enabled: boolean;
     backend: 'disabled' | 'initializing' | 'indexeddb' | 'localstorage' | 'noop';
     bytes: number;
+    buffered: number;
     quotaDrops: number;
     giveUps: number;
     replayed: number;
@@ -420,6 +423,8 @@ export interface AemeathEventMap {
     reason: string;
     retryCount: number;
     nextAttemptAt: number;
+    /** 服务端协议规定的最早重试时刻；显式 flush 也不得绕过。 */
+    serverNotBefore?: number;
   };
   /** 热重试预算耗尽，日志进入冷却等待区而非被删除 */
   'upload:parked': {
@@ -429,6 +434,8 @@ export interface AemeathEventMap {
     reason: string;
     retryCount: number;
     parkedUntil: number;
+    /** 服务端协议规定的最早重试时刻；显式 flush 也不得绕过。 */
+    serverNotBefore?: number;
     parkCount: number;
   };
   /** parked 日志重新进入活跃上传队列 */

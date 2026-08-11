@@ -331,6 +331,10 @@ logger.use(
 每次只唤醒一条作为恢复探测。`parked` 与活跃队列共用 `queue.maxSize`，所以总内存
 仍然有界；容量不足时才会以 `queue-overflow` 明确淘汰。
 
+queued、parked 与未收齐的分片准入项都消耗同一份容量预算；SDK 分片按整组接纳和
+淘汰。只有同时带 `splitIndex` 或 `splitTotal` 的 `tags.splitId` 才启用原子组语义，
+裸 `splitId` 仍是普通业务标签，不会把独立日志绑定在一起。
+
 链路长时间不可用时，队列会涨到 `maxSize` 并按优先级从低到高溢出丢弃
 （原因 `queue-overflow`），这是有界的、可观测的降级，不是静默丢失。
 
@@ -364,6 +368,9 @@ upload: async (log) => {
 delta-seconds（如 `120`）和 HTTP-date，并取服务端等待时间与本地指数退避中的较大值。
 如果业务已经完成换算，可继续传 `retryAfterMs`；两者同时存在时它优先。
 
+`flush()` 可以跳过 SDK 自己的本地退避和本地网络暂停，但绝不会越过服务端拥有的
+`Retry-After` 截止时间。
+
 #### 回调抛异常时怎么判定
 
 没有 `retryReason` 的话，SDK 只能靠抛出的异常来猜，而且只在拿到**正面证据**时
@@ -371,7 +378,7 @@ delta-seconds（如 `120`）和 HTTP-date，并取服务端等待时间与本地
 
 | 抛出的值 | 判定为 |
 | --- | --- |
-| `TypeError`（fetch 网络失败抛的就是它） | `network` |
+| 带已知 fetch 网络文案的 `TypeError`（如 `Failed to fetch`、`Load failed`、`NetworkError …`） | `network` |
 | `TimeoutError`，以及插件自己的上传超时 | `network` |
 | `AbortError` | `cancelled`（不作为整条链路断开的证据） |
 | `code` 为 `ERR_NETWORK`、`ECONNRESET`、`ETIMEDOUT` 等 | `network` |
@@ -379,7 +386,7 @@ delta-seconds（如 `120`）和 HTTP-date，并取服务端等待时间与本地
 | 异常 `response.status` 为 401/403 | `auth`（可恢复，例如刷新凭证） |
 | 异常 `response.status` 为 429 | `rate-limit`；常见 `response.headers` 形态中的 `Retry-After` 会自动解析 |
 | 异常上挂着其它 `response`（axios / ky / got） | `server` |
-| 其余一切，包括你回调里自己的 bug | `callback-error` |
+| 其余一切，包括回调自身产生的普通编程 `TypeError` | `callback-error` |
 
 这个不对称是刻意的。把服务端失败误判成 `network`，整个队列会暂停，上报静默停摆；
 把网络失败误判成其它可恢复原因，只会消耗热重试预算并进入 `parked`，不会暂停整条
@@ -397,6 +404,7 @@ initAemeath({
   onDrop: (log, info) => {
     // info.reason: 'no-retry' | 'queue-overflow' | 'cache-expired'
     //            | 'storage-quota' | 'storage-rejected' | 'payload-too-large'
+    //            | 'deduplicated'
     // max-retries / offline-give-up 只会出现在 legacy 兼容链路
     console.warn('[log dropped]', info.reason, log.logId);
   },
@@ -416,6 +424,7 @@ getAemeath().on('upload:drop', ({ log, reason }) => { /* ... */ });
 | `storage-quota`     | 离线持久层配额已满                                  |
 | `storage-rejected`  | 日志无法被持久化引擎接受（非配额问题）              |
 | `offline-give-up`   | legacy 补传链路反复失败，放弃该条                   |
+| `deduplicated`      | SDK 内容去重选择了另一个 `logId` 作为保留项          |
 
 ### 可用事件
 
@@ -553,8 +562,8 @@ logger.use(
 | `onUpload`                        | `(log: LogEntry) => Promise<UploadResult>` | **必需**                  | 上传回调函数（返回 UploadResult）           |
 | `getPriority`                     | `(log: LogEntry) => number`                | 按 level                  | 优先级回调                                  |
 | `onDrop`                          | `(log, info) => void`                      | —                         | 日志被丢弃时的回调（v2.5.0+）               |
-| `queue.maxSize`                   | `number`                                   | `100`                     | 队列最大长度                                |
-| `queue.concurrency`               | `number`                                   | `1`                       | 并发上传数                                  |
+| `queue.maxSize`                   | `number`                                   | `100`                     | queued、parked 与未收齐分片准入项共用的总上限 |
+| `queue.concurrency`               | `number`                                   | `1`                       | 逻辑日志并发数；同一 `splitId` 的分片保持串行 |
 | `queue.maxRetries`                | `number`                                   | `3`                       | 每周期热重试次数，耗尽后进入 parked         |
 | `queue.uploadInterval`            | `number`                                   | `30000`                   | 自动上传间隔（毫秒）                        |
 | `queue.offlinePolicy`             | `'pause' \| 'legacy'`                      | `'pause'`                 | 断网策略（v2.5.0+）                         |

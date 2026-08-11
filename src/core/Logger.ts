@@ -23,6 +23,7 @@ import type {
 import type { PlatformAdapter } from '../platform/types';
 import type { UploadQueueStatus } from '../plugins/UploadPlugin';
 import type { OfflinePersistenceStatus } from '../plugins/OfflinePersistencePlugin';
+import { getSdkSplitId } from '../utils/splitIdentity';
 
 /**
  * 一条日志经 afterLog 扇出后最多保留多少条
@@ -51,36 +52,37 @@ const DELIVERY_EVENT_ALIASES: Readonly<Record<string, string>> = {
 function truncateFanoutPreservingSplits(entries: LogEntry[], max: number): LogEntry[] {
   if (entries.length <= max) return entries;
 
-  const result: LogEntry[] = [];
-  let i = 0;
-  while (i < entries.length) {
-    const current = entries[i]!;
-    const splitId = current.tags?.splitId;
+  // splitId 是全局组身份，不是“相邻元素游程”。插件完全可能交错返回
+  // A1/B1/A2/B2；按相邻片段截断会把每一片都误当完整组。先建立原子单元，
+  // 同时保留各组第一次出现的相对顺序，再做容量裁剪。
+  const units: LogEntry[][] = [];
+  const splitUnits = new Map<string, LogEntry[]>();
+  for (const entry of entries) {
+    const splitId = getSdkSplitId(entry);
     if (splitId === undefined) {
-      if (result.length + 1 > max) break;
-      result.push(current);
-      i++;
+      units.push([entry]);
       continue;
     }
-
-    const sid = String(splitId);
-    const group: LogEntry[] = [];
-    let j = i;
-    while (j < entries.length && String(entries[j]!.tags?.splitId ?? '') === sid) {
-      group.push(entries[j]!);
-      j++;
+    let unit = splitUnits.get(splitId);
+    if (!unit) {
+      unit = [];
+      splitUnits.set(splitId, unit);
+      units.push(unit);
     }
+    unit.push(entry);
+  }
 
-    if (result.length + group.length > max) {
+  const result: LogEntry[] = [];
+  for (const unit of units) {
+    if (result.length + unit.length > max) {
       // 单组本身就超过上限：整组放行，避免"本意是拆分保留"却静默丢光。
       // 多组场景下放不下的后续组整组丢弃，绝不留下残片。
       if (result.length === 0) {
-        return group;
+        return unit;
       }
       break;
     }
-    result.push(...group);
-    i = j;
+    result.push(...unit);
   }
   return result;
 }
@@ -249,9 +251,9 @@ export class AemeathLogger implements AemeathInterface {
           // 用户写 beforeSend 时想的是"这条日志不要发"，可拆分之后钩子是按分片
           // 逐个调用的：只拦住带敏感字段的那一片，另外两片照发不误，
           // 既漏了数据又在后端留下拼不回来的碎片。
-          const splitId = current.tags?.splitId;
+          const splitId = getSdkSplitId(current);
           if (splitId !== undefined) {
-            (suppressedSplitIds ??= new Set()).add(String(splitId));
+            (suppressedSplitIds ??= new Set()).add(splitId);
           }
           continue;
         }
@@ -291,7 +293,7 @@ export class AemeathLogger implements AemeathInterface {
       // 而且用户的本意本来就是"这条日志不要发"
       if (suppressedSplitIds) {
         const kept = entries.filter(
-          (it) => !suppressedSplitIds.has(String(it.tags?.splitId ?? '')),
+          (it) => !suppressedSplitIds.has(getSdkSplitId(it) ?? ''),
         );
         if (kept.length !== entries.length) {
           this.debugWarn(
@@ -746,6 +748,7 @@ export class AemeathLogger implements AemeathInterface {
     const inFlight = count(upload?.inFlight);
     const parked = count(upload?.parked);
     const persisted = count(offline?.pending);
+    const buffered = count(offline?.buffered);
     const replaying = count(offline?.replaying);
     const consecutiveFailures = count(upload?.consecutiveFailures);
     const ids = new Set<string>();
@@ -760,7 +763,7 @@ export class AemeathLogger implements AemeathInterface {
       }
     }
     for (const item of offlineItems) {
-      if (!ids.has(item.logId)) persistedOnly++;
+      if (item.state !== 'buffering' && !ids.has(item.logId)) persistedOnly++;
       ids.add(item.logId);
       if (Number.isFinite(item.capturedAt)) {
         oldestCapturedAt = Math.min(oldestCapturedAt, item.capturedAt);
@@ -769,9 +772,13 @@ export class AemeathLogger implements AemeathInterface {
     // 2.5.1 之前的第三方状态提供器可能只有计数、没有稳定 logId。
     // 这部分不能伪造 ID，也不能直接丢成 0；按两层计数的较大缺口保守去重。
     const anonymousUpload = Math.max(0, queued + inFlight + parked - uploadItems.length);
-    const anonymousOffline = Math.max(0, persisted - offlineItems.length);
+    const persistedItems = offlineItems.filter((item) => item.state !== 'buffering').length;
+    const bufferedItems = offlineItems.filter((item) => item.state === 'buffering').length;
+    const anonymousPersisted = Math.max(0, persisted - persistedItems);
+    const anonymousBuffered = Math.max(0, buffered - bufferedItems);
+    const anonymousOffline = anonymousPersisted + anonymousBuffered;
     const anonymousPending = Math.max(anonymousUpload, anonymousOffline);
-    persistedOnly += Math.max(0, anonymousOffline - anonymousUpload);
+    persistedOnly += Math.max(0, anonymousPersisted - anonymousUpload);
 
     return {
       enabled: !!uploadPlugin,
@@ -779,7 +786,7 @@ export class AemeathLogger implements AemeathInterface {
         ? 'disabled'
         : upload?.paused === true
           ? 'paused'
-          : backend === 'noop' || parked > 0 || consecutiveFailures > 0
+          : backend === 'noop' || parked > 0 || buffered > 0 || consecutiveFailures > 0
             ? 'degraded'
             : ids.size + anonymousPending > 0
               ? 'delivering'
@@ -789,6 +796,7 @@ export class AemeathLogger implements AemeathInterface {
       inFlight,
       parked,
       persisted,
+      buffered,
       persistedOnly,
       replaying,
       oldestPendingAgeMs: oldestCapturedAt === Infinity
@@ -801,6 +809,7 @@ export class AemeathLogger implements AemeathInterface {
         enabled: !!offlinePlugin,
         backend,
         bytes: count(offline?.bytes),
+        buffered,
         quotaDrops: count(offline?.quotaDrops),
         giveUps: count(offline?.giveUps),
         replayed: count(offline?.replayed),

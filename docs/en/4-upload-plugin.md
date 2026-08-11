@@ -298,6 +298,10 @@ without being mistaken for a device outage. Once that budget is gone, the log mo
 Only one due item is woken as a recovery probe. Active and parked items share `queue.maxSize`,
 so memory remains bounded; capacity eviction is reported as `queue-overflow`.
 
+Queued, parked, and incomplete split-admission entries all consume that same capacity budget.
+SDK split groups are admitted and evicted atomically. A `tags.splitId` without `splitIndex` or
+`splitTotal` remains an ordinary business tag and does not couple independent logs.
+
 If the channel stays down, the queue grows to `maxSize` and overflows from the lowest
 priority upward (reason `queue-overflow`). That is a bounded, observable degradation —
 not a silent loss.
@@ -334,6 +338,9 @@ both delta-seconds (such as `120`) and HTTP-date, then waits for the greater of 
 delay and local backoff. If your integration already converted it, keep using
 `retryAfterMs`; it takes precedence when both fields are present.
 
+`flush()` can bypass SDK-local backoff and a local network pause, but it never bypasses
+the server-owned `Retry-After` deadline.
+
 #### What happens when your callback throws
 
 Without `retryReason`, a thrown error is all the SDK has to go on, so it guesses — and it
@@ -341,7 +348,7 @@ only concludes "offline" on **positive evidence**:
 
 | Thrown value | Classified as |
 | --- | --- |
-| `TypeError` (what `fetch` throws on network failure) | `network` |
+| `TypeError` with a known fetch network message (`Failed to fetch`, `Load failed`, `NetworkError …`) | `network` |
 | `TimeoutError`, or the plugin's own upload timeout | `network` |
 | `AbortError` | `cancelled` (not evidence that the whole channel is down) |
 | Error with `code` of `ERR_NETWORK`, `ECONNRESET`, `ETIMEDOUT`, … | `network` |
@@ -349,7 +356,7 @@ only concludes "offline" on **positive evidence**:
 | `response.status` 401/403 | `auth` (recoverable, e.g. after refreshing credentials) |
 | `response.status` 429 | `rate-limit`; a `Retry-After` value in common `response.headers` shapes is parsed automatically |
 | Anything carrying another `response` (axios/ky/got) | `server` |
-| Anything else, including bugs in your own callback | `callback-error` |
+| Anything else, including ordinary programming `TypeError`s in your callback | `callback-error` |
 
 The asymmetry is intentional. Misreading a server failure as `network` pauses the whole
 queue and takes log upload silently dark; classifying a network failure as another
@@ -369,6 +376,7 @@ initAemeath({
   onDrop: (log, info) => {
     // info.reason: 'no-retry' | 'queue-overflow' | 'cache-expired'
     //            | 'storage-quota' | 'storage-rejected' | 'payload-too-large'
+    //            | 'deduplicated'
     // max-retries / offline-give-up are legacy compatibility paths only
     console.warn('[log dropped]', info.reason, log.logId);
   },
@@ -388,6 +396,7 @@ getAemeath().on('upload:drop', ({ log, reason }) => { /* ... */ });
 | `storage-quota`     | Offline store write failed or quota exhausted                       |
 | `storage-rejected`  | Entry rejected by persistence for a non-quota reason                 |
 | `offline-give-up`   | Legacy replay path failed repeatedly and abandoned the entry        |
+| `deduplicated`      | SDK content deduplication selected another `logId` as the winner      |
 
 ### Available events
 
@@ -527,8 +536,8 @@ logger.use(
 | `onUpload`                        | `(log: LogEntry) => Promise<UploadResult>` | **Required**              | Upload callback                              |
 | `getPriority`                     | `(log: LogEntry) => number`                | By level                  | Priority callback                            |
 | `onDrop`                          | `(log, info) => void`                      | —                         | Called when a log is dropped (v2.5.0+)       |
-| `queue.maxSize`                   | `number`                                   | `100`                     | Max queue size                               |
-| `queue.concurrency`               | `number`                                   | `1`                       | Concurrent uploads                           |
+| `queue.maxSize`                   | `number`                                   | `100`                     | Shared bound for queued, parked, and incomplete split-admission entries |
+| `queue.concurrency`               | `number`                                   | `1`                       | Concurrent logical logs; chunks sharing one `splitId` remain serial |
 | `queue.maxRetries`                | `number`                                   | `3`                       | Hot retries per cycle before parking         |
 | `queue.uploadInterval`            | `number`                                   | `30000`                   | Upload interval (ms)                         |
 | `queue.offlinePolicy`             | `'pause' \| 'legacy'`                      | `'pause'`                 | Offline strategy (v2.5.0+)                   |

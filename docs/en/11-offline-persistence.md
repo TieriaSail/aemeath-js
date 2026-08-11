@@ -107,6 +107,11 @@ deadline (or an explicit `flush()`) leads to success; an `online` hint does not 
 that deadline. `maxReplayAttempts` remains as a legacy
 compatibility guard; parked transitions do not increment it.
 
+**Split identity is structural.** Only `tags.splitId` accompanied by `splitIndex` or
+`splitTotal` receives atomic group handling. A bare `splitId` remains a normal business tag,
+so independent logs are never deferred, evicted, or deleted as accidental siblings. Legacy KV
+records written with the old interpretation are normalized once during hydration.
+
 ---
 
 ## 🕐 Timing metadata on replayed logs
@@ -154,8 +159,8 @@ initAemeath({
 | ------------------- | ----------------------------------------- | -------------------- | ----------------------------------------------- |
 | `storage`           | `'auto' \| 'indexeddb' \| 'localstorage'` | `'auto'`             | Preference; still falls back if unavailable     |
 | `ttl`               | `number`                                  | 7 days               | Measured from the moment it was persisted       |
-| `maxEntries`        | `number`                                  | IDB 500 / KV 100     | **Disk** max records; oldest evicted (memory queue unaffected) |
-| `maxTotalBytes`     | `number`                                  | IDB 2MB / KV 512KB   | **Disk** max bytes; oldest evicted (memory queue unaffected) |
+| `maxEntries`        | `number`                                  | IDB 500 / KV 100     | Durable record limit and basis for the bounded transient write-intent buffer |
+| `maxTotalBytes`     | `number`                                  | IDB 2MB / KV 512KB   | Durable byte limit and basis for the bounded transient write-intent buffer |
 | `replayBatchSize`   | `number`                                  | `10`                 | Prevents a thundering herd on recovery          |
 | `maxReplayAttempts` | `number`                                  | `3`                  | Legacy replay guard; parked does not count      |
 | `replayTimeoutMs`   | `number`                                  | `60000`              | Requeue window when neither success nor failure arrives |
@@ -185,6 +190,12 @@ IndexedDB ──unavailable──► localStorage ──unavailable──► noo
 async API that doesn't block the main thread; per-key reads and writes instead of
 reserializing the whole collection every time. localStorage is only a fallback.
 
+If a previous launch fell back to localStorage while IndexedDB was temporarily unavailable,
+the next healthy launch migrates those KV records into IndexedDB commit-first and deletes each
+KV copy only after the IDB transaction commits. Hydration and replay start after reconciliation;
+an integrity or migration failure enters a delete-only degraded state instead of treating a
+partially known store as empty.
+
 Real cases that hit the fallback: IndexedDB `open()` hangs in Safari private mode
 (we time out after 2 seconds), some WebViews disable IndexedDB entirely, and an
 explicit `storage: 'localstorage'`.
@@ -213,15 +224,17 @@ never silently:
 Eviction is by persist time rather than priority: offline logs usually share the
 same priority, so chronological order is the only stable, predictable criterion.
 
-### `maxEntries` / `maxTotalBytes` only bound disk
+### Persistence budget vs upload queue
 
-These options cap **what is persisted to the offline store**, not the in-memory
+These options cap committed offline records and also derive a bounded in-memory budget for
+uncommitted write intents while storage is temporarily failing. They do not cap the separate
 `UploadPlugin` queue:
 
 | Scenario | Who decides | Outcome |
 |---|---|---|
 | Same tab: offline → online (page stays open) | Memory queue | Entries evicted from disk **may still upload from memory** |
 | After close / reload (only disk left) | `maxEntries` / `maxTotalBytes` | Eviction sticks; oldest entries are not replayed |
+| Transient storage failure | Persistence write-intent buffer | Writes retry with exponential backoff; overflow is reported, never allowed to grow without bound |
 
 This split is intentional: a brief outage with the tab still open should not
 throw away in-memory logs just because the disk budget filled up. Disk quota
@@ -258,15 +271,16 @@ plugin.getStatus();
 // {
 //   backend: 'indexeddb',  // or 'localstorage' / 'noop' / 'initializing'
 //   pending: 42,           // awaiting replay
+//   buffered: 2,           // writes/metadata updates not committed yet
 //   bytes: 128374,         // estimated footprint
 //   replaying: 3,          // currently in flight
 //   quotaDrops: 0,         // dropped due to quota
 //   giveUps: 0,            // legacy replay failures that were abandoned
 //   replayed: 137,         // successfully replayed
-//   items: [{ logId, capturedAt, state: 'persisted' | 'replaying' }],
+//   items: [{ logId, capturedAt, state: 'persisted' | 'replaying' | 'buffering' }],
 // }
 
-await plugin.clear(); // wipe all persisted copies
+await plugin.clear(); // wipe persisted copies and uncommitted write/delete intents
 ```
 
 Do not add the Upload and persistence counts when you need the global picture: the same
@@ -275,7 +289,7 @@ Do not add the Upload and persistence counts when you need the global picture: t
 
 ```typescript
 const status = getAemeath().getDeliveryStatus();
-// { totalPending, queued, inFlight, parked, persisted, persistedOnly, replaying, ... }
+// { totalPending, queued, inFlight, parked, persisted, buffered, persistedOnly, replaying, ... }
 ```
 
 Subscribe with `logger.on('delivery:status', listener)` for unified snapshots;
@@ -290,9 +304,11 @@ Subscribe with `logger.on('delivery:status', listener)` for unified snapshots;
 so one entry may be replayed by several tabs at once. The backend must deduplicate by
 `logId` and treat duplicates as success.
 
-**Best effort, not transactional.** IndexedDB writes are async; if the process is
-killed (a crash, or shutting down right after `window.close()`), the last few
-in-flight writes are lost.
+**Commit-aware, but still best effort at process shutdown.** An IndexedDB operation is reported
+successful only after its transaction completes; a request-level success is not enough. The SDK
+still cannot finish work that the browser terminates before commit, and the KV fallback cannot make
+its separate record/index keys one native transaction. Failed operations remain observable and are
+not reported as durable.
 
 **Give each instance its own `dbName` and `key` when a page runs several.** `dbName`
 identifies IndexedDB while `key` identifies the KV fallback. If two instances share either

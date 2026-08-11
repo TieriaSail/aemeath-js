@@ -10,7 +10,8 @@ import {
   OfflinePersistencePlugin,
   purgeOfflinePersistenceStorage,
 } from '../src/plugins/OfflinePersistencePlugin';
-import type { LogEntry } from '../src/types';
+import * as storeModule from '../src/plugins/offline/OfflineStore';
+import { LogLevel, type LogEntry } from '../src/types';
 
 function setOnLine(value: boolean): void {
   Object.defineProperty(window.navigator, 'onLine', {
@@ -92,6 +93,49 @@ describe('OfflinePersistencePlugin', () => {
     expect(offline.getStatus().backend).toBe('indexeddb');
   });
 
+  it('损坏存储中的负 replayAttempts 必须归零，不能扩张补传预算', async () => {
+    const now = Date.now();
+    const log: LogEntry = {
+      logId: 'negative-replay-budget',
+      level: LogLevel.ERROR,
+      message: 'normalize retry budget',
+      timestamp: now,
+    };
+    const record = {
+      logId: log.logId,
+      storedAt: now,
+      capturedAt: now,
+      priority: 1,
+      bytes: 100,
+      replayAttempts: -99,
+      splitId: null,
+      log,
+    };
+    vi.spyOn(storeModule, 'createOfflineStore').mockResolvedValue({
+      backend: 'indexeddb',
+      put: vi.fn(),
+      get: vi.fn(async () => record),
+      delete: vi.fn(),
+      loadMeta: vi.fn(async () => [{ ...record, log: undefined }]),
+      clear: vi.fn(),
+      close: vi.fn(),
+    } as never);
+    upload = new UploadPlugin({
+      onUpload: uploadFn as never,
+      cache: { enabled: false },
+      saveOnUnload: false,
+    });
+    upload.setOnUpload(null);
+    offline = new OfflinePersistencePlugin();
+    logger.use(upload);
+    logger.use(offline);
+    await offline.whenReady();
+
+    const meta = (offline as unknown as { index: Map<string, { replayAttempts: number }> })
+      .index.get(log.logId);
+    expect(meta?.replayAttempts).toBe(0);
+  });
+
   it('宿主没有 IndexedDB 时降级到 KV 存储', async () => {
     const saved = globalThis.indexedDB;
     // @ts-expect-error 故意制造不支持的宿主
@@ -104,12 +148,42 @@ describe('OfflinePersistencePlugin', () => {
     }
   });
 
+  it('IndexedDB 恢复后会提交式迁移上次降级到 KV 的日志，不能把旧后端搁置', async () => {
+    const saved = globalThis.indexedDB;
+    const dbName = `fallback-migration-${Math.random()}`;
+    const key = `fallback-migration-${Math.random()}`;
+    // @ts-expect-error 故意模拟上次启动 IDB 不可用
+    delete globalThis.indexedDB;
+    online = false;
+    setOnLine(false);
+    await installWithDb(dbName, { key });
+    logger.error('survive backend recovery');
+    await settle(30);
+    const logId = offline.getStatus().items[0]?.logId;
+    expect(logId).toBeTruthy();
+    expect(offline.getStatus().backend).toBe('localstorage');
+
+    logger.destroy();
+    globalThis.indexedDB = saved;
+    online = true;
+    setOnLine(true);
+    uploadFn.mockClear();
+    logger = new AemeathLogger({ enableConsole: false });
+    await installWithDb(dbName, { key });
+    await settle(30);
+
+    expect(offline.getStatus().backend).toBe('indexeddb');
+    expect(uploadFn).toHaveBeenCalledTimes(1);
+    expect((uploadFn.mock.calls[0]![0] as LogEntry).logId).toBe(logId);
+    expect(localStorage.getItem(`${key}:r:${logId}`)).toBeNull();
+  });
+
   it('KV 索引中的坏项不会遮蔽后面的健康记录', async () => {
     const key = `corrupt-index-${Math.random()}`;
     const now = Date.now();
     const log: LogEntry = {
       logId: 'healthy-after-null',
-      level: 'error' as LogEntry['level'],
+      level: LogLevel.ERROR,
       message: 'must still replay',
       timestamp: now,
     };
@@ -202,6 +276,63 @@ describe('OfflinePersistencePlugin', () => {
     await offline.clear();
   });
 
+  it('显式清盘失败必须 reject，不能谎报持久化副本已经删除', async () => {
+    const clear = vi.fn().mockRejectedValue(new Error('disk removal failed'));
+    vi.spyOn(storeModule, 'createOfflineStore').mockResolvedValue({
+      backend: 'localstorage',
+      put: vi.fn(),
+      get: vi.fn(),
+      delete: vi.fn(),
+      loadMeta: vi.fn(),
+      clear,
+      close: vi.fn(),
+    });
+
+    await expect(purgeOfflinePersistenceStorage(logger.platform, {
+      storage: 'localstorage',
+      key: `purge-failure-${Math.random()}`,
+    })).rejects.toThrow('disk removal failed');
+    expect(clear).toHaveBeenCalledOnce();
+  });
+
+  it('清理 IDB 失败后仍清理 KV，但最终必须 reject，不能被后端降级掩盖', async () => {
+    const clearKv = vi.fn().mockResolvedValue(undefined);
+    vi.spyOn(storeModule, 'createOfflineStore').mockImplementation(async (options) => {
+      expect(options.allowFallback).toBe(false);
+      if (options.preference === 'indexeddb') throw new Error('IDB clear unavailable');
+      return {
+        backend: 'localstorage',
+        put: vi.fn(),
+        get: vi.fn(),
+        delete: vi.fn(),
+        loadMeta: vi.fn(),
+        clear: clearKv,
+        close: vi.fn(),
+      };
+    });
+
+    await expect(purgeOfflinePersistenceStorage(logger.platform, {
+      key: `purge-exact-${Math.random()}`,
+    })).rejects.toThrow('IDB clear unavailable');
+    expect(clearKv).toHaveBeenCalledOnce();
+  });
+
+  it('实例 clear 失败必须 reject，并保留内存待投递状态', async () => {
+    online = false;
+    setOnLine(false);
+    await install();
+    logger.error('must remain pending');
+    await settle();
+    expect(offline.getStatus().pending).toBe(1);
+
+    const store = (offline as unknown as { store: { clear(): Promise<void> } }).store;
+    const originalClear = store.clear.bind(store);
+    store.clear = vi.fn().mockRejectedValue(new Error('clear transaction aborted'));
+    await expect(offline.clear()).rejects.toThrow('clear transaction aborted');
+    expect(offline.getStatus().pending).toBe(1);
+    store.clear = originalClear;
+  });
+
   it('断网期间的日志会落盘，联网后自动补传', async () => {
     await install();
 
@@ -277,6 +408,25 @@ describe('OfflinePersistencePlugin', () => {
     expect(offline.getStatus().pending).toBe(0);
   });
 
+  it('恢复时被内容去重的日志也必须产生终态，不能在磁盘里留下幽灵副本', async () => {
+    online = false;
+    setOnLine(false);
+    await install();
+
+    logger.error('same while offline');
+    logger.error('same while offline');
+    await settle(30);
+    expect(offline.getStatus().pending).toBe(2);
+
+    online = true;
+    setOnLine(true);
+    window.dispatchEvent(new Event('online'));
+    await settle(50);
+
+    expect(uploadFn).toHaveBeenCalledTimes(1);
+    expect(offline.getStatus().pending).toBe(0);
+  });
+
   it('可恢复失败进入 parked 时保留磁盘副本，恢复后只上传一次', async () => {
     const dropped: string[] = [];
     uploadFn.mockResolvedValue({
@@ -331,6 +481,149 @@ describe('OfflinePersistencePlugin', () => {
 
     expect(offline.getStatus().pending).toBeLessThanOrEqual(2);
     expect(dropped).toContain('storage-quota');
+  });
+
+  it('完整 split 组放不进持久化配额时整组拒绝，不能只留下尾部分片', async () => {
+    const dropped: Array<{ id: string; reason: string }> = [];
+    logger.on('upload:drop', ((payload: { log: LogEntry; reason: string }) => {
+      if (payload.log.tags?.splitId === 'offline-capacity-group') {
+        dropped.push({ id: payload.log.logId, reason: payload.reason });
+      }
+    }) as never);
+    await install({ maxEntries: 2 });
+    setOnLine(false);
+
+    const chunks: LogEntry[] = Array.from({ length: 3 }, (_, index) => ({
+      logId: `offline-capacity-${index}`,
+      level: LogLevel.ERROR,
+      message: 'split capacity',
+      timestamp: Date.now(),
+      tags: {
+        splitId: 'offline-capacity-group',
+        splitIndex: index + 1,
+        splitTotal: 3,
+      },
+    }));
+    upload.requeue(chunks);
+    await settle(40);
+
+    expect(offline.getStatus().pending).toBe(0);
+    expect(dropped.filter((item) => item.reason === 'storage-quota').map((item) => item.id).sort())
+      .toEqual(chunks.map((item) => item.logId).sort());
+  });
+
+  it('split 组任一成员仍受 Retry-After 约束时不补传其它成员', async () => {
+    const dbName = `split-retry-after-${Math.random()}`;
+    upload = new UploadPlugin({
+      onUpload: uploadFn as never,
+      queue: { offlinePolicy: 'pause', deduplicationDelay: 0 },
+      cache: { enabled: false },
+      saveOnUnload: false,
+    });
+    upload.setOnUpload(null);
+    offline = new OfflinePersistencePlugin({ dbName });
+    logger.use(upload);
+    logger.use(offline);
+    await offline.whenReady();
+
+    const now = Date.now();
+    const makeChunk = (logId: string, splitIndex: number): LogEntry => ({
+      logId,
+      level: LogLevel.ERROR,
+      message: 'split retry-after',
+      timestamp: now,
+      tags: { splitId: 'retry-after-group', splitIndex, splitTotal: 2 },
+    });
+    logger.emit('upload:retry-scheduled', {
+      log: makeChunk('retry-after-a', 1),
+      priority: 100,
+      reason: 'server',
+      retryCount: 1,
+      nextAttemptAt: now - 1,
+    });
+    logger.emit('upload:retry-scheduled', {
+      log: makeChunk('retry-after-b', 2),
+      priority: 100,
+      reason: 'rate-limit',
+      retryCount: 1,
+      nextAttemptAt: now + 300,
+    });
+    await offline.whenReady();
+    logger.emit('upload:resumed', { queued: 0 });
+    await settle(10);
+
+    expect(upload.getQueueStatus().pendingItems).toHaveLength(0);
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    await settle(15);
+    expect(upload.getQueueStatus().pendingItems?.map((item) => item.logId).sort())
+      .toEqual(['retry-after-a', 'retry-after-b']);
+  });
+
+  it('重启只剩部分 split 组时整组丢弃，不能补传残片', async () => {
+    const dbName = `partial-split-${Math.random()}`;
+    await installWithDb(dbName);
+    upload.setOnUpload(null);
+
+    const now = Date.now();
+    for (const index of [1, 2]) {
+      logger.emit('upload:retry-scheduled', {
+        log: {
+          logId: `partial-${index}`,
+          level: LogLevel.ERROR,
+          message: `partial ${index}`,
+          timestamp: now,
+          tags: { splitId: 'partial-group', splitIndex: index, splitTotal: 2 },
+        },
+        priority: 100,
+        reason: 'server',
+        nextAttemptAt: now - 1,
+      });
+    }
+    await offline.whenReady();
+    const store = (offline as unknown as {
+      store: { delete(logId: string): Promise<void> };
+    }).store;
+    await store.delete('partial-1');
+
+    await restart(dbName);
+    await settle(20);
+
+    expect(uploadFn).not.toHaveBeenCalled();
+    expect(offline.getStatus().pending).toBe(0);
+  });
+
+  it('分片正文缺失时整组删除仍以权威索引为准，不能留下幽灵成员', async () => {
+    await install();
+    upload.setOnUpload(null);
+    const now = Date.now();
+    for (const index of [1, 2]) {
+      logger.emit('upload:retry-scheduled', {
+        log: {
+          logId: `stale-body-${index}`,
+          level: LogLevel.ERROR,
+          message: `stale body ${index}`,
+          timestamp: now,
+          tags: { splitId: 'stale-body-group', splitIndex: index, splitTotal: 2 },
+        },
+        priority: 100,
+        reason: 'server',
+        nextAttemptAt: now - 1,
+      });
+    }
+    await offline.whenReady();
+    const store = (offline as unknown as {
+      store: { delete(logId: string): Promise<void>; get(logId: string): Promise<unknown> };
+    }).store;
+    await store.delete('stale-body-1');
+
+    const removed = await (offline as unknown as {
+      deleteSplitGroup(logId: string, reason: 'cache-expired'): Promise<number>;
+    }).deleteSplitGroup('stale-body-2', 'cache-expired');
+
+    expect(removed).toBe(2);
+    expect(offline.getStatus()).toMatchObject({ pending: 0, bytes: 0 });
+    await expect(store.get('stale-body-1')).resolves.toBeNull();
+    await expect(store.get('stale-body-2')).resolves.toBeNull();
   });
 
   it('单条记录超过 maxTotalBytes 时拒绝落盘，不能突破硬上限', async () => {
@@ -419,7 +712,7 @@ describe('OfflinePersistencePlugin', () => {
     const now = Date.now();
     const log: LogEntry = {
       logId: 'dual-ttl-log',
-      level: 'error' as LogEntry['level'],
+      level: LogLevel.ERROR,
       message: 'keep the longer-lived copy',
       timestamp: now - 2 * 60 * 60 * 1000,
     };

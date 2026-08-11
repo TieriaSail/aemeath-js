@@ -31,6 +31,7 @@ import type { AemeathPlugin, AemeathInterface, LogEntry, LogTags } from '../type
 import { PluginPriority } from '../types';
 import type { UploadPlugin, UploadDropReason } from './UploadPlugin';
 import { jsonBytes } from '../utils/payloadSanitize';
+import { getSdkSplitId as getSplitId } from '../utils/splitIdentity';
 import {
   createNoopStore,
   createOfflineStore,
@@ -66,6 +67,15 @@ function isQuotaError(err: unknown): boolean {
   return /quota|storage[ _]?full|NS_ERROR_DOM_QUOTA/i.test(`${name} ${message}`);
 }
 
+/** 只有确定由记录内容造成、重试也不会改变的错误才可判为永久不可存储。 */
+function isPermanentRecordError(err: unknown): boolean {
+  if (err == null) return false;
+  const name = String((err as { name?: unknown }).name ?? '');
+  const message = String((err as { message?: unknown }).message ?? '');
+  return name === 'DataCloneError'
+    || /could not be cloned|record is invalid|cyclic object|circular structure/i.test(message);
+}
+
 /** IndexedDB 后端的默认容量 */
 const IDB_DEFAULT_MAX_ENTRIES = 500;
 const IDB_DEFAULT_MAX_BYTES = 2_000_000;
@@ -95,11 +105,13 @@ function backendResourceKeys(
   return [];
 }
 
-function trackResourcePurge(resources: readonly string[], task: Promise<void>): Promise<void> {
+function trackResourcePurge(
+  resources: readonly string[],
+  run: () => Promise<void>,
+): Promise<void> {
   const previous = pendingResourcePurges(resources);
-  const tracked = previous.length > 0
-    ? Promise.all([...previous, task]).then(() => undefined)
-    : task;
+  const tracked = Promise.all(previous.map((task) => task.catch(() => undefined)))
+    .then(run);
   for (const resource of resources) PENDING_RESOURCE_PURGES.set(resource, tracked);
   const cleanup = (): void => {
     for (const resource of resources) {
@@ -117,7 +129,7 @@ function pendingResourcePurges(resources: readonly string[]): Promise<void>[] {
     const task = PENDING_RESOURCE_PURGES.get(resource);
     if (task) tasks.add(task);
   }
-  return Array.from(tasks, (task) => task.catch(() => undefined));
+  return Array.from(tasks);
 }
 
 /**
@@ -152,12 +164,18 @@ function hasPendingRecordDelete(resources: readonly string[], logId: string): bo
   return resources.some((resource) => PENDING_RECORD_DELETES.get(resource)?.has(logId) === true);
 }
 
+function hasPendingRecordDeletes(resources: readonly string[]): boolean {
+  return resources.some((resource) => (PENDING_RECORD_DELETES.get(resource)?.size ?? 0) > 0);
+}
+
 function clearPendingDeletesForResources(resources: readonly string[]): void {
   for (const resource of resources) PENDING_RECORD_DELETES.delete(resource);
 }
 
 const KV_DEFAULT_MAX_ENTRIES = 100;
 const KV_DEFAULT_MAX_BYTES = 512_000;
+const REJECTED_SPLIT_TTL_MS = 60_000;
+const MAX_REJECTED_SPLIT_IDS = 1024;
 
 /** 只有这些原因的丢弃值得留到下次再传；其余要么不可送达，要么是我们自己发出的 */
 const PERSISTABLE_DROP_REASONS: ReadonlySet<UploadDropReason> = new Set<UploadDropReason>([
@@ -165,10 +183,72 @@ const PERSISTABLE_DROP_REASONS: ReadonlySet<UploadDropReason> = new Set<UploadDr
   'queue-overflow',
 ]);
 
-interface PersistTiming {
+/**
+ * Upload 已经给出不可恢复结论的终态。
+ *
+ * 这个集合同时用于在线监听、offline-replay 和卸载后的晚到事件，避免三个入口
+ * 对同一个 reason 作出不同决定：终态必须删除持久副本，不能再消耗补传预算。
+ */
+const TERMINAL_UPLOAD_DROP_REASONS: ReadonlySet<UploadDropReason> =
+  new Set<UploadDropReason>([
+    'no-retry',
+    'payload-too-large',
+    'storage-rejected',
+    'deduplicated',
+    'offline-give-up',
+  ]);
+
+/** 一条持久副本尚待提交的可合并状态；所有字段都只能单调前进。 */
+interface PersistStateUpdate {
   notBefore?: number;
+  serverNotBefore?: number;
   parkCount?: number;
+  replayAttempts?: number;
   lastRetryReason?: string;
+}
+
+function mergePersistStateUpdate(
+  previous: PersistStateUpdate | undefined,
+  incoming: PersistStateUpdate | undefined,
+): PersistStateUpdate | undefined {
+  if (!previous) return incoming;
+  if (!incoming) return previous;
+  const later = (a: number | undefined, b: number | undefined): number | undefined => {
+    const values = [a, b].filter((value): value is number => Number.isFinite(value));
+    return values.length > 0 ? Math.max(...values) : undefined;
+  };
+  return {
+    notBefore: later(previous.notBefore, incoming.notBefore),
+    serverNotBefore: later(previous.serverNotBefore, incoming.serverNotBefore),
+    parkCount: later(previous.parkCount, incoming.parkCount),
+    replayAttempts: later(previous.replayAttempts, incoming.replayAttempts),
+    lastRetryReason: incoming.lastRetryReason ?? previous.lastRetryReason,
+  };
+}
+
+/** 校验 SDK 分片组的声明数量与 1-based 索引，阻止残片被当作完整组补传。 */
+function isCompleteSplitGroup(records: readonly OfflineRecord[], splitId: string): boolean {
+  if (records.length === 0) return false;
+  const hasCoordinates = records.some(
+    (record) => record.log.tags?.splitIndex !== undefined || record.log.tags?.splitTotal !== undefined,
+  );
+  // 兼容旧业务把 splitId 当普通标签使用的记录；SDK 生成的分片一定带坐标。
+  if (!hasCoordinates) return true;
+
+  let expectedTotal: number | undefined;
+  const indices = new Set<number>();
+  for (const record of records) {
+    if (getSplitId(record.log) !== splitId) return false;
+    const index = Number(record.log.tags?.splitIndex);
+    const total = Number(record.log.tags?.splitTotal);
+    if (!Number.isSafeInteger(index) || !Number.isSafeInteger(total) || total <= 0) return false;
+    if (index < 1 || index > total) return false;
+    if (expectedTotal === undefined) expectedTotal = total;
+    else if (expectedTotal !== total) return false;
+    if (indices.has(index)) return false;
+    indices.add(index);
+  }
+  return expectedTotal === records.length && indices.size === expectedTotal;
 }
 
 export interface OfflinePersistencePluginOptions {
@@ -185,15 +265,15 @@ export interface OfflinePersistencePluginOptions {
   /**
    * 最多保留多少条（IndexedDB 默认 500，KV 后端默认 100）
    *
-   * 只约束**磁盘**容量。同页断网恢复仍走 UploadPlugin 内存队列，
-   * 被磁盘淘汰的条目仍可能从内存发出。想限同页积压请调 `queue.maxSize`。
+   * 约束已提交副本，并作为存储暂时失败时未提交写意图的有界预算基数。
+   * UploadPlugin 的内存队列仍独立；想限制同页上传积压请调 `queue.maxSize`。
    */
   maxEntries?: number;
 
   /**
    * 最多占用多少字节（IndexedDB 默认 2MB，KV 后端默认 512KB）
    *
-   * 语义同 `maxEntries`：只管落盘，不管内存队列。
+   * 语义同 `maxEntries`：约束持久化子系统，不约束 UploadPlugin 内存队列。
    */
   maxTotalBytes?: number;
 
@@ -221,6 +301,8 @@ export interface OfflinePersistenceStatus {
   backend: OfflineBackend | 'initializing';
   /** 当前待补传条数 */
   pending: number;
+  /** 尚在内存中等待持久层提交/重试的写意图数（按 logId 合并） */
+  buffered: number;
   /** 当前占用字节（估算） */
   bytes: number;
   /** 正在补传中的条数 */
@@ -235,7 +317,7 @@ export interface OfflinePersistenceStatus {
   items: Array<{
     logId: string;
     capturedAt: number;
-    state: 'persisted' | 'replaying';
+    state: 'persisted' | 'replaying' | 'buffering';
   }>;
 }
 
@@ -252,7 +334,8 @@ export async function purgeOfflinePersistenceStorage(
     dbName: options.dbName ?? 'aemeath-offline',
     key: options.key ?? '__aemeath_offline__',
   });
-  const task = (async () => {
+  const runPurge = async (): Promise<void> => {
+    const failures: unknown[] = [];
     const dbName = options.dbName ?? 'aemeath-offline';
     const key = options.key ?? '__aemeath_offline__';
     // auto/indexeddb 都可能在过去某次会话降级到 KV。显式关闭必须分别清理
@@ -261,6 +344,17 @@ export async function purgeOfflinePersistenceStorage(
       ? ['localstorage']
       : ['indexeddb', 'localstorage'];
     for (const preference of preferences) {
+      // 不支持某种存储与“该存储存在但清理失败”不同：前者没有可清资源，后者
+      // 必须让调用方看见。小程序/SSR 没有 IDB 是正常能力差异。
+      if (preference === 'indexeddb') {
+        try {
+          if (typeof indexedDB === 'undefined' || indexedDB === null) continue;
+        } catch {
+          continue;
+        }
+      } else if (platform.type === 'unknown') {
+        continue;
+      }
       let store: OfflineStore | null = null;
       try {
         store = await createOfflineStore({
@@ -268,6 +362,7 @@ export async function purgeOfflinePersistenceStorage(
           platform,
           dbName,
           keyPrefix: key,
+          allowFallback: false,
         });
         const actualResources = backendResourceKeys({ dbName, key }, store.backend);
         // 另一个活跃实例可能正持有这条资源（典型：当前实例因撞 key 已让位，
@@ -277,19 +372,22 @@ export async function purgeOfflinePersistenceStorage(
         }
         await store.clear();
         clearPendingDeletesForResources(actualResources);
-      } catch {
-        // 隐私模式/宿主禁用存储时仍保持初始化可用；未清资源的墓碑继续保留。
+      } catch (error) {
+        failures.push(error);
       } finally {
         store?.close();
       }
     }
-  })();
-  await trackResourcePurge(resources, task);
+    if (failures.length > 0) {
+      throw failures[0];
+    }
+  };
+  await trackResourcePurge(resources, runPurge);
 }
 
 export class OfflinePersistencePlugin implements AemeathPlugin {
   readonly name = 'offline-persistence';
-  readonly version = '2.5.0';
+  readonly version = '2.5.2';
   /** 不参与日志管道，优先级仅用于安装顺序的可预期性 */
   readonly priority: number = PluginPriority.LATE + 1;
   readonly description = '断网期间日志落盘，联网后自动补传';
@@ -305,8 +403,8 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
 
   /** 实际认领的 IDB/KV 资源；两种后端的命名空间并不相同 */
   private claimedResources: string[] = [];
-  /** 显式关闭持久化时，uninstall 必须清盘而不是只关连接 */
-  private purgeOnUninstall = false;
+  /** 显式关闭请求按生命周期世代绑定，避免 remount 继承旧清盘意图。 */
+  private readonly purgeEpochs = new Set<number>();
 
   /** 内存索引：避免每次写入都去扫存储 */
   private index = new Map<string, OfflineRecordMeta>();
@@ -331,9 +429,15 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
    * `createOfflineStore` 是异步的；`upload:paused` / pause 期 `enqueued` 可能
    * 抢在 store 赋值之前到达。若直接丢弃，断网窗口里最早一批日志会永远落不了盘。
    */
-  private pendingPersists: Array<{ log: LogEntry; priority?: number; timing?: PersistTiming }> = [];
+  private pendingPersists: Array<{
+    log: LogEntry;
+    priority?: number;
+    state?: PersistStateUpdate;
+  }> = [];
   /** 索引是否已建好（含"没有可用后端"这种提前定论的情况） */
   private hydrated = false;
+  /** hydrate 成功前持久层只允许终态删除，不能按空索引继续写入或补传。 */
+  private storageOperational = false;
   /** 补传中的 logId → 发起时刻（用于对账超时） */
   private inFlight = new Map<string, number>();
   /** 串行化所有持久化操作，杜绝并发读改写造成的错乱 */
@@ -352,24 +456,34 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
   private overflowReplayTimer: ReturnType<typeof setTimeout> | null = null;
   /** 持久化 Retry-After / parked 到期后的精确唤醒 */
   private deferredReplayTimer: ReturnType<typeof setTimeout> | null = null;
+  /** 持久层瞬时读取失败后的有界重试 */
+  private storageRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  private storageRetryDelay = 0;
   /**
    * 生命周期世代：同实例 remount 时递增，作废上一轮还挂在 chain / init 上的工作。
    */
   private epoch = 0;
+  /** 已确认无法整组落盘的 splitId；本生命周期内后续分片也必须拒绝。 */
+  private readonly rejectedPersistSplitIds = new Map<
+    string,
+    { reason: 'storage-quota' | 'storage-rejected'; expiresAt: number }
+  >();
 
   constructor(options: OfflinePersistencePluginOptions = {}) {
     const positive = (value: number | undefined, fallback: number, min = 1): number =>
       typeof value === 'number' && Number.isFinite(value) && value >= min ? value : fallback;
+    const positiveInteger = (value: number | undefined, fallback: number, min = 1): number =>
+      typeof value === 'number' && Number.isSafeInteger(value) && value >= min ? value : fallback;
     this.options = {
       storage: options.storage ?? 'auto',
       ttl: positive(options.ttl, 7 * 24 * 60 * 60 * 1000, 0),
-      replayBatchSize: positive(options.replayBatchSize, 10),
-      maxReplayAttempts: positive(options.maxReplayAttempts, 3),
+      replayBatchSize: positiveInteger(options.replayBatchSize, 10),
+      maxReplayAttempts: positiveInteger(options.maxReplayAttempts, 3),
       replayTimeoutMs: positive(options.replayTimeoutMs, 60000, 1000),
       dbName: options.dbName ?? 'aemeath-offline',
       key: options.key ?? '__aemeath_offline__',
       debug: options.debug ?? false,
-      maxEntries: options.maxEntries == null ? undefined : positive(options.maxEntries, 1),
+      maxEntries: options.maxEntries == null ? undefined : positiveInteger(options.maxEntries, 1),
       maxTotalBytes: options.maxTotalBytes == null ? undefined : positive(options.maxTotalBytes, 1),
     };
   }
@@ -379,6 +493,8 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
     // 立刻关掉，backend 永远停在 'initializing'
     this.epoch++;
     this.clearOverflowReplayTimer();
+    this.clearDeferredReplayTimer();
+    this.clearStorageRetryTimer(true);
     this.destroyed = false;
     this.logger = logger;
 
@@ -386,12 +502,14 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
     // handleSuccess 进不了 preHydrationDeletes，store 未挂上时 safeDelete 空操作，
     // 随后 hydrate 又把盘上副本读回补传 → 与 Upload 内存队列叠成重复上报。
     this.hydrated = false;
+    this.storageOperational = false;
     this.index.clear();
     this.totalBytes = 0;
     this.inFlight.clear();
     this.pendingPersists = [];
     this.deliveredTombstones.clear();
     this.preHydrationDeletes.clear();
+    this.rejectedPersistSplitIds.clear();
     this.store = null;
     this.chain = Promise.resolve();
     this.ready = null;
@@ -451,7 +569,10 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
   }
 
   uninstall(logger?: AemeathInterface): void {
+    const uninstallEpoch = this.epoch;
+    const purgeRequested = this.purgeEpochs.has(uninstallEpoch);
     const resources = [...this.claimedResources];
+    const terminalResources = this.deletionResourceKeys();
     const host = logger ?? this.logger;
     const upload = this.getUploadPlugin();
 
@@ -461,7 +582,7 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
     const watchIds = new Set<string>();
     // 显式关闭会无条件清盘，晚到结果已经不再决定磁盘生命周期；此时继续挂监听
     // 反而可能在 purge 完成后写入一个没有对应记录的永久模块级墓碑。
-    if (!this.purgeOnUninstall && resources.length > 0 && upload) {
+    if (!purgeRequested && resources.length > 0 && upload) {
       for (const logId of this.index.keys()) {
         if (upload.isInFlight(logId)) watchIds.add(logId);
       }
@@ -471,6 +592,7 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
     this.destroyed = true;
     this.clearOverflowReplayTimer();
     this.clearDeferredReplayTimer();
+    this.clearStorageRetryTimer(true);
     // 注意：不要清 PENDING_RECORD_DELETES —— 未完成的删盘要留给同 slot 的下一次实例
     for (const resource of this.claimedResources) CLAIMED_OFFLINE_RESOURCES.delete(resource);
     this.claimedResources = [];
@@ -494,7 +616,7 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
     }
 
     // Offline 单独卸载而 Upload/logger 还在时：补听晚到的 success/drop
-    if (!this.purgeOnUninstall && host && resources.length > 0 && watchIds.size > 0) {
+    if (!purgeRequested && host && resources.length > 0 && watchIds.size > 0) {
       const detachLate = (fn: (...args: unknown[]) => void, event: string): void => {
         try {
           host.off(event, fn);
@@ -507,7 +629,7 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
         const logId = payload?.log?.logId;
         if (!logId || !watchIds.has(logId)) return;
         watchIds.delete(logId);
-        notePendingRecordDelete(resources, logId);
+        notePendingRecordDelete(terminalResources, logId);
         if (watchIds.size === 0) {
           detachLate(onLateSuccess, 'upload:success');
           detachLate(onLateDrop, 'upload:drop');
@@ -519,8 +641,8 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
         if (!logId || !watchIds.has(logId)) return;
         watchIds.delete(logId);
         // 终态拒收：盘上副本再补传也只会再被拒，记 PENDING 留给 remount 清掉
-        if (payload?.reason === 'no-retry') {
-          notePendingRecordDelete(resources, logId);
+        if (TERMINAL_UPLOAD_DROP_REASONS.has(payload?.reason as UploadDropReason)) {
+          notePendingRecordDelete(terminalResources, logId);
         }
         if (watchIds.size === 0) {
           detachLate(onLateSuccess, 'upload:success');
@@ -537,26 +659,45 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
 
     const store = this.store;
     const chain = this.chain;
-    if (this.purgeOnUninstall && store) {
-      const purgeTask = chain.catch(() => undefined).then(async () => {
+    if (purgeRequested && store) {
+      const runPurge = async (): Promise<void> => {
         try {
+          await chain.catch(() => undefined);
           await store.clear();
           clearPendingDeletesForResources(backendResourceKeys(this.options, store.backend));
-        } catch (err) {
-          this.debug('failed to purge store:', err);
         } finally {
+          this.purgeEpochs.delete(uninstallEpoch);
           try {
             store.close();
           } catch {
             /* ignore */
           }
         }
+      };
+      void trackResourcePurge(resources, runPurge).catch((err) => {
+        this.debug('failed to purge store:', err);
+        if (typeof console !== 'undefined' && console.warn) {
+          console.warn('[Aemeath] Failed to purge offline persistence:', err);
+        }
       });
-      void trackResourcePurge(resources, purgeTask);
-    } else if (this.purgeOnUninstall && this.ready) {
+    } else if (purgeRequested && this.ready) {
       // store 仍在打开时由 initInternal 的失效分支执行 clear；新实例必须等它完成。
-      void trackResourcePurge(resources, this.ready.catch(() => undefined));
+      const ready = this.ready;
+      const runPurge = async (): Promise<void> => {
+        try {
+          await ready;
+        } finally {
+          this.purgeEpochs.delete(uninstallEpoch);
+        }
+      };
+      void trackResourcePurge(resources, runPurge).catch((err) => {
+        this.debug('failed to purge store opened during uninstall:', err);
+        if (typeof console !== 'undefined' && console.warn) {
+          console.warn('[Aemeath] Failed to purge offline persistence:', err);
+        }
+      });
     } else {
+      if (purgeRequested) this.purgeEpochs.delete(uninstallEpoch);
       try {
         store?.close();
       } catch (err) {
@@ -573,19 +714,33 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
 
   /** 当前后端、待补传条数、占用字节与各类计数 */
   getStatus(): OfflinePersistenceStatus {
+    const persistedItems: OfflinePersistenceStatus['items'] = Array.from(
+      this.index.values(),
+      (meta) => ({
+        logId: meta.logId,
+        capturedAt: meta.capturedAt,
+        state: this.inFlight.has(meta.logId) ? 'replaying' as const : 'persisted' as const,
+      }),
+    );
+    const bufferedItems: OfflinePersistenceStatus['items'] = this.pendingPersists.map(
+      (item) => ({
+        logId: item.log.logId,
+        capturedAt: item.log.timestamp,
+        state: 'buffering' as const,
+      }),
+    );
     return {
-      backend: this.store?.backend ?? 'initializing',
+      backend: !this.hydrated
+        ? 'initializing'
+        : this.storageOperational ? (this.store?.backend ?? 'noop') : 'noop',
       pending: this.index.size,
+      buffered: this.pendingPersists.length,
       bytes: this.totalBytes,
       replaying: this.inFlight.size,
       quotaDrops: this.stats.quotaDrops,
       giveUps: this.stats.giveUps,
       replayed: this.stats.replayed,
-      items: Array.from(this.index.values(), (meta) => ({
-        logId: meta.logId,
-        capturedAt: meta.capturedAt,
-        state: this.inFlight.has(meta.logId) ? 'replaying' as const : 'persisted' as const,
-      })),
+      items: [...persistedItems, ...bufferedItems],
     };
   }
 
@@ -599,19 +754,62 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
   async clear(): Promise<void> {
     await this.ready;
     await this.enqueueOp(async () => {
-      await this.store?.clear();
-      if (this.store) {
-        clearPendingDeletesForResources(backendResourceKeys(this.options, this.store.backend));
+      try {
+        await this.clearConfiguredBackends();
+      } catch (error) {
+        this.storageOperational = false;
+        throw error;
       }
+      clearPendingDeletesForResources(this.claimedResources);
+      this.storageOperational = this.store?.backend !== undefined
+        && this.store.backend !== 'noop';
       this.index.clear();
       this.inFlight.clear();
+      this.pendingPersists = [];
+      this.deliveredTombstones.clear();
+      this.preHydrationDeletes.clear();
+      this.rejectedPersistSplitIds.clear();
       this.totalBytes = 0;
-    });
+      this.clearStorageRetryTimer(true);
+    }, true);
+  }
+
+  /** `clear()` 同时覆盖当前后端与可能休眠的 fallback。 */
+  private async clearConfiguredBackends(): Promise<void> {
+    const active = this.store;
+    if (active && active.backend !== 'noop') await active.clear();
+    if (this.options.storage === 'localstorage') return;
+    const platform = this.logger?.platform;
+    if (!platform) throw new Error('platform unavailable while clearing offline persistence');
+
+    const targets: Array<'indexeddb' | 'localstorage'> = ['indexeddb', 'localstorage'];
+    for (const preference of targets) {
+      if (active?.backend === preference) continue;
+      if (preference === 'indexeddb') {
+        try {
+          if (typeof indexedDB === 'undefined' || indexedDB === null) continue;
+        } catch {
+          continue;
+        }
+      }
+      const dormant = await createOfflineStore({
+        preference,
+        platform,
+        dbName: this.options.dbName,
+        keyPrefix: this.options.key,
+        allowFallback: false,
+      });
+      try {
+        if (dormant.backend === preference) await dormant.clear();
+      } finally {
+        dormant.close();
+      }
+    }
   }
 
   /** 下一次 uninstall 是用户显式关闭持久化：立即停止接收，并异步清除全部旧副本。 */
   requestPurgeOnUninstall(): void {
-    this.purgeOnUninstall = true;
+    this.purgeEpochs.add(this.epoch);
   }
 
   // ==================== 初始化 ====================
@@ -628,9 +826,26 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
     try {
       await this.initInternal(epoch);
     } catch (err) {
+      if (!this.isEpoch(epoch) && this.purgeEpochs.has(epoch)) throw err;
       if (this.isEpoch(epoch)) {
         this.debug('init failed:', err);
+        try {
+          this.store?.close();
+        } catch {
+          /* ignore */
+        }
+        this.store = createNoopStore();
+        this.storageOperational = false;
+        this.index.clear();
+        this.inFlight.clear();
+        this.totalBytes = 0;
         this.pendingPersists = [];
+        this.warnStorageUnavailable();
+        try {
+          this.logger?.emit('upload:offline-unavailable', { reason: 'initialization-failed' });
+        } catch (emitErr) {
+          this.debug('failed to report offline initialization failure:', emitErr);
+        }
       }
     } finally {
       if (this.isEpoch(epoch)) {
@@ -662,12 +877,13 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
 
     // 打开数据库期间插件可能已经被卸载 / remount。直接挂上去等于复活一个没人会关闭的连接
     if (!this.isEpoch(epoch)) {
-      if (this.purgeOnUninstall) {
+      if (this.purgeEpochs.has(epoch)) {
         try {
           await store.clear();
           clearPendingDeletesForResources(backendResourceKeys(this.options, store.backend));
-        } catch (err) {
-          this.debug('failed to purge late-opened store:', err);
+        } catch (error) {
+          store.close();
+          throw error;
         }
       }
       store.close();
@@ -678,12 +894,37 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
     if (this.store.backend === 'noop') {
       // 也算"定论"：不置位的话墓碑集合会随每次上传成功无限增长
       this.hydrated = true;
+      this.storageOperational = false;
       this.preHydrationDeletes.clear();
       this.pendingPersists = [];
       this.warnStorageUnavailable();
-      logger.emit('upload:offline-unavailable', { reason: 'no-storage-backend' });
+      try {
+        logger.emit('upload:offline-unavailable', { reason: 'no-storage-backend' });
+      } catch (err) {
+        this.debug('failed to report unavailable storage:', err);
+      }
       return;
     }
+
+    try {
+      await this.reconcileFallbackStore(this.store, logger.platform, epoch);
+    } catch (err) {
+      this.debug('fallback reconciliation failed:', err);
+      this.storageOperational = false;
+      this.pendingPersists = [];
+      for (const logId of this.preHydrationDeletes) {
+        if (!this.isEpoch(epoch)) return;
+        await this.safeDelete(logId);
+      }
+      this.warnStorageUnavailable();
+      try {
+        logger.emit('upload:offline-unavailable', { reason: 'reconciliation-failed' });
+      } catch (emitErr) {
+        this.debug('failed to report reconciliation failure:', emitErr);
+      }
+      return;
+    }
+    if (!this.isEpoch(epoch)) return;
 
     const isKv = this.store.backend === 'localstorage';
     this.maxEntries =
@@ -715,6 +956,14 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
           for (const logId of this.preHydrationDeletes) {
             if (!this.isEpoch(epoch)) return;
             await this.safeDelete(logId);
+          }
+          this.storageOperational = false;
+          this.pendingPersists = [];
+          this.warnStorageUnavailable();
+          try {
+            logger.emit('upload:offline-unavailable', { reason: 'hydration-failed' });
+          } catch (emitErr) {
+            this.debug('failed to report hydration failure:', emitErr);
           }
           return;
         }
@@ -756,8 +1005,28 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
             continue;
           }
           meta.priority = Number.isFinite(meta.priority) ? meta.priority : 0;
-          meta.replayAttempts = Number.isFinite(meta.replayAttempts) ? meta.replayAttempts : 0;
+          meta.replayAttempts = Number.isFinite(meta.replayAttempts)
+            ? Math.max(0, Math.floor(meta.replayAttempts))
+            : 0;
+          // 新记录把 splitId 冗余进 meta，避免每轮 replay 为分组读取全部正文。
+          // 旧 KV 索引没有这个字段，只在 hydrate 时补读一次。
+          if (
+            meta.splitId !== null
+            && (typeof meta.splitId !== 'string' || this.store!.backend === 'localstorage')
+          ) {
+            const legacyRecord = await this.safeGet(meta.logId);
+            const canonicalSplitId = legacyRecord ? (getSplitId(legacyRecord.log) ?? null) : null;
+            if (legacyRecord && legacyRecord.splitId !== canonicalSplitId) {
+              // 旧 KV 索引曾把裸业务 splitId 写进分组字段；在 hydrate 边界一次性
+              // 规范化正文和索引，后续生命周期就不会再把普通日志误绑成原子组。
+              await this.store!.put({ ...legacyRecord, splitId: canonicalSplitId });
+            }
+            meta.splitId = canonicalSplitId;
+          }
           meta.notBefore = Number.isFinite(meta.notBefore) ? meta.notBefore : undefined;
+          meta.serverNotBefore = Number.isFinite(meta.serverNotBefore)
+            ? meta.serverNotBefore
+            : undefined;
           meta.parkCount = Number.isFinite(meta.parkCount) ? meta.parkCount : undefined;
           this.index.set(meta.logId, meta);
           this.totalBytes += meta.bytes;
@@ -765,6 +1034,22 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
         this.debug(
           `hydrated ${this.index.size} pending logs from ${this.store!.backend} (${this.totalBytes} bytes)`,
         );
+        this.storageOperational = true;
+      } catch (err) {
+        // loadMeta 之外的正文读取同样属于 hydrate 事务（典型是旧索引补读
+        // splitId）。任何一步无法确认，部分索引就不再是可信快照：统一清空并
+        // fail-closed，绝不能让 enqueueOp 的通用兜底把它吞成一个“半成功”。
+        this.debug('hydration scan failed:', err);
+        this.index.clear();
+        this.totalBytes = 0;
+        this.storageOperational = false;
+        this.pendingPersists = [];
+        this.warnStorageUnavailable();
+        try {
+          logger.emit('upload:offline-unavailable', { reason: 'hydration-failed' });
+        } catch (emitErr) {
+          this.debug('failed to report hydration failure:', emitErr);
+        }
       } finally {
         if (this.isEpoch(epoch)) {
           // hydrated 先落定；墓碑留给下面的 pendingPersists flush 过滤已送达项
@@ -781,18 +1066,7 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
         this.pendingPersists = [];
         return;
       }
-      const pending = this.pendingPersists.splice(0);
-      for (const item of pending) {
-        if (!this.isEpoch(epoch)) break;
-        if (
-          this.deliveredTombstones.has(item.log.logId) ||
-          this.preHydrationDeletes.has(item.log.logId) ||
-          hasPendingRecordDelete(this.claimedResources, item.log.logId)
-        ) {
-          continue;
-        }
-        await this.persist(item.log, item.priority, item.timing);
-      }
+      await this.drainPendingPersists(epoch);
     });
 
     if (!this.isEpoch(epoch)) return;
@@ -801,6 +1075,97 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
     this.catchUpPausedQueue();
 
     this.scheduleReplay();
+  }
+
+  /** 把历史 KV fallback 与恢复后的 IndexedDB 收敛成一个权威后端。 */
+  private async reconcileFallbackStore(
+    primary: OfflineStore,
+    platform: AemeathInterface['platform'],
+    epoch: number,
+  ): Promise<void> {
+    if (primary.backend !== 'indexeddb' || this.options.storage === 'localstorage') return;
+
+    let fallback: OfflineStore;
+    try {
+      fallback = await createOfflineStore({
+        preference: 'localstorage',
+        platform,
+        dbName: this.options.dbName,
+        keyPrefix: this.options.key,
+        allowFallback: false,
+      });
+    } catch {
+      return;
+    }
+    if (fallback.backend !== 'localstorage') {
+      fallback.close();
+      return;
+    }
+
+    const resources = [
+      ...backendResourceKeys(this.options, 'indexeddb'),
+      ...backendResourceKeys(this.options, 'localstorage'),
+    ];
+    const maxOptional = (a: number | undefined, b: number | undefined): number | undefined => {
+      const values = [a, b].filter((value): value is number => Number.isFinite(value));
+      return values.length === 0 ? undefined : Math.max(...values);
+    };
+    try {
+      const metas = await fallback.loadMeta();
+      for (const meta of metas) {
+        if (!this.isEpoch(epoch)) return;
+        const secondaryRecord = await fallback.get(meta.logId);
+        if (!secondaryRecord) {
+          await fallback.delete(meta.logId);
+          continue;
+        }
+        const secondary: OfflineRecord = {
+          ...secondaryRecord,
+          splitId: getSplitId(secondaryRecord.log) ?? null,
+        };
+        const currentRecord = await primary.get(meta.logId);
+        const current: OfflineRecord | null = currentRecord
+          ? { ...currentRecord, splitId: getSplitId(currentRecord.log) ?? null }
+          : null;
+        const terminal = secondary.terminal === true
+          || current?.terminal === true
+          || hasPendingRecordDelete(resources, meta.logId);
+        if (terminal) {
+          await primary.delete(meta.logId);
+          await fallback.delete(meta.logId);
+          clearPendingRecordDelete(resources, meta.logId);
+          continue;
+        }
+
+        let migrated = secondary;
+        if (current) {
+          if (
+            current.capturedAt !== secondary.capturedAt
+            || (current.splitId ?? null) !== (secondary.splitId ?? null)
+            || JSON.stringify(current.log) !== JSON.stringify(secondary.log)
+          ) {
+            throw new Error(`offline backend identity conflict: ${meta.logId}`);
+          }
+          migrated = {
+            ...current,
+            storedAt: Math.min(current.storedAt, secondary.storedAt),
+            priority: Math.max(current.priority, secondary.priority),
+            replayAttempts: Math.max(current.replayAttempts, secondary.replayAttempts),
+            notBefore: maxOptional(current.notBefore, secondary.notBefore),
+            serverNotBefore: maxOptional(
+              current.serverNotBefore,
+              secondary.serverNotBefore,
+            ),
+            parkCount: maxOptional(current.parkCount, secondary.parkCount),
+            lastRetryReason: secondary.lastRetryReason ?? current.lastRetryReason,
+          };
+        }
+        await primary.put(migrated);
+        await fallback.delete(meta.logId);
+      }
+    } finally {
+      fallback.close();
+    }
   }
 
   // ==================== 事件处理 ====================
@@ -836,12 +1201,12 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
         this.armOverflowReplayWake();
         return;
       }
-      if (reason === 'no-retry' || reason === 'payload-too-large') {
+      if (TERMINAL_UPLOAD_DROP_REASONS.has(reason)) {
         this.inFlight.delete(log.logId);
         this.enqueueOp(() => this.safeDelete(log.logId));
         return;
       }
-      this.enqueueOp(() => this.registerReplayFailure(log.logId));
+      this.enqueueOp(() => this.registerReplayFailure(log));
       return;
     }
 
@@ -849,9 +1214,20 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
       // 服务端明确拒收（no-retry / payload）：补传只会被再拒一次。
       // 之前落过盘的话必须就地清掉，否则这份副本没人再管，会一直占着配额，
       // 还会在下次上线 / 下次打开页面时被翻出来重投。
+      const logId = log.logId;
+      this.deliveredTombstones.add(logId);
+      this.inFlight.delete(logId);
+      this.pendingPersists = this.pendingPersists.filter((item) => item.log.logId !== logId);
+      notePendingRecordDelete(this.deletionResourceKeys(), logId);
+      if (!this.hydrated) this.preHydrationDeletes.add(logId);
       this.enqueueOp(async () => {
-        if (!this.index.has(log.logId)) return;
-        await this.safeDelete(log.logId);
+        try {
+          // hydrate 尚未完成或 loadMeta 失败时，磁盘可能有记录而内存索引为空。
+          // safeDelete 会保留跨 remount 的删除意图，不能以 index.has 为前置条件。
+          await this.safeDelete(logId);
+        } finally {
+          this.deliveredTombstones.delete(logId);
+        }
       });
       return;
     }
@@ -861,8 +1237,9 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
   private handleParked(payload: Record<string, unknown>): void {
     const log = payload['log'] as LogEntry | undefined;
     if (!log) return;
-    const timing: PersistTiming = {
+    const state: PersistStateUpdate = {
       notBefore: payload['parkedUntil'] as number | undefined,
+      serverNotBefore: payload['serverNotBefore'] as number | undefined,
       parkCount: payload['parkCount'] as number | undefined,
       lastRetryReason: payload['reason'] as string | undefined,
     };
@@ -871,10 +1248,10 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
     // parkedUntil 必须覆盖旧期限，否则下一次页面重开会提前补传。
     if (payload['source'] === OFFLINE_REPLAY_SOURCE) {
       this.inFlight.delete(log.logId);
-      this.enqueueOp(() => this.persist(log, payload['priority'] as number | undefined, timing));
+      this.enqueueOp(() => this.persist(log, payload['priority'] as number | undefined, state));
       return;
     }
-    this.enqueueOp(() => this.persist(log, payload['priority'] as number | undefined, timing));
+    this.enqueueOp(() => this.persist(log, payload['priority'] as number | undefined, state));
   }
 
   /** 热重试也要落下服务端 Retry-After；cache 被关闭/不可用时仍能跨页面守约。 */
@@ -884,6 +1261,7 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
     if (payload['source'] === OFFLINE_REPLAY_SOURCE && !this.index.has(log.logId)) return;
     this.enqueueOp(() => this.persist(log, payload['priority'] as number | undefined, {
       notBefore: payload['nextAttemptAt'] as number | undefined,
+      serverNotBefore: payload['serverNotBefore'] as number | undefined,
       lastRetryReason: payload['reason'] as string | undefined,
     }));
   }
@@ -926,7 +1304,7 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
     this.deliveredTombstones.add(logId);
     this.inFlight.delete(logId);
     this.pendingPersists = this.pendingPersists.filter((p) => p.log.logId !== logId);
-    notePendingRecordDelete(this.claimedResources, logId);
+    notePendingRecordDelete(this.deletionResourceKeys(), logId);
     if (!this.hydrated) {
       this.preHydrationDeletes.add(logId);
     }
@@ -954,12 +1332,143 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
 
   // ==================== 持久化 ====================
 
+  private getRejectedPersistReason(
+    splitId: string,
+  ): 'storage-quota' | 'storage-rejected' | undefined {
+    const entry = this.rejectedPersistSplitIds.get(splitId);
+    if (!entry) return undefined;
+    if (entry.expiresAt <= Date.now()) {
+      this.rejectedPersistSplitIds.delete(splitId);
+      return undefined;
+    }
+    return entry.reason;
+  }
+
+  private rememberRejectedPersistSplit(
+    splitId: string,
+    reason: 'storage-quota' | 'storage-rejected',
+  ): void {
+    const now = Date.now();
+    for (const [id, entry] of this.rejectedPersistSplitIds) {
+      if (entry.expiresAt <= now) this.rejectedPersistSplitIds.delete(id);
+    }
+    while (this.rejectedPersistSplitIds.size >= MAX_REJECTED_SPLIT_IDS) {
+      const oldest = this.rejectedPersistSplitIds.keys().next().value as string | undefined;
+      if (oldest === undefined) break;
+      this.rejectedPersistSplitIds.delete(oldest);
+    }
+    this.rejectedPersistSplitIds.set(splitId, {
+      reason,
+      expiresAt: now + REJECTED_SPLIT_TTL_MS,
+    });
+  }
+
+  /**
+   * 暂存尚未提交的写意图，并按 logId 合并。
+   *
+   * 初始化窗口、短暂存储故障和 retry deadline 更新都走同一缓冲区；同一日志
+   * 只占一个槽位，协议期限只向后合并，避免重复事件无界增长或把较新的
+   * Retry-After 覆盖回旧值。
+   */
+  private bufferPersist(
+    log: LogEntry,
+    priority?: number,
+    state?: PersistStateUpdate,
+  ): void {
+    const splitId = getSplitId(log);
+    const rejectedReason = splitId === undefined
+      ? undefined
+      : this.getRejectedPersistReason(splitId);
+    if (rejectedReason) {
+      if (rejectedReason === 'storage-quota') this.stats.quotaDrops++;
+      this.reportDrop(log, rejectedReason);
+      return;
+    }
+    const index = this.pendingPersists.findIndex((item) => item.log.logId === log.logId);
+    // 退避缓冲不能成为绕过持久层配额的第二个无界队列。允许至多一份当前
+    // 持久索引量 + 一份新写预算；超过时拒绝新原子单元，保留更早的写意图。
+    const bytes = jsonBytes(log);
+    const entryLimit = Math.max(1, this.index.size + this.maxEntries);
+    const byteLimit = Math.max(1, this.totalBytes + this.maxTotalBytes);
+    const pendingBytes = this.pendingPersists.reduce((total, item) => {
+      const size = jsonBytes(item.log);
+      return Number.isFinite(size) ? total + size : Number.POSITIVE_INFINITY;
+    }, 0);
+    const previousBytes = index === -1 ? 0 : jsonBytes(this.pendingPersists[index]!.log);
+    const projectedBytes = pendingBytes
+      - (Number.isFinite(previousBytes) ? previousBytes : 0)
+      + bytes;
+    const reason: 'storage-quota' | 'storage-rejected' | undefined =
+      !Number.isFinite(bytes)
+        ? 'storage-rejected'
+        : this.pendingPersists.length + (index === -1 ? 1 : 0) > entryLimit
+          || projectedBytes > byteLimit
+          ? 'storage-quota'
+          : undefined;
+    if (reason) {
+      const rejected = splitId === undefined
+        ? []
+        : this.pendingPersists.filter((item) => getSplitId(item.log) === splitId);
+      if (splitId !== undefined) {
+        this.pendingPersists = this.pendingPersists.filter(
+          (item) => getSplitId(item.log) !== splitId,
+        );
+        this.rememberRejectedPersistSplit(splitId, reason);
+      }
+      const victims = [...rejected, { log, priority, state }]
+        .filter((item, offset, all) =>
+          all.findIndex((candidate) => candidate.log.logId === item.log.logId) === offset);
+      for (const victim of victims) {
+        if (reason === 'storage-quota') this.stats.quotaDrops++;
+        this.reportDrop(victim.log, reason);
+      }
+      return;
+    }
+    if (index === -1) {
+      this.pendingPersists.push({ log, priority, state });
+    } else {
+      const previous = this.pendingPersists[index]!;
+      this.pendingPersists[index] = {
+        log,
+        priority: priority ?? previous.priority,
+        state: mergePersistStateUpdate(previous.state, state),
+      };
+    }
+  }
+
+  private deferPersistAfterStorageError(
+    log: LogEntry,
+    priority: number | undefined,
+    state: PersistStateUpdate | undefined,
+    error: unknown,
+  ): void {
+    if (this.destroyed) return;
+    this.debug('transient offline persistence failure; retrying with backoff:', error);
+    this.bufferPersist(log, priority, state);
+    this.armStorageRetryWake();
+  }
+
   private async persist(
     log: LogEntry,
     priority?: number,
-    timing?: PersistTiming,
+    state?: PersistStateUpdate,
   ): Promise<void> {
-    if (this.destroyed) return;
+    const epoch = this.epoch;
+    if (!this.isEpoch(epoch)) return;
+    if (!this.hydrated) {
+      this.bufferPersist(log, priority, state);
+      return;
+    }
+    if (!this.storageOperational) return;
+    const splitId = getSplitId(log);
+    const rejectedReason = splitId === undefined
+      ? undefined
+      : this.getRejectedPersistReason(splitId);
+    if (rejectedReason) {
+      if (rejectedReason === 'storage-quota') this.stats.quotaDrops++;
+      this.reportDrop(log, rejectedReason);
+      return;
+    }
     // 已送达的绝不能再进缓冲 / 再写盘
     if (
       this.deliveredTombstones.has(log.logId) ||
@@ -968,36 +1477,53 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
     ) {
       return;
     }
-    if (!this.store) {
-      // store 还在打开：先攒着，init 完成后统一 flush
-      this.pendingPersists.push({ log, priority, timing });
-      return;
-    }
+    if (!this.store) return;
     if (this.store.backend === 'noop') return;
     if (this.index.has(log.logId)) {
-      if (!timing) return;
-      const existing = await this.safeGet(log.logId);
+      if (!state) return;
+      let existing: OfflineRecord | null;
+      try {
+        existing = await this.safeGet(log.logId);
+      } catch (error) {
+        this.deferPersistAfterStorageError(log, priority, state, error);
+        return;
+      }
       if (!existing || existing.terminal) return;
-      existing.notBefore = Number.isFinite(timing.notBefore) ? timing.notBefore : existing.notBefore;
-      existing.parkCount = Number.isFinite(timing.parkCount) ? timing.parkCount : existing.parkCount;
-      existing.lastRetryReason = timing.lastRetryReason ?? existing.lastRetryReason;
+      const merged = mergePersistStateUpdate({
+        notBefore: existing.notBefore,
+        serverNotBefore: existing.serverNotBefore,
+        parkCount: existing.parkCount,
+        replayAttempts: existing.replayAttempts,
+        lastRetryReason: existing.lastRetryReason,
+      }, state)!;
+      existing.notBefore = merged.notBefore;
+      existing.serverNotBefore = merged.serverNotBefore;
+      existing.parkCount = Number.isFinite(merged.parkCount)
+        ? Math.max(0, Math.floor(merged.parkCount!))
+        : undefined;
+      existing.replayAttempts = Number.isFinite(merged.replayAttempts)
+        ? Math.max(0, Math.floor(merged.replayAttempts!))
+        : existing.replayAttempts;
+      existing.lastRetryReason = merged.lastRetryReason;
       try {
         await this.store.put(existing);
         const meta = this.index.get(log.logId);
         if (meta) {
           meta.notBefore = existing.notBefore;
+          meta.serverNotBefore = existing.serverNotBefore;
           meta.parkCount = existing.parkCount;
+          meta.replayAttempts = existing.replayAttempts;
           meta.lastRetryReason = existing.lastRetryReason;
         }
       } catch (err) {
-        this.debug('failed to update persisted retry deadline:', err);
+        this.deferPersistAfterStorageError(log, priority, state, err);
       }
       return;
     }
 
     const bytes = jsonBytes(log);
     if (!Number.isFinite(bytes)) {
-      this.reportDrop(log, 'storage-rejected');
+      await this.rejectPersistRecord(log, 'storage-rejected', epoch);
       return;
     }
 
@@ -1007,77 +1533,127 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
       capturedAt: log.timestamp,
       priority: priority ?? 0,
       bytes,
-      replayAttempts: 0,
-      notBefore: Number.isFinite(timing?.notBefore) ? timing?.notBefore : undefined,
-      parkCount: Number.isFinite(timing?.parkCount) ? timing?.parkCount : undefined,
-      lastRetryReason: timing?.lastRetryReason,
+      replayAttempts: Number.isFinite(state?.replayAttempts)
+        ? Math.max(0, Math.floor(state!.replayAttempts!))
+        : 0,
+      splitId: splitId ?? null,
+      notBefore: Number.isFinite(state?.notBefore) ? state?.notBefore : undefined,
+      serverNotBefore: Number.isFinite(state?.serverNotBefore)
+        ? state?.serverNotBefore
+        : undefined,
+      parkCount: Number.isFinite(state?.parkCount)
+        ? Math.max(0, Math.floor(state!.parkCount!))
+        : undefined,
+      lastRetryReason: state?.lastRetryReason,
       log,
     };
 
     // 单条自身已经超过上限时，淘汰完其它健康日志也不可能让它合规。
     if (bytes > this.maxTotalBytes || this.maxEntries < 1) {
-      this.stats.quotaDrops++;
-      this.reportDrop(log, 'storage-quota');
+      await this.rejectPersistRecord(log, 'storage-quota', epoch);
       return;
     }
 
-    await this.makeRoomFor(bytes);
+    let hasRoom: boolean;
+    try {
+      hasRoom = await this.makeRoomFor(bytes, epoch, splitId);
+    } catch (error) {
+      this.deferPersistAfterStorageError(log, priority, state, error);
+      return;
+    }
+    if (!hasRoom) {
+      await this.rejectPersistRecord(log, 'storage-quota', epoch);
+      return;
+    }
+    if (!this.isEpoch(epoch) || !this.store) return;
 
     try {
       await this.store.put(record);
     } catch (err) {
+      if (!this.isEpoch(epoch)) return;
       if (!isQuotaError(err)) {
-        // 这条本身就存不下（结构化克隆失败等），腾出多少空间都没用。
-        // 当成配额问题去淘汰，只会白白搭进去一批本来好好的日志。
-        this.debug('record is not storable, dropping:', err);
-        this.reportDrop(log, 'storage-rejected');
+        if (isPermanentRecordError(err)) {
+          this.debug('record is not storable, dropping:', err);
+          await this.rejectPersistRecord(log, 'storage-rejected', epoch);
+        } else {
+          this.deferPersistAfterStorageError(log, priority, state, err);
+        }
         return;
       }
       // 确实是配额：再淘汰一批后重试一次，仍失败就明确丢弃
       this.debug('quota hit, evicting and retrying:', err);
-      await this.evictOldest(Math.max(1, Math.ceil(this.index.size * 0.2)));
+      const evicted = await this.evictOldest(
+        Math.max(1, Math.ceil(this.index.size * 0.2)),
+        epoch,
+        splitId,
+      );
+      if (splitId !== undefined && evicted === 0) {
+        await this.rejectPersistRecord(log, 'storage-quota', epoch);
+        return;
+      }
+      if (!this.isEpoch(epoch) || !this.store) return;
       try {
         await this.store.put(record);
       } catch (retryErr) {
-        this.stats.quotaDrops++;
-        this.debug('put failed after eviction, dropping:', retryErr);
-        this.reportDrop(log, 'storage-quota');
+        if (!this.isEpoch(epoch)) return;
+        if (isQuotaError(retryErr)) {
+          this.debug('put failed after eviction, dropping:', retryErr);
+          await this.rejectPersistRecord(log, 'storage-quota', epoch);
+        } else if (isPermanentRecordError(retryErr)) {
+          this.debug('record is not storable after quota recovery:', retryErr);
+          await this.rejectPersistRecord(log, 'storage-rejected', epoch);
+        } else {
+          this.deferPersistAfterStorageError(log, priority, state, retryErr);
+        }
         return;
       }
     }
 
+    if (!this.isEpoch(epoch)) return;
     this.index.set(record.logId, {
       logId: record.logId,
       storedAt: record.storedAt,
       capturedAt: record.capturedAt,
       priority: record.priority,
       bytes: record.bytes,
-      replayAttempts: 0,
+      replayAttempts: record.replayAttempts,
+      splitId: record.splitId,
       notBefore: record.notBefore,
+      serverNotBefore: record.serverNotBefore,
       parkCount: record.parkCount,
       lastRetryReason: record.lastRetryReason,
     });
     this.totalBytes += bytes;
     const backend = this.store.backend;
     if (backend === 'indexeddb' || backend === 'localstorage') {
-      this.logger?.emit('delivery:persisted', {
-        logId: record.logId,
-        capturedAt: record.capturedAt,
-        bytes: record.bytes,
-        backend,
-      });
+      try {
+        this.logger?.emit('delivery:persisted', {
+          logId: record.logId,
+          capturedAt: record.capturedAt,
+          bytes: record.bytes,
+          backend,
+        });
+      } catch (err) {
+        this.debug('delivery:persisted listener failed:', err);
+      }
     }
   }
 
   /** 为新记录腾出条数与字节配额 */
-  private async makeRoomFor(bytes: number): Promise<void> {
+  private async makeRoomFor(
+    bytes: number,
+    epoch: number,
+    protectedSplitId?: string,
+  ): Promise<boolean> {
     while (
+      this.isEpoch(epoch) &&
       this.index.size > 0 &&
       (this.index.size >= this.maxEntries || this.totalBytes + bytes > this.maxTotalBytes)
     ) {
-      const evicted = await this.evictOldest(1);
+      const evicted = await this.evictOldest(1, epoch, protectedSplitId);
       if (evicted === 0) break;
     }
+    return this.index.size < this.maxEntries && this.totalBytes + bytes <= this.maxTotalBytes;
   }
 
   /**
@@ -1086,18 +1662,66 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
    * 按落盘时间淘汰而不是按优先级：断网期间的日志优先级往往一样，
    * 时间顺序是唯一稳定且可预期的标准。
    */
-  private async evictOldest(count: number): Promise<number> {
-    const candidates = Array.from(this.index.values())
-      .sort((a, b) => a.storedAt - b.storedAt)
-      .slice(0, count);
+  private async evictOldest(
+    count: number,
+    epoch: number,
+    protectedSplitId?: string,
+  ): Promise<number> {
+    if (!this.isEpoch(epoch)) return 0;
+    const candidates: OfflineRecordMeta[] = [];
+    for (const meta of Array.from(this.index.values()).sort((a, b) => a.storedAt - b.storedAt)) {
+      if (protectedSplitId !== undefined) {
+        const record = await this.safeGet(meta.logId);
+        if (record && getSplitId(record.log) === protectedSplitId) continue;
+      }
+      candidates.push(meta);
+      if (candidates.length >= count) break;
+    }
     let evicted = 0;
     for (const meta of candidates) {
+      if (!this.isEpoch(epoch)) return evicted;
       if (!this.index.has(meta.logId)) continue;
       const n = await this.deleteSplitGroup(meta.logId, 'storage-quota');
       this.stats.quotaDrops += Math.max(1, n);
       evicted += Math.max(1, n);
     }
     return evicted;
+  }
+
+  /** 任一分片无法落盘时清掉已落盘兄弟，并拒绝本轮后续分片。 */
+  private async rejectPersistRecord(
+    log: LogEntry,
+    reason: 'storage-quota' | 'storage-rejected',
+    epoch: number,
+  ): Promise<void> {
+    const splitId = getSplitId(log);
+    if (splitId === undefined) {
+      if (reason === 'storage-quota') this.stats.quotaDrops++;
+      this.reportDrop(log, reason);
+      return;
+    }
+
+    this.rememberRejectedPersistSplit(splitId, reason);
+    // hydrate 后 meta.splitId 已是权威分组索引。终态清理不能先依赖正文读取：一次
+    // 短暂 get 失败若阻断删除，当前拒绝事件就会被吞掉，残片也没有后续唤醒。
+    const siblingIds = Array.from(this.index.values())
+      .filter((meta) => meta.splitId === splitId)
+      .map((meta) => meta.logId);
+    const siblingRecords: OfflineRecord[] = [];
+    for (const logId of siblingIds) {
+      if (!this.isEpoch(epoch)) return;
+      try {
+        const record = await this.safeGet(logId);
+        if (record) siblingRecords.push(record);
+      } catch (error) {
+        this.debug('split rejection could not read sibling body; deleting by indexed id:', error);
+      }
+      await this.safeDelete(logId);
+    }
+    for (const record of siblingRecords) this.reportDrop(record.log, reason);
+    const removed = siblingIds.length;
+    if (reason === 'storage-quota') this.stats.quotaDrops += removed + 1;
+    if (this.isEpoch(epoch)) this.reportDrop(log, reason);
   }
 
   /**
@@ -1108,34 +1732,29 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
     logId: string,
     reason: UploadDropReason,
   ): Promise<number> {
+    const indexedMeta = this.index.get(logId);
     const primary = await this.safeGet(logId);
-    const splitId = primary?.log.tags?.splitId;
-    if (splitId === undefined) {
-      await this.safeDelete(logId);
-      if (primary) this.reportDrop(primary.log, reason);
-      return primary ? 1 : 0;
-    }
+    const splitId = indexedMeta
+      ? (indexedMeta.splitId ?? undefined)
+      : (primary ? getSplitId(primary.log) : undefined);
+    // hydrate 后 meta.splitId 是分组的权威索引。正文可能被另一个 Tab 删除；
+    // 它只影响 drop 事件能否携带原日志，绝不能改变本次需要清理的成员集合。
+    const memberIds = splitId === undefined
+      ? [logId]
+      : Array.from(this.index.values())
+          .filter((meta) => meta.splitId === splitId)
+          .map((meta) => meta.logId);
+    if (!memberIds.includes(logId)) memberIds.push(logId);
 
-    const sid = String(splitId);
-    const siblingIds: string[] = [];
-    for (const id of this.index.keys()) {
-      const rec = id === logId ? primary : await this.safeGet(id);
-      if (rec && String(rec.log.tags?.splitId ?? '') === sid) {
-        siblingIds.push(id);
-      }
+    // 先完成全部只读检查，再开始删除，避免中途读失败留下人为制造的半组。
+    const records: OfflineRecord[] = [];
+    for (const id of memberIds) {
+      const record = id === logId ? primary : await this.safeGet(id);
+      if (record) records.push(record);
     }
-    if (!siblingIds.includes(logId)) siblingIds.push(logId);
-
-    let n = 0;
-    for (const id of siblingIds) {
-      const rec = id === logId ? primary : await this.safeGet(id);
-      await this.safeDelete(id);
-      if (rec) {
-        this.reportDrop(rec.log, reason);
-        n++;
-      }
-    }
-    return n;
+    for (const id of memberIds) await this.safeDelete(id);
+    for (const record of records) this.reportDrop(record.log, reason);
+    return memberIds.length;
   }
 
   /**
@@ -1153,10 +1772,79 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
 
   // ==================== 补传 ====================
 
+  private async drainPendingPersists(epoch: number): Promise<void> {
+    const pending = this.pendingPersists.splice(0);
+    for (const item of pending) {
+      if (!this.isEpoch(epoch)) return;
+      if (
+        this.deliveredTombstones.has(item.log.logId)
+        || this.preHydrationDeletes.has(item.log.logId)
+        || hasPendingRecordDelete(this.claimedResources, item.log.logId)
+      ) {
+        continue;
+      }
+      await this.persist(item.log, item.priority, item.state);
+    }
+  }
+
+  /** 短暂读写故障后的统一恢复入口：先重放写意图，再恢复补传扫描。 */
+  private scheduleStorageRetry(): void {
+    const epoch = this.epoch;
+    this.enqueueOp(async () => {
+      try {
+        await this.flushPendingRecordDeletes();
+        await this.drainPendingPersists(epoch);
+        if (this.pendingPersists.length === 0) await this.replay();
+        if (
+          this.pendingPersists.length === 0
+          && !hasPendingRecordDeletes(this.deletionResourceKeys())
+        ) {
+          this.clearStorageRetryTimer(true);
+        }
+      } catch (error) {
+        this.armStorageRetryWake();
+        throw error;
+      }
+    });
+  }
+
   private scheduleReplay(): void {
     if (this.destroyed) return;
     if (this.index.size === 0) return;
-    this.enqueueOp(() => this.replay());
+    this.enqueueOp(async () => {
+      try {
+        await this.replay();
+        if (
+          this.pendingPersists.length === 0
+          && !hasPendingRecordDeletes(this.deletionResourceKeys())
+        ) {
+          this.clearStorageRetryTimer(true);
+        }
+      } catch (error) {
+        this.armStorageRetryWake();
+        throw error;
+      }
+    });
+  }
+
+  private armStorageRetryWake(): void {
+    if (this.destroyed || this.storageRetryTimer) return;
+    this.storageRetryDelay = this.storageRetryDelay === 0
+      ? 1000
+      : Math.min(this.storageRetryDelay * 2, 60_000);
+    const epoch = this.epoch;
+    this.storageRetryTimer = setTimeout(() => {
+      this.storageRetryTimer = null;
+      if (this.isEpoch(epoch)) this.scheduleStorageRetry();
+    }, this.storageRetryDelay);
+  }
+
+  private clearStorageRetryTimer(resetDelay = false): void {
+    if (this.storageRetryTimer) {
+      clearTimeout(this.storageRetryTimer);
+      this.storageRetryTimer = null;
+    }
+    if (resetDelay) this.storageRetryDelay = 0;
   }
 
   private armOverflowReplayWake(): void {
@@ -1179,10 +1867,11 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
   private armDeferredReplayWake(deadline: number): void {
     this.clearDeferredReplayTimer();
     if (this.destroyed || !Number.isFinite(deadline)) return;
+    const epoch = this.epoch;
     const delay = Math.max(0, deadline - Date.now());
     this.deferredReplayTimer = setTimeout(() => {
       this.deferredReplayTimer = null;
-      if (!this.destroyed) this.scheduleReplay();
+      if (this.isEpoch(epoch)) this.scheduleReplay();
     }, Math.min(delay, 2_147_483_647));
   }
 
@@ -1193,13 +1882,27 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
   }
 
   private async replay(): Promise<void> {
+    const epoch = this.epoch;
+    if (!this.isEpoch(epoch)) return;
     if (!this.store || this.store.backend === 'noop') return;
+    if (!this.storageOperational) return;
     if (this.index.size === 0) return;
 
     const upload = this.getUploadPlugin();
     if (!upload) return;
 
     const now = Date.now();
+    // 未提交写意图是持久状态机的一部分：新分片还在退避时，磁盘上的兄弟只是
+    // “暂时不完整”，不能被完整性校验当成损坏残组删除；deadline 更新待提交时，
+    // 也不能按旧期限提前补传。
+    const pendingPersistLogIds = new Set(
+      this.pendingPersists.map((item) => item.log.logId),
+    );
+    const pendingPersistSplitIds = new Set(
+      this.pendingPersists
+        .map((item) => getSplitId(item.log))
+        .filter((splitId): splitId is string => splitId !== undefined),
+    );
     // 对账：既没等到 success 也没等到 drop 的记录，超时后允许再次补传
     for (const [logId, startedAt] of this.inFlight) {
       if (now - startedAt >= this.options.replayTimeoutMs) {
@@ -1208,55 +1911,99 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
     }
 
     const queueStatus = upload.getQueueStatus();
-    if (queueStatus.maxSize - queueStatus.length - queueStatus.parked <= 0) {
+    if (queueStatus.maxSize - queueStatus.length - queueStatus.parked - queueStatus.admitting <= 0) {
       this.armOverflowReplayWake();
       return;
     }
 
-    let earliestDeferred = Number.POSITIVE_INFINITY;
-    const eligible = Array.from(this.index.values())
-      .filter((meta) => !this.inFlight.has(meta.logId))
-      .filter((meta) => !this.deliveredTombstones.has(meta.logId))
-      .filter((meta) => !hasPendingRecordDelete(this.claimedResources, meta.logId))
-      // 还被上传队列持有的不投：网络恢复瞬间队列自己就会把它发出去，
-      // 这里再投一遍就是实打实的重复上报
-      .filter((meta) => !upload.isPending(meta.logId))
-      .filter((meta) => {
-        if ((meta.notBefore ?? 0) <= now) return true;
-        earliestDeferred = Math.min(earliestDeferred, meta.notBefore!);
-        return false;
-      })
+    // 必须先用完整索引建组，再按组判断 inFlight / pending / Retry-After。
+    // 先逐条筛选会让同组中“已到期”的分片先被单独 requeue，破坏全有或全无语义。
+    const metaGroups = new Map<string, OfflineRecordMeta[]>();
+    const ordered = Array.from(this.index.values())
       .sort((a, b) => b.priority - a.priority || a.storedAt - b.storedAt);
-    if (earliestDeferred !== Number.POSITIVE_INFINITY) {
-      this.armDeferredReplayWake(earliestDeferred);
-    }
-
-    // 先按 splitId 建组，再按容量选整组。不能先 slice 后补兄弟：补完后可能
-    // 超出 room，requeue 会立即触发 queue-overflow，把刚选中的分片组自己撕碎。
-    const groups = new Map<string, Array<{ meta: OfflineRecordMeta; record: OfflineRecord }>>();
-    for (const meta of eligible) {
-      // 前面某个过期分片可能已经把整组从索引删除。
+    for (const meta of ordered) {
+      if (!this.isEpoch(epoch)) return;
       if (!this.index.has(meta.logId)) continue;
       if (now - meta.storedAt >= this.options.ttl) {
         await this.deleteSplitGroup(meta.logId, 'cache-expired');
         continue;
       }
-      const record = await this.safeGet(meta.logId);
-      if (!record) {
-        this.removeFromIndex(meta.logId);
+
+      const groupKey = meta.splitId == null ? `log:${meta.logId}` : `split:${meta.splitId}`;
+      const group = metaGroups.get(groupKey);
+      if (group) group.push(meta);
+      else metaGroups.set(groupKey, [meta]);
+    }
+
+    let earliestDeferred = Number.POSITIVE_INFINITY;
+    const groups = new Map<string, Array<{ meta: OfflineRecordMeta; record: OfflineRecord }>>();
+    for (const [groupKey, metas] of metaGroups) {
+      let blocked = groupKey.startsWith('split:')
+        ? pendingPersistSplitIds.has(groupKey.slice(6))
+        : metas.some((meta) => pendingPersistLogIds.has(meta.logId));
+      let groupDeadline = 0;
+      for (const meta of metas) {
+        if (
+          this.inFlight.has(meta.logId) ||
+          this.deliveredTombstones.has(meta.logId) ||
+          hasPendingRecordDelete(this.claimedResources, meta.logId) ||
+          upload.isPending(meta.logId)
+        ) {
+          blocked = true;
+        }
+        const notBefore = Math.max(meta.notBefore ?? 0, meta.serverNotBefore ?? 0);
+        if (notBefore > now) {
+          blocked = true;
+          groupDeadline = Math.max(groupDeadline, notBefore);
+        }
+      }
+      if (groupDeadline > 0) earliestDeferred = Math.min(earliestDeferred, groupDeadline);
+      if (blocked) continue;
+
+      const members: Array<{ meta: OfflineRecordMeta; record: OfflineRecord }> = [];
+      let missing = false;
+      for (const meta of metas) {
+        const record = await this.safeGet(meta.logId);
+        if (!this.isEpoch(epoch)) return;
+        if (!record) {
+          this.removeFromIndex(meta.logId);
+          missing = true;
+          continue;
+        }
+        members.push({ meta, record });
+      }
+      if (missing) {
+        // 索引/正文不一致时不能把剩余分片作为“完整组”发送。
+        if (groupKey.startsWith('split:') && members.length > 0) {
+          await this.deleteSplitGroup(members[0]!.meta.logId, 'storage-rejected');
+        }
         continue;
       }
-      const splitId = record.log.tags?.splitId;
-      const groupKey = splitId === undefined ? `log:${meta.logId}` : `split:${String(splitId)}`;
-      const group = groups.get(groupKey);
-      const member = { meta, record };
-      if (group) group.push(member);
-      else groups.set(groupKey, [member]);
+      if (
+        groupKey.startsWith('split:') &&
+        members.length > 0 &&
+        !isCompleteSplitGroup(members.map((member) => member.record), groupKey.slice(6))
+      ) {
+        // 旧版本、崩溃中断或 hydrate 淘汰都可能只留下部分分片。缺任何一片时
+        // 后端都无法重组，继续上传只会制造不可恢复的孤儿数据。
+        await this.deleteSplitGroup(members[0]!.meta.logId, 'storage-rejected');
+        continue;
+      }
+      if (members.length > 0) groups.set(groupKey, members);
+    }
+    if (earliestDeferred !== Number.POSITIVE_INFINITY) {
+      this.armDeferredReplayWake(earliestDeferred);
     }
 
     // safeGet 是异步的，期间宿主可能继续入队；真正 requeue 前重新计算容量。
     const latestStatus = upload.getQueueStatus();
-    let room = Math.max(0, latestStatus.maxSize - latestStatus.length - latestStatus.parked);
+    let room = Math.max(
+      0,
+      latestStatus.maxSize
+        - latestStatus.length
+        - latestStatus.parked
+        - latestStatus.admitting,
+    );
     if (room <= 0) {
       this.armOverflowReplayWake();
       return;
@@ -1310,7 +2057,8 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
     return { ...log, tags };
   }
 
-  private async registerReplayFailure(logId: string): Promise<void> {
+  private async registerReplayFailure(log: LogEntry): Promise<void> {
+    const logId = log.logId;
     this.inFlight.delete(logId);
     const meta = this.index.get(logId);
     if (!meta) return;
@@ -1320,7 +2068,15 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
     meta.replayAttempts++;
     const attempts = meta.replayAttempts;
 
-    const record = await this.safeGet(logId);
+    let record: OfflineRecord | null;
+    try {
+      record = await this.safeGet(logId);
+    } catch (error) {
+      this.deferPersistAfterStorageError(log, meta.priority, {
+        replayAttempts: attempts,
+      }, error);
+      return;
+    }
     if (!record) {
       this.removeFromIndex(logId);
       return;
@@ -1337,7 +2093,12 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
     try {
       await this.store!.put(record);
     } catch (err) {
-      this.debug('failed to persist replay attempt count:', err);
+      // 补传预算与 Retry-After 同属持久状态。写回失败时先把更新意图放进统一
+      // 退避链；在它提交前 replay 的可见性屏障会扣住本条，避免刷新后预算倒退。
+      this.deferPersistAfterStorageError(record.log, record.priority, {
+        replayAttempts: attempts,
+      }, err);
+      return;
     }
 
     // 继续推进剩余记录。这里不会热循环：每次失败都会消耗一次 replayAttempts，
@@ -1364,7 +2125,11 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
       // 已卸载的 UploadPlugin 会拒接，这时候要退回自己发事件
       if (upload.reportExternalDrop(log, { reason, source }) !== false) return;
     }
-    this.logger?.emit('upload:drop', { log, reason, source });
+    try {
+      this.logger?.emit('upload:drop', { log, reason, source });
+    } catch (err) {
+      this.debug('host drop event failed:', err);
+    }
   }
 
   private removeFromIndex(logId: string): void {
@@ -1374,24 +2139,47 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
     this.totalBytes = Math.max(0, this.totalBytes - meta.bytes);
   }
 
+  /** 初始化/降级期保护全部候选资源；完成 reconciliation 后只标记实际后端。 */
+  private deletionResourceKeys(): string[] {
+    const backend = this.store?.backend;
+    if (
+      this.hydrated
+      && this.storageOperational
+      && backend !== undefined
+      && backend !== 'noop'
+    ) {
+      return backendResourceKeys(this.options, backend);
+    }
+    return [...this.claimedResources];
+  }
+
   private async safeGet(logId: string): Promise<OfflineRecord | null> {
     try {
       return (await this.store?.get(logId)) ?? null;
     } catch (err) {
       this.debug('get failed:', err);
-      return null;
+      throw err;
     }
   }
 
-  private async safeDelete(logId: string): Promise<void> {
+  private async safeDelete(logId: string): Promise<boolean> {
     const store = this.store;
+    const resources = this.deletionResourceKeys();
     // 删盘意图先记墓碑：即使下一行就遇到 uninstall/存储异常，下一个实例
     // 也会在 hydrate 前继续删，而不是把已终止的记录重放。
-    notePendingRecordDelete(this.claimedResources, logId);
-    // store 尚未挂上或已是 noop：绝不能把跨生命周期墓碑当作已经清理。
-    if (!store || store.backend === 'noop') {
+    notePendingRecordDelete(resources, logId);
+    if (!store) {
+      // 后端尚未确定，不能把“没有句柄”误当成“没有记录”。
       this.removeFromIndex(logId);
-      return;
+      return false;
+    }
+    if (store.backend === 'noop') {
+      // noop 生命周期没有可寻址的持久副本。保留每个在线成功 logId 只会让
+      // 模块级意图集合无界增长；真正打开后端的生命周期会按盘上 terminal
+      // 标记和自身索引重新对账。
+      clearPendingRecordDelete(resources, logId);
+      this.removeFromIndex(logId);
+      return false;
     }
     try {
       await store.delete(logId);
@@ -1400,18 +2188,26 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
         throw new Error('offline delete did not stick');
       }
       clearPendingRecordDelete(backendResourceKeys(this.options, store.backend), logId);
+      this.removeFromIndex(logId);
+      return true;
     } catch (err) {
       this.debug('delete failed:', err);
       // 模块级墓碑只覆盖同一 JS realm。把终态标记写回记录，真正关闭页面后
       // 下一实例也只会继续删除，绝不会把已终止日志重新补传。
       try {
         const record = await store.get(logId);
-        if (record) await store.put({ ...record, terminal: true });
+        if (record) {
+          await store.put({ ...record, terminal: true });
+        }
       } catch (markErr) {
         this.debug('failed to persist terminal tombstone:', markErr);
       }
+      // 删除、墓碑写回都属于持久状态变更；短暂故障应在本生命周期自动恢复，
+      // 而不是只能寄希望于下一次重新安装插件。
+      this.armStorageRetryWake();
     }
     this.removeFromIndex(logId);
+    return false;
   }
 
   /** 清理本实际资源上遗留的「已终止但未删盘」记录 */
@@ -1433,7 +2229,7 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
    * IndexedDB 是异步的，drop / success / replay 可能在同一 tick 里连着来；
    * 不串行化就会出现"删除跑在写入前面"这类竞态。
    */
-  private enqueueOp<T>(op: () => Promise<T>): Promise<T | undefined> {
+  private enqueueOp<T>(op: () => Promise<T>, propagateError = false): Promise<T | undefined> {
     const epoch = this.epoch;
     const run = async (): Promise<T | undefined> => {
       // destroyed 或世代已变（同实例 remount）→ 上一轮工作作废
@@ -1443,13 +2239,14 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
       } catch (err) {
         // 单个操作失败绝不能打断整条链，否则后续的删除 / 补传全部停摆
         this.debug('offline op failed:', err);
+        if (propagateError) throw err;
         return undefined;
       } finally {
         this.notifyDeliveryStatus();
       }
     };
     const next = this.chain.then(run, run);
-    this.chain = next;
+    this.chain = next.then(() => undefined, () => undefined);
     return next;
   }
 
@@ -1458,8 +2255,8 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
     this.storageWarned = true;
     if (typeof console === 'undefined' || !console.warn) return;
     console.warn(
-      '[Aemeath] OfflinePersistencePlugin found no usable storage backend '
-        + '(IndexedDB and key-value storage both unavailable). Offline logs will NOT be '
+      '[Aemeath] OfflinePersistencePlugin found no usable, fully reconciled storage backend '
+        + '(storage is unavailable or failed its integrity scan). Offline logs will NOT be '
         + 'preserved across network outages. Uploading itself is unaffected.',
     );
   }

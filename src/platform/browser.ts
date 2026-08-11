@@ -16,30 +16,42 @@ import type {
 } from './types';
 
 export function createBrowserAdapter(): PlatformAdapter {
+  let lastStorageError: unknown;
   return {
     type: 'browser',
 
     storage: {
       getItem(key: string): string | null {
+        lastStorageError = undefined;
         try {
           return localStorage.getItem(key);
-        } catch {
+        } catch (error) {
+          lastStorageError = error;
           return null;
         }
       },
       setItem(key: string, value: string): void {
+        lastStorageError = undefined;
         try {
           localStorage.setItem(key, value);
-        } catch {
+        } catch (error) {
+          lastStorageError = error;
           // storage full or blocked
         }
       },
       removeItem(key: string): void {
+        lastStorageError = undefined;
         try {
           localStorage.removeItem(key);
-        } catch {
+        } catch (error) {
+          lastStorageError = error;
           // blocked
         }
+      },
+      consumeLastError(): unknown {
+        const error = lastStorageError;
+        lastStorageError = undefined;
+        return error;
       },
     },
 

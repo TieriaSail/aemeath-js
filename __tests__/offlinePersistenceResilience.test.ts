@@ -10,7 +10,8 @@ import { IDBFactory } from 'fake-indexeddb';
 import { AemeathLogger } from '../src/core/Logger';
 import { UploadPlugin, type UploadResult } from '../src/plugins/UploadPlugin';
 import { OfflinePersistencePlugin } from '../src/plugins/OfflinePersistencePlugin';
-import type { LogEntry } from '../src/types';
+import * as storeModule from '../src/plugins/offline/OfflineStore';
+import { LogLevel, type LogEntry } from '../src/types';
 
 function setOnLine(value: boolean): void {
   Object.defineProperty(window.navigator, 'onLine', {
@@ -114,6 +115,325 @@ describe('OfflinePersistencePlugin — 存储异常下的终止性', () => {
 
     expect(uploadFn).not.toHaveBeenCalled();
     expect(offlineAfterRestart.getStatus().pending).toBe(0);
+  });
+
+  it('一次性非配额写故障应保留写意图并自动退避重试', async () => {
+    const realCreateStore = storeModule.createOfflineStore;
+    let failRecordWrite = true;
+    const createSpy = vi.spyOn(storeModule, 'createOfflineStore').mockImplementation(
+      async (options) => {
+        const store = await realCreateStore(options);
+        return {
+          ...store,
+          put: async (record) => {
+            if (failRecordWrite) {
+              failRecordWrite = false;
+              throw new DOMException('temporary transaction failure', 'UnknownError');
+            }
+            await store.put(record);
+          },
+        };
+      },
+    );
+    const upload = new UploadPlugin({
+      onUpload: async (): Promise<UploadResult> => ({ success: true }),
+      queue: { deduplicationDelay: 0 },
+      cache: { enabled: false },
+      saveOnUnload: false,
+    });
+    const offline = new OfflinePersistencePlugin({ storage: 'localstorage' });
+    const drops: string[] = [];
+    logger.on('upload:drop', ((payload: { reason?: string }) => {
+      if (payload.reason) drops.push(payload.reason);
+    }) as never);
+    logger.use(upload);
+    logger.use(offline);
+    await offline.whenReady();
+    createSpy.mockRestore();
+
+    const log: LogEntry = {
+      logId: 'transient-put',
+      level: LogLevel.ERROR,
+      message: 'must survive a one-shot storage fault',
+      timestamp: Date.now(),
+    };
+    setOnLine(false);
+    logger.emit('upload:drop', { log, reason: 'max-retries', retryCount: 1 });
+
+    await settle(20);
+    expect(failRecordWrite).toBe(false);
+    expect(offline.getStatus()).toMatchObject({ pending: 0, buffered: 1 });
+    expect(logger.getDeliveryStatus()).toMatchObject({
+      state: 'degraded',
+      totalPending: 1,
+      buffered: 1,
+      persistence: { buffered: 1 },
+    });
+    expect(drops).not.toContain('storage-rejected');
+
+    await settle(110);
+    expect(offline.getStatus()).toMatchObject({ pending: 1, buffered: 0 });
+    expect(drops).not.toContain('storage-rejected');
+  });
+
+  it('持续瞬时写故障也不能让待写意图绕过配置容量无限增长', async () => {
+    const realCreateStore = storeModule.createOfflineStore;
+    const createSpy = vi.spyOn(storeModule, 'createOfflineStore').mockImplementation(
+      async (options) => {
+        const store = await realCreateStore(options);
+        return {
+          ...store,
+          put: async () => {
+            throw new DOMException('storage temporarily unavailable', 'UnknownError');
+          },
+        };
+      },
+    );
+    const upload = new UploadPlugin({
+      onUpload: async (): Promise<UploadResult> => ({ success: true }),
+      queue: { offlinePolicy: 'pause', deduplicationDelay: 0 },
+      cache: { enabled: false },
+      saveOnUnload: false,
+    });
+    const offline = new OfflinePersistencePlugin({
+      storage: 'localstorage',
+      maxEntries: 1,
+      maxTotalBytes: 64_000,
+    });
+    const drops: string[] = [];
+    logger.on('upload:drop', ((payload: { reason?: string }) => {
+      if (payload.reason) drops.push(payload.reason);
+    }) as never);
+    logger.use(upload);
+    logger.use(offline);
+    await offline.whenReady();
+    createSpy.mockRestore();
+
+    setOnLine(false);
+    for (const logId of ['bounded-buffer-1', 'bounded-buffer-2']) {
+      const log: LogEntry = {
+        logId,
+        level: LogLevel.ERROR,
+        message: 'bounded transient write intent',
+        timestamp: Date.now(),
+      };
+      logger.emit('upload:drop', { log, reason: 'max-retries', retryCount: 1 });
+    }
+    await settle(20);
+
+    expect(offline.getStatus()).toMatchObject({ pending: 0, buffered: 1, quotaDrops: 1 });
+    expect(drops).toContain('storage-quota');
+    expect(drops).not.toContain('storage-rejected');
+
+    await offline.clear();
+    expect(offline.getStatus()).toMatchObject({ pending: 0, buffered: 0 });
+    await settle(110);
+    expect(offline.getStatus()).toMatchObject({ pending: 0, buffered: 0 });
+  });
+
+  it('补传次数写回短暂失败时必须先提交状态，再允许下一次补传', async () => {
+    const realCreateStore = storeModule.createOfflineStore;
+    let failAttemptUpdate = true;
+    const createSpy = vi.spyOn(storeModule, 'createOfflineStore').mockImplementation(
+      async (options) => {
+        const store = await realCreateStore(options);
+        return {
+          ...store,
+          put: async (record) => {
+            if (failAttemptUpdate && record.replayAttempts === 1) {
+              failAttemptUpdate = false;
+              throw new DOMException('attempt update temporarily failed', 'UnknownError');
+            }
+            await store.put(record);
+          },
+        };
+      },
+    );
+    const uploadFn = vi.fn(async (): Promise<UploadResult> => ({ success: true }));
+    const upload = new UploadPlugin({
+      onUpload: uploadFn,
+      queue: { offlinePolicy: 'pause', deduplicationDelay: 0 },
+      cache: { enabled: false },
+      saveOnUnload: false,
+    });
+    const offline = new OfflinePersistencePlugin({ storage: 'localstorage' });
+    logger.use(upload);
+    logger.use(offline);
+    await offline.whenReady();
+    createSpy.mockRestore();
+
+    const log: LogEntry = {
+      logId: 'durable-attempt-update',
+      level: LogLevel.ERROR,
+      message: 'retry budget must not regress',
+      timestamp: Date.now(),
+    };
+    logger.emit('upload:drop', { log, reason: 'max-retries', retryCount: 1 });
+    await settle(20);
+    expect(offline.getStatus().pending).toBe(1);
+
+    logger.emit('upload:drop', {
+      log,
+      reason: 'max-retries',
+      retryCount: 1,
+      source: 'offline-replay',
+    });
+    await settle(20);
+    expect(failAttemptUpdate).toBe(false);
+    expect(offline.getStatus()).toMatchObject({ pending: 1, buffered: 1 });
+    expect(uploadFn).not.toHaveBeenCalled();
+
+    await settle(110);
+    expect(uploadFn).toHaveBeenCalledOnce();
+    expect(offline.getStatus()).toMatchObject({ pending: 0, buffered: 0 });
+  });
+
+  it('终态删除短暂失败时应在当前生命周期自动重试物理清理', async () => {
+    const realCreateStore = storeModule.createOfflineStore;
+    let failDelete = true;
+    let backingStore: Awaited<ReturnType<typeof realCreateStore>> | undefined;
+    const createSpy = vi.spyOn(storeModule, 'createOfflineStore').mockImplementation(
+      async (options) => {
+        const store = await realCreateStore(options);
+        backingStore = store;
+        return {
+          ...store,
+          delete: async (logId) => {
+            if (failDelete) {
+              failDelete = false;
+              throw new DOMException('delete temporarily failed', 'UnknownError');
+            }
+            await store.delete(logId);
+          },
+        };
+      },
+    );
+    const upload = new UploadPlugin({
+      onUpload: async (): Promise<UploadResult> => ({ success: true }),
+      cache: { enabled: false },
+      saveOnUnload: false,
+    });
+    const offline = new OfflinePersistencePlugin({ storage: 'localstorage' });
+    logger.use(upload);
+    logger.use(offline);
+    await offline.whenReady();
+    createSpy.mockRestore();
+
+    const log: LogEntry = {
+      logId: 'transient-delete',
+      level: LogLevel.ERROR,
+      message: 'terminal records must be physically cleaned',
+      timestamp: Date.now(),
+    };
+    logger.emit('upload:drop', { log, reason: 'max-retries', retryCount: 1 });
+    await settle(20);
+    expect(await backingStore!.get(log.logId)).not.toBeNull();
+
+    logger.emit('upload:drop', { log, reason: 'no-retry', retryCount: 1 });
+    await settle(20);
+    expect(failDelete).toBe(false);
+    expect((await backingStore!.get(log.logId))?.terminal).toBe(true);
+
+    await settle(110);
+    expect(await backingStore!.get(log.logId)).toBeNull();
+  });
+
+  it('分片写意图未提交时补传扫描不得把暂时残组当成损坏数据', async () => {
+    const realCreateStore = storeModule.createOfflineStore;
+    let failFirstChunk = true;
+    const createSpy = vi.spyOn(storeModule, 'createOfflineStore').mockImplementation(
+      async (options) => {
+        const store = await realCreateStore(options);
+        return {
+          ...store,
+          put: async (record) => {
+            if (failFirstChunk && record.logId === 'transient-split-1') {
+              failFirstChunk = false;
+              throw new DOMException('temporary split write failure', 'UnknownError');
+            }
+            await store.put(record);
+          },
+        };
+      },
+    );
+    const uploaded: string[] = [];
+    const rejected: string[] = [];
+    const upload = new UploadPlugin({
+      onUpload: async (log): Promise<UploadResult> => {
+        uploaded.push(log.logId);
+        return { success: true };
+      },
+      queue: { deduplicationDelay: 0 },
+      cache: { enabled: false },
+      saveOnUnload: false,
+    });
+    const offline = new OfflinePersistencePlugin({ storage: 'localstorage' });
+    logger.on('upload:drop', ((payload: { reason?: string }) => {
+      if (payload.reason === 'storage-rejected') rejected.push(payload.reason);
+    }) as never);
+    logger.use(upload);
+    logger.use(offline);
+    await offline.whenReady();
+    createSpy.mockRestore();
+
+    const chunks = [1, 2].map((index): LogEntry => ({
+      logId: `transient-split-${index}`,
+      level: LogLevel.ERROR,
+      message: 'temporary split',
+      timestamp: Date.now(),
+      tags: { splitId: 'transient-split', splitIndex: index, splitTotal: 2 },
+    }));
+    for (const log of chunks) {
+      logger.emit('upload:drop', { log, reason: 'max-retries', retryCount: 1 });
+    }
+    await settle(20);
+    expect(offline.getStatus()).toMatchObject({ pending: 1, buffered: 1 });
+
+    window.dispatchEvent(new Event('online'));
+    await settle(20);
+    expect(uploaded).toEqual([]);
+    expect(rejected).toEqual([]);
+
+    await settle(110);
+    expect(uploaded.sort()).toEqual(['transient-split-1', 'transient-split-2']);
+    expect(rejected).toEqual([]);
+    expect(offline.getStatus().pending).toBe(0);
+  });
+
+  it('裸 splitId 业务标签不得把独立离线日志绑定成不可准入的大组', async () => {
+    const uploaded: string[] = [];
+    const upload = new UploadPlugin({
+      onUpload: async (log): Promise<UploadResult> => {
+        uploaded.push(log.logId);
+        return { success: true };
+      },
+      queue: { maxSize: 1, offlinePolicy: 'pause', deduplicationDelay: 0 },
+      cache: { enabled: false },
+      saveOnUnload: false,
+    });
+    const offline = new OfflinePersistencePlugin({ storage: 'localstorage' });
+    logger.use(upload);
+    logger.use(offline);
+    await offline.whenReady();
+
+    for (const suffix of ['a', 'b']) {
+      const log: LogEntry = {
+        logId: `business-split-${suffix}`,
+        level: LogLevel.ERROR,
+        message: `independent offline ${suffix}`,
+        timestamp: Date.now(),
+        tags: { splitId: 'business-correlation-only' },
+      };
+      logger.emit('upload:drop', { log, reason: 'max-retries', retryCount: 1 });
+    }
+    await settle(20);
+    expect(offline.getStatus().pending).toBe(2);
+
+    window.dispatchEvent(new Event('online'));
+    await settle(50);
+
+    expect(uploaded.sort()).toEqual(['business-split-a', 'business-split-b']);
+    expect(offline.getStatus().pending).toBe(0);
   });
 
   it('日志无法被存储引擎克隆时只丢它自己，不牵连已落盘的其它日志', async () => {

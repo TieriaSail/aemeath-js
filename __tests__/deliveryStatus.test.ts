@@ -92,6 +92,39 @@ describe('统一 Delivery 状态中心', () => {
     expect(logger.getDeliveryStatus().oldestPendingAgeMs).toBeGreaterThanOrEqual(4000);
   });
 
+  it('持久层仍在初始化时拒绝切换 deliveryScope，即使当前计数还是 0', () => {
+    const upload = new UploadPlugin({
+      onUpload: async () => ({ success: true }),
+      deliveryScope: 'tenant-a',
+      cache: { enabled: false },
+      saveOnUnload: false,
+    });
+    logger.use(upload);
+    logger.use({
+      name: 'offline-persistence',
+      install() {},
+      getStatus: () => ({
+        backend: 'initializing',
+        pending: 0,
+        bytes: 0,
+        replaying: 0,
+        quotaDrops: 0,
+        giveUps: 0,
+        replayed: 0,
+        items: [],
+      }),
+    } as unknown as AemeathPlugin);
+
+    expect(logger.getDeliveryStatus()).toMatchObject({
+      totalPending: 0,
+      persistence: { enabled: true, backend: 'initializing' },
+    });
+    expect(() => upload.setOnUpload(async () => ({ success: true }), {
+      deliveryScope: 'tenant-b',
+    })).toThrow(/still initializing/);
+    expect(upload.getDeliveryScope()).toBe('tenant-a');
+  });
+
   it('发送统一生命周期别名与状态事件，同时保留 upload 事件', async () => {
     vi.useFakeTimers();
     const upload = new UploadPlugin({

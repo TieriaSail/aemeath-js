@@ -35,6 +35,26 @@ import { forwardEarlyError } from '../utils/forwardEarlyError';
 
 // 全局单例
 let globalLogger: AemeathLogger | null = null;
+const knownOfflinePersistenceOptions = new Map<string, OfflinePersistencePluginOptions>();
+
+function rememberOfflinePersistenceOptions(options: OfflinePersistencePluginOptions): void {
+  const key = [
+    options.storage ?? 'auto',
+    options.dbName ?? 'aemeath-offline',
+    options.key ?? '__aemeath_offline__',
+  ].join('|');
+  knownOfflinePersistenceOptions.set(key, options);
+}
+
+async function purgeKnownOfflinePersistence(
+  platform: AemeathLogger['platform'],
+): Promise<void> {
+  const targets = knownOfflinePersistenceOptions.size > 0
+    ? [...knownOfflinePersistenceOptions.values()]
+    : [{}];
+  await Promise.all(targets.map((options) => purgeOfflinePersistenceStorage(platform, options)));
+  knownOfflinePersistenceOptions.clear();
+}
 
 const LOG_LEVEL_ORDER: Record<string, number> = {
   debug: 0,
@@ -130,19 +150,54 @@ function init(options: BrowserLoggerOptions = {}): AemeathLogger {
           // 在这里吞掉换成统一结果，两种情况就再也分不开了。
         onUpload: async (log) => {
           const result = await uploadFn(log);
-          return result ?? { success: true };
+          if (
+            result != null &&
+            typeof result === 'object' &&
+            typeof (result as Partial<UploadResult>).success === 'boolean'
+          ) {
+            return result as UploadResult;
+          }
+
+          // IIFE upload 一直允许返回 void；纯 JS 用户也常直接返回 fetch() 的
+          // Response。保留 void 兼容语义，但对 Response-like 值按 HTTP 状态分类，
+          // 否则 4xx/5xx 会被当作没有 success 字段的永久失败直接丢弃。
+          if (
+            result != null &&
+            typeof result === 'object' &&
+            typeof (result as { ok?: unknown }).ok === 'boolean' &&
+            typeof (result as { status?: unknown }).status === 'number'
+          ) {
+            const response = result as unknown as {
+              status: number;
+              headers?: { get?: (name: string) => string | null };
+            };
+            let retryAfter: string | null | undefined;
+            try {
+              retryAfter = response.headers?.get?.('Retry-After');
+            } catch {
+              retryAfter = undefined;
+            }
+            return classifyHttpUploadResponse(response.status, retryAfter);
+          }
+
+          // 只有 null/undefined 才是旧版 void 成功语义；畸形返回值不能伪装成送达。
+          return result == null ? { success: true } : result as UploadResult;
         },
         localPersistence: options.offlinePersistence !== false,
       }),
     );
     if (options.offlinePersistence !== false) {
+      const persistenceOptions = typeof options.offlinePersistence === 'object'
+        ? options.offlinePersistence
+        : {};
+      rememberOfflinePersistenceOptions(persistenceOptions);
       logger.use(
-        new OfflinePersistencePlugin(
-          typeof options.offlinePersistence === 'object' ? options.offlinePersistence : {},
-        ),
+        new OfflinePersistencePlugin(persistenceOptions),
       );
     } else {
-      void purgeOfflinePersistenceStorage(logger.platform);
+      void purgeKnownOfflinePersistence(logger.platform).catch((error) => {
+        console.warn('[Aemeath] Failed to purge offline persistence:', error);
+      });
     }
   }
 

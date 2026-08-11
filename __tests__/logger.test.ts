@@ -889,7 +889,7 @@ describe('afterLog 扇出上限', () => {
             out.push({
               ...entry,
               logId: `${entry.logId}-${splitId}-${i}`,
-              tags: { ...entry.tags, splitId, splitIndex: i, splitTotal: total },
+              tags: { ...entry.tags, splitId, splitIndex: i + 1, splitTotal: total },
             });
           }
         }
@@ -918,6 +918,41 @@ describe('afterLog 扇出上限', () => {
     }
   });
 
+  it('分片交错排列时仍按 splitId 全局原子截断', () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const logger = new AemeathLogger({ enableConsole: false });
+    logger.use({
+      name: 'interleaved-splitter',
+      version: '1.0.0',
+      install: () => {},
+      afterLog: (entry: LogEntry) => {
+        const out: LogEntry[] = [];
+        for (let index = 1; index <= 30; index++) {
+          for (const splitId of ['a', 'b', 'c']) {
+            out.push({
+              ...entry,
+              logId: `${entry.logId}-${splitId}-${index}`,
+              tags: { ...entry.tags, splitId, splitIndex: index, splitTotal: 30 },
+            });
+          }
+        }
+        return out;
+      },
+    });
+    const received: LogEntry[] = [];
+    logger.on('log', (...args: unknown[]) => received.push(args[0] as LogEntry));
+
+    logger.error('interleaved');
+
+    expect(received).toHaveLength(60);
+    const groups = new Map<string, number>();
+    for (const entry of received) {
+      const splitId = String(entry.tags?.splitId);
+      groups.set(splitId, (groups.get(splitId) ?? 0) + 1);
+    }
+    expect([...groups.values()]).toEqual([30, 30]);
+  });
+
   it('单个 splitId 组超过上限时整组放行，不静默丢光', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const logger = new AemeathLogger({ enableConsole: false });
@@ -931,7 +966,7 @@ describe('afterLog 扇出上限', () => {
         return Array.from({ length: total }, (_, i) => ({
           ...entry,
           logId: `${entry.logId}-${i}`,
-          tags: { ...entry.tags, splitId: 'solo', splitIndex: i, splitTotal: total },
+          tags: { ...entry.tags, splitId: 'solo', splitIndex: i + 1, splitTotal: total },
         }));
       },
     });

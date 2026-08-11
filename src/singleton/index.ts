@@ -590,7 +590,9 @@ export function initAemeath(options: AemeathInitOptions = {}): AemeathLogger {
       globalAemeath.uninstall('offline-persistence');
       // 当前实例只知道本次实际使用的后端；再分别扫一遍 IDB/KV，清掉过去
       // 降级会话遗留在另一后端的副本。资源级 purge 会与 uninstall 清理合并等待。
-      void purgeOfflinePersistenceStorage(globalAemeath.platform, offlinePersistenceOptions);
+      void purgeOfflinePersistenceStorage(globalAemeath.platform, offlinePersistenceOptions).catch(
+        (error) => console.warn('[Aemeath] Failed to purge offline persistence:', error),
+      );
       honored.push('offlinePersistence');
     } else {
       const alreadyInstalled = globalAemeath.hasPlugin('offline-persistence');
@@ -734,7 +736,9 @@ export function initAemeath(options: AemeathInitOptions = {}): AemeathLogger {
         new OfflinePersistencePlugin(offlinePersistenceOptions),
       );
     } else {
-      void purgeOfflinePersistenceStorage(logger.platform);
+      void purgeOfflinePersistenceStorage(logger.platform).catch((error) => {
+        console.warn('[Aemeath] Failed to purge offline persistence:', error);
+      });
     }
   } else if (options.offlinePersistence && typeof console !== 'undefined' && console.warn) {
     console.warn(

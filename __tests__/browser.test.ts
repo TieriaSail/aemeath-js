@@ -2,7 +2,14 @@
  * browser/index.ts IIFE 入口测试
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { init, getAemeath, AemeathLogger, ErrorCapturePlugin, UploadPlugin, SafeGuardPlugin } from '../src/browser/index';
+import {
+  init,
+  getAemeath,
+  AemeathLogger,
+  ErrorCapturePlugin,
+  UploadPlugin,
+  SafeGuardPlugin,
+} from '../src/browser/index';
 
 // 重置全局单例（browser/index.ts 内部的 globalLogger）
 // 由于模块级变量无法直接重置，每个测试需要重新 import
@@ -102,6 +109,41 @@ describe('Browser IIFE 入口', () => {
       expect(localStorage.getItem('__logger_upload_queue__')).toBeNull();
     });
 
+    it('IIFE 重启后显式关闭会清理此前使用的自定义持久化位置', async () => {
+      const mod = await import('../src/browser/index');
+      const key = `iife-custom-offline-${Math.random()}`;
+      const logger = mod.init({
+        upload: vi.fn(async () => ({ success: true })),
+        offlinePersistence: { storage: 'localstorage', key },
+      });
+      const offline = logger.getPluginInstance('offline-persistence');
+      expect(offline).toBeInstanceOf(mod.OfflinePersistencePlugin);
+      if (!(offline instanceof mod.OfflinePersistencePlugin)) {
+        throw new Error('offline persistence plugin was not installed');
+      }
+      await offline.whenReady();
+      logger.emit('upload:drop', {
+        log: {
+          logId: 'custom-iife-record',
+          level: 'error',
+          message: 'persisted in custom slot',
+          timestamp: Date.now(),
+        },
+        reason: 'max-retries',
+        retryCount: 1,
+      });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(localStorage.getItem(`${key}:index`)).not.toBeNull();
+
+      mod.destroy();
+      mod.init({ upload: vi.fn(), offlinePersistence: false });
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      expect(localStorage.getItem(`${key}:index`)).toBeNull();
+      expect(localStorage.getItem(`${key}:r:custom-iife-record`)).toBeNull();
+      mod.destroy();
+    });
+
     it('IIFE upload 回调可以返回 UploadResult，不再把失败强制改写为成功', async () => {
       const mod = await import('../src/browser/index');
       const upload = vi.fn(async () => ({
@@ -117,6 +159,38 @@ describe('Browser IIFE 入口', () => {
       const plugin = logger.getPluginInstance('upload') as import('../src/plugins/UploadPlugin').UploadPlugin;
       expect(upload).toHaveBeenCalledTimes(1);
       expect(plugin.getQueueStatus()).toMatchObject({ length: 1, parked: 0 });
+    });
+
+    it('IIFE 兼容直接返回 fetch Response 的旧写法，并按 HTTP 状态分类', async () => {
+      const mod = await import('../src/browser/index');
+      const upload = vi.fn(async () => ({
+        ok: true,
+        status: 204,
+        headers: { get: () => null },
+      }));
+      const logger = mod.init({ upload: upload as never, offlinePersistence: false });
+      logger.error('returned fetch response');
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      const plugin = logger.getPluginInstance('upload') as UploadPlugin;
+      expect(upload).toHaveBeenCalledTimes(1);
+      expect(plugin.getQueueStatus()).toMatchObject({ length: 0, parked: 0 });
+      expect(plugin.getQueueStatus().drops.total).toBe(0);
+    });
+
+    it('IIFE upload 返回畸形对象时不得被误报为上传成功', async () => {
+      const mod = await import('../src/browser/index');
+      const upload = vi.fn(async () => ({}));
+      const logger = mod.init({ upload: upload as never, offlinePersistence: false });
+      const successes = vi.fn();
+      logger.on('upload:success', successes as never);
+      logger.error('malformed callback result');
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      const plugin = logger.getPluginInstance('upload') as UploadPlugin;
+      expect(upload).toHaveBeenCalledTimes(1);
+      expect(successes).not.toHaveBeenCalled();
+      expect(plugin.getQueueStatus().drops.byReason['no-retry']).toBe(1);
     });
 
     it('不传 upload 回调不应安装 UploadPlugin', async () => {

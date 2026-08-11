@@ -151,7 +151,7 @@ describe('补传遇上队列溢出时必须收敛', () => {
       timestamp: now,
       level: LogLevel.ERROR,
       message: `chunk-${index}`,
-      tags: { splitId: 'split-capacity-group', splitIndex: index, splitTotal: 2 },
+      tags: { splitId: 'split-capacity-group', splitIndex: index + 1, splitTotal: 2 },
     }));
     logger.emit('upload:paused', {
       reason: 'seed-test',
@@ -207,7 +207,7 @@ describe('补传遇上队列溢出时必须收敛', () => {
       timestamp: now,
       level: LogLevel.ERROR,
       message: `chunk-${index}`,
-      tags: { splitId: 'oversized-split-group', splitIndex: index, splitTotal: 3 },
+      tags: { splitId: 'oversized-split-group', splitIndex: index + 1, splitTotal: 3 },
     }));
     logger.emit('upload:paused', {
       reason: 'seed-test',

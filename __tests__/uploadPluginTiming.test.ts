@@ -71,6 +71,43 @@ describe('UploadPlugin 并发交错与时序', () => {
     expect(internals.halfOpen).toBe(false);
   });
 
+  it('flush 只能覆盖本地调度，不能越过服务端 Retry-After', async () => {
+    vi.useFakeTimers();
+    const upload = vi.fn(async (): Promise<UploadResult> =>
+      upload.mock.calls.length === 1
+        ? {
+            success: false,
+            shouldRetry: true,
+            retryReason: 'rate-limit',
+            retryAfterMs: 5000,
+          }
+        : { success: true });
+    const plugin = new UploadPlugin({
+      onUpload: upload,
+      queue: {
+        deduplicationDelay: 0,
+        retryBackoff: { baseMs: 0, maxMs: 0 },
+        uploadInterval: 100000,
+      },
+      cache: { enabled: false },
+      saveOnUnload: false,
+    });
+    logger.use(plugin);
+    logger.error('rate-limited');
+    await vi.advanceTimersByTimeAsync(20);
+    expect(upload).toHaveBeenCalledTimes(1);
+
+    const flushing = plugin.flush();
+    // dev 串行批次保留 100ms 节流，假时钟下先让当前批次退出。
+    await vi.advanceTimersByTimeAsync(100);
+    await flushing;
+    expect(upload).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(4879);
+    expect(upload).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(upload).toHaveBeenCalledTimes(2);
+  });
+
   it('探测正在飞的时候并发 flush()，不能把同一条日志发两遍', async () => {
     vi.useFakeTimers();
     let online = false;

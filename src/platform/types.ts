@@ -69,6 +69,11 @@ export interface PlatformAdapter {
     getItem(key: string): string | null;
     setItem(key: string, value: string): void;
     removeItem(key: string): void;
+    /**
+     * 适配器为保持公共 no-throw 契约而吞掉原生异常时，可靠存储层用它取回异常。
+     * 每次 storage 操作都会覆盖上一次状态；读取后清空。
+     */
+    consumeLastError?(): unknown;
   };
 
   /** Lifecycle hook — called before the app exits (UploadPlugin, SafeGuardPlugin) */

@@ -411,7 +411,9 @@ export function initAemeath(options: AemeathInitOptions): AemeathLogger {
         | undefined;
       offline?.requestPurgeOnUninstall();
       globalAemeath.uninstall('offline-persistence');
-      void purgeOfflinePersistenceStorage(globalAemeath.platform, offlinePersistenceOptions);
+      void purgeOfflinePersistenceStorage(globalAemeath.platform, offlinePersistenceOptions).catch(
+        (error) => console.warn('[Aemeath] Failed to purge offline persistence:', error),
+      );
       honored.push('offlinePersistence');
     } else {
       const alreadyInstalled = globalAemeath.hasPlugin('offline-persistence');
@@ -532,7 +534,9 @@ export function initAemeath(options: AemeathInitOptions): AemeathLogger {
         new OfflinePersistencePlugin(offlinePersistenceOptions),
       );
     } else {
-      void purgeOfflinePersistenceStorage(logger.platform);
+      void purgeOfflinePersistenceStorage(logger.platform).catch((error) => {
+        console.warn('[Aemeath] Failed to purge offline persistence:', error);
+      });
     }
   } else if (options.offlinePersistence && typeof console !== 'undefined' && console.warn) {
     // 当前不安装，但保留给稍后 setUpload / 增量 init。

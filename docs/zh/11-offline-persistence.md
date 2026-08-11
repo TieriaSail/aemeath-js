@@ -98,6 +98,10 @@ initAemeath({
 legacy 兼容保护：只有旧式
 补传链路真的发出终态失败事件时才计数，parked 不计入。
 
+**分片身份由结构决定。** 只有 `tags.splitId` 同时带有 `splitIndex` 或 `splitTotal`
+时才启用原子组语义；裸 `splitId` 仍是普通业务标签，独立日志不会被误绑后一起延迟、
+淘汰或删除。旧 KV 记录若采用过旧解释，会在 hydrate 边界一次性规范化。
+
 ---
 
 ## 🕐 补传日志上的时间字段
@@ -143,8 +147,8 @@ initAemeath({
 | ------------------- | --------------------------------------------- | ------------------ | -------------------------------- |
 | `storage`           | `'auto' \| 'indexeddb' \| 'localstorage'`     | `'auto'`           | 后端偏好，不可用时仍会降级       |
 | `ttl`               | `number`                                      | 7 天               | 从落盘时刻算起                   |
-| `maxEntries`        | `number`                                      | IDB 500 / KV 100   | **磁盘**最多保留条数，超出淘汰最旧的（不管内存队列） |
-| `maxTotalBytes`     | `number`                                      | IDB 2MB / KV 512KB | **磁盘**最多占用字节，超出淘汰最旧的（不管内存队列） |
+| `maxEntries`        | `number`                                      | IDB 500 / KV 100   | 已提交副本条数上限，也是暂态写意图缓冲的有界预算基数 |
+| `maxTotalBytes`     | `number`                                      | IDB 2MB / KV 512KB | 已提交副本字节上限，也是暂态写意图缓冲的有界预算基数 |
 | `replayBatchSize`   | `number`                                      | `10`               | 避免恢复瞬间打爆服务端           |
 | `maxReplayAttempts` | `number`                                      | `3`                | legacy 补传失败保护；parked 不计数 |
 | `replayTimeoutMs`   | `number`                                      | `60000`            | 既无成功也无失败回执时的重投间隔 |
@@ -173,6 +177,11 @@ IndexedDB ──不可用──► localStorage ──不可用──► noop（
 **为什么优先 IndexedDB**：容量以百 MB 计而不是 5MB；异步 API 不阻塞主线程；
 按 key 读写不需要每次序列化整个集合。localStorage 只是兜底。
 
+如果上一次启动因 IndexedDB 暂时不可用而降级到 localStorage，下次 IndexedDB 恢复时，
+SDK 会先把旧 KV 记录提交到 IndexedDB，确认提交成功后再删除 KV 副本，然后才开始
+hydrate 和补传。迁移或完整性扫描失败时本轮进入只删不写的降级态，不会把半边数据
+伪装成空库继续写入。
+
 会走到降级的真实场景：Safari 无痕模式下 IndexedDB 打开会挂起（我们有 2 秒超时）、
 部分 WebView 禁用了 IndexedDB、以及 `storage: 'localstorage'` 显式指定。
 
@@ -197,14 +206,16 @@ IndexedDB ──不可用──► localStorage ──不可用──► noop（
 按落盘时间而不是优先级淘汰：断网期间日志优先级往往完全一样，时间顺序是唯一
 稳定可预期的标准。
 
-### `maxEntries` / `maxTotalBytes` 只管磁盘
+### 持久化预算与上传队列相互独立
 
-这两项约束的是**离线库落盘容量**，不是 `UploadPlugin` 的内存队列：
+这两项约束已提交的离线副本；存储短暂故障时，未提交写意图也会按同一预算派生出的
+上限留在内存等待退避重试。它们不约束独立的 `UploadPlugin` 队列：
 
 | 场景 | 谁说了算 | 结果 |
 |---|---|---|
 | 同页断网 → 恢复（页面没关） | 内存队列 | 磁盘上被淘汰的条目，**仍可能从内存发出去** |
 | 关页 / 刷新后只剩磁盘 | `maxEntries` / `maxTotalBytes` | 淘汰生效，最早的补不回来 |
+| 存储短暂失败 | 持久化写意图缓冲 | 指数退避后重试；超过有界预算会明确上报，不会无限增长 |
 
 这是刻意的分层：临时断网、页面还开着时，不应因为磁盘满了就把内存里
 本来能发出去的日志一并扔掉。磁盘配额保护的是「页面死后还能捡回多少」。
@@ -239,15 +250,16 @@ plugin.getStatus();
 // {
 //   backend: 'indexeddb',  // 或 'localstorage' / 'noop' / 'initializing'
 //   pending: 42,           // 待补传条数
+//   buffered: 2,           // 尚未提交的写入/元数据更新
 //   bytes: 128374,         // 估算占用
 //   replaying: 3,          // 正在补传
 //   quotaDrops: 0,         // 因配额丢弃
 //   giveUps: 0,            // legacy 补传链路因反复失败放弃
 //   replayed: 137,         // 成功补传
-//   items: [{ logId, capturedAt, state: 'persisted' | 'replaying' }],
+//   items: [{ logId, capturedAt, state: 'persisted' | 'replaying' | 'buffering' }],
 // }
 
-await plugin.clear(); // 清空所有持久副本
+await plugin.clear(); // 清空已提交副本及未提交的写入/删除意图
 ```
 
 跨 Upload 与持久层查看全局状态时，不要把两个计数直接相加；同一个 `logId` 通常同时
@@ -255,7 +267,7 @@ await plugin.clear(); // 清空所有持久副本
 
 ```typescript
 const status = getAemeath().getDeliveryStatus();
-// { totalPending, queued, inFlight, parked, persisted, persistedOnly, replaying, ... }
+// { totalPending, queued, inFlight, parked, persisted, buffered, persistedOnly, replaying, ... }
 ```
 
 `logger.on('delivery:status', listener)` 可订阅统一快照，成功落盘另有
@@ -268,8 +280,10 @@ const status = getAemeath().getDeliveryStatus();
 **2.5 多标签页可能重复补传。** 每个标签页各自持有一份存储句柄，同一条日志可能被
 多个标签页同时补传。后端必须按 `logId` 幂等去重，并将重复项视为成功。
 
-**尽力而为，不是事务保证。** IndexedDB 写入是异步的，进程被强杀（崩溃、
-`window.close()` 后立即关机）时最后几笔未落盘的写入会丢。
+**以事务提交为成功边界，但进程关闭阶段仍是尽力而为。** IndexedDB 只有在事务
+`oncomplete` 后才报告成功，单个 request 的 success 不算落盘。若浏览器在提交前终止
+进程，SDK 无法补完操作；KV 降级层的正文与索引也无法组成原生事务。失败会明确暴露，
+不会被报告成已经持久化。
 
 **同一页面上多个实例要各配一组独立的 `dbName` 和 `key`。** `dbName` 标识
 IndexedDB，`key` 标识 KV 降级后端；共享其中任一资源时，A 攒下的离线日志都可能被
