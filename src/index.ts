@@ -31,6 +31,8 @@ export type {
   BundleConfig,
   ContextUpdater,
   ContextValue,
+  DeliveryState,
+  DeliveryStatus,
 } from './types';
 
 export { LogLevel as LogLevelEnum, ErrorCategory, PluginPriority } from './types';
@@ -50,16 +52,23 @@ export type {
 } from './plugins/EarlyErrorCapturePlugin';
 
 // ==================== Upload Plugin（推荐） ====================
-export { UploadPlugin } from './plugins/UploadPlugin';
+export {
+  UploadPlugin,
+  parseRetryAfter,
+  classifyHttpUploadResponse,
+} from './plugins/UploadPlugin';
 export type {
   UploadPluginOptions,
   UploadResult,
   UploadCallback,
+  UploadBindingOptions,
   PriorityCallback,
   UploadDropReason,
   UploadDropInfo,
   UploadDropCallback,
   UploadRetryReason,
+  UploadQueueStatus,
+  UploadQueueStatusItem,
 } from './plugins/UploadPlugin';
 
 // ==================== PayloadSanitize（可选，1.x 默认关闭） ====================
@@ -76,7 +85,7 @@ export type {
   StripKind,
 } from './utils/payloadSanitize';
 
-// ==================== OfflinePersistence（可选，opt-in） ====================
+// ==================== OfflinePersistence（标准入口随 upload 默认启用） ====================
 export { OfflinePersistencePlugin } from './plugins/OfflinePersistencePlugin';
 export type {
   OfflinePersistencePluginOptions,
@@ -131,6 +140,7 @@ export {
   resetAemeath,
   isAemeathInitialized,
   setBeforeSend,
+  setUpload,
 } from './singleton';
 
 export type { AemeathInitOptions, RouteMatchConfig } from './singleton';

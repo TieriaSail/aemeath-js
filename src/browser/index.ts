@@ -15,12 +15,40 @@
 import { AemeathLogger } from '../core/Logger';
 import { BrowserApiErrorsPlugin } from '../plugins/BrowserApiErrorsPlugin';
 import { ErrorCapturePlugin } from '../plugins/ErrorCapturePlugin';
-import { UploadPlugin } from '../plugins/UploadPlugin';
+import {
+  UploadPlugin,
+  parseRetryAfter,
+  classifyHttpUploadResponse,
+  type UploadResult,
+} from '../plugins/UploadPlugin';
+import {
+  OfflinePersistencePlugin,
+  purgeOfflinePersistenceStorage,
+  type OfflinePersistencePluginOptions,
+} from '../plugins/OfflinePersistencePlugin';
 import { SafeGuardPlugin } from '../plugins/SafeGuardPlugin';
 import type { LogEntry } from '../types';
 
 // 全局单例
 let globalLogger: AemeathLogger | null = null;
+const knownOfflinePersistenceOptions = new Map<string, OfflinePersistencePluginOptions>();
+
+function rememberOfflinePersistenceOptions(options: OfflinePersistencePluginOptions): void {
+  const key = [
+    options.storage ?? 'auto',
+    options.dbName ?? 'aemeath-offline',
+    options.key ?? '__aemeath_offline__',
+  ].join('|');
+  knownOfflinePersistenceOptions.set(key, options);
+}
+
+async function purgeKnownOfflinePersistence(): Promise<void> {
+  const targets = knownOfflinePersistenceOptions.size > 0
+    ? [...knownOfflinePersistenceOptions.values()]
+    : [{}];
+  await Promise.all(targets.map((options) => purgeOfflinePersistenceStorage(options)));
+  knownOfflinePersistenceOptions.clear();
+}
 
 /**
  * 日志级别顺序（用于过滤）
@@ -37,7 +65,10 @@ export interface BrowserLoggerOptions {
   /**
    * 上报函数
    */
-  upload?: (log: LogEntry) => void | Promise<void>;
+  upload?: (log: LogEntry) => UploadResult | void | Promise<UploadResult | void>;
+
+  /** 断网续传；配置 upload 时默认开启，可显式传 `false` 关闭 */
+  offlinePersistence?: boolean | OfflinePersistencePluginOptions;
 
   /**
    * 是否启用浏览器 API 回调增强捕获
@@ -120,11 +151,57 @@ function init(options: BrowserLoggerOptions = {}): AemeathLogger {
     logger.use(
       new UploadPlugin({
         onUpload: async (log) => {
-          await uploadFn(log);
-          return { success: true };
+          const result = await uploadFn(log);
+          if (
+            result != null &&
+            typeof result === 'object' &&
+            typeof (result as Partial<UploadResult>).success === 'boolean'
+          ) {
+            return result as UploadResult;
+          }
+
+          // 1.10.0 的 IIFE upload 允许返回 void；很多纯 JS 用户会直接写
+          // `upload: (log) => fetch(...)`，这会把 Response 隐式返回。既要保留旧用法，
+          // 又不能把真实 HTTP 失败一律当成功：对 Response-like 值按状态分类。
+          if (
+            result != null &&
+            typeof result === 'object' &&
+            typeof (result as { ok?: unknown }).ok === 'boolean' &&
+            typeof (result as { status?: unknown }).status === 'number'
+          ) {
+            const response = result as unknown as {
+              status: number;
+              headers?: { get?: (name: string) => string | null };
+            };
+            let retryAfter: string | null | undefined;
+            try {
+              retryAfter = response.headers?.get?.('Retry-After');
+            } catch {
+              retryAfter = undefined;
+            }
+            return classifyHttpUploadResponse(response.status, retryAfter);
+          }
+
+          // 只有 null/undefined 才是旧版 void 成功语义。其它畸形返回值交给
+          // UploadPlugin 按失败处理，不能把回调契约错误伪装成送达成功。
+          return result == null ? { success: true } : result as UploadResult;
         },
+        localPersistence: options.offlinePersistence !== false,
       }),
     );
+    if (options.offlinePersistence !== false) {
+      const persistenceOptions = typeof options.offlinePersistence === 'object'
+        ? options.offlinePersistence
+        : {};
+      rememberOfflinePersistenceOptions(persistenceOptions);
+      logger.use(
+        new OfflinePersistencePlugin(persistenceOptions),
+      );
+    } else {
+      void purgeKnownOfflinePersistence().catch((error) => {
+        console.warn('[Aemeath] Failed to purge offline persistence:', error);
+      });
+    }
   }
 
   globalLogger = logger;
@@ -186,5 +263,24 @@ function flushEarlyErrors(logger: AemeathLogger): void {
   }
 }
 
+/** 销毁 IIFE 全局实例并释放事件监听、定时器与持久化资源。 */
+function destroy(): void {
+  if (!globalLogger) return;
+  globalLogger.destroy();
+  globalLogger = null;
+}
+
 // 导出 API（仅使用 named export，避免 IIFE 构建警告）
-export { init, getAemeath, AemeathLogger, BrowserApiErrorsPlugin, ErrorCapturePlugin, UploadPlugin, SafeGuardPlugin };
+export {
+  init,
+  getAemeath,
+  destroy,
+  AemeathLogger,
+  BrowserApiErrorsPlugin,
+  ErrorCapturePlugin,
+  UploadPlugin,
+  parseRetryAfter,
+  classifyHttpUploadResponse,
+  OfflinePersistencePlugin,
+  SafeGuardPlugin,
+};

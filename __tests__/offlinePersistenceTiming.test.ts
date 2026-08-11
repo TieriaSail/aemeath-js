@@ -512,7 +512,7 @@ describe('离线持久化的并发交错', () => {
     let hold = false;
 
     const upload = new UploadPlugin({
-      onUpload: (async (log: { message: string }): Promise<UploadResult> => {
+      onUpload: (async (_log: { message: string }): Promise<UploadResult> => {
         if (hold) await gate;
         return { success: true };
       }) as never,
@@ -559,21 +559,12 @@ describe('离线持久化的并发交错', () => {
     expect(offline.getStatus().pending).toBe(0);
   }, 30000);
 
-  it('split overflow 落盘后须冷却唤醒补传，不能因抑制 success 而饿死', async () => {
+  it('split 组大于 maxSize 时保留整组副本，不能补传残片', async () => {
     const dbName = `t-overflow-wake-offline-${Math.random()}`;
-    let release!: (r: UploadResult) => void;
-    let hangOnce = true;
     const delivered: string[] = [];
 
     const upload = new UploadPlugin({
       onUpload: (log) => {
-        // 只挂起第一次 p1，补传时必须放行，否则 maxSize=1 会堵死后续
-        if (hangOnce && log.logId === 'p1') {
-          hangOnce = false;
-          return new Promise<UploadResult>((res) => {
-            release = res;
-          });
-        }
         delivered.push(log.logId);
         return Promise.resolve({ success: true } as UploadResult);
       },
@@ -595,20 +586,22 @@ describe('离线持久化的并发交错', () => {
         tags: { splitId: 'g1', splitIndex: index, splitTotal: 3 },
       });
 
-    upload.requeue(mk('p1', 1) as never);
-    await settle(15);
-    upload.requeue(mk('p2', 2) as never);
-    upload.requeue(mk('p3', 3) as never);
+    // 完整组在同一同步批次到达：Upload 原子准入发现组大小超过 maxSize 后，
+    // 必须在任何请求发出前整组 queue-overflow，Offline 再保留三片副本。
+    upload.requeue([
+      mk('p1', 1),
+      mk('p2', 2),
+      mk('p3', 3),
+    ] as never);
     await settle(20);
-    expect(offline.getStatus().pending).toBeGreaterThan(0);
+    expect(offline.getStatus().pending).toBe(3);
 
-    release({ success: true });
-    // resumed 会立刻 scheduleReplay；再留出串行补传（maxSize=1）时间
+    // 组永远大于队列容量，冷却唤醒也只能继续保留，不能拆开补传。
     await new Promise((r) => setTimeout(r, 2000));
     await settle(80);
 
-    expect(offline.getStatus().pending).toBe(0);
-    expect(delivered.length).toBeGreaterThan(0);
+    expect(offline.getStatus().pending).toBe(3);
+    expect(delivered).toHaveLength(0);
   }, 20000);
 
   it('补传已占 inFlight 后 Upload 被换掉，孤儿坑位不得挡住再次补传', async () => {

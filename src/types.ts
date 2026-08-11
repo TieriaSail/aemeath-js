@@ -115,7 +115,7 @@ export interface LogContext {
 export interface LogEntry {
   /** 日志唯一标识（Logger 核心自动生成，同一条日志无论上报多少次 logId 不变） */
   logId: string;
-  /** 上报请求标识（UploadPlugin 每次上报尝试自动生成，用于消费端幂等去重） */
+  /** 上报尝试标识（每次请求都变化，仅用于链路关联；后端幂等必须使用稳定 logId） */
   requestId?: string;
   /** 日志级别 */
   level: LogLevel;
@@ -330,6 +330,35 @@ export type ContextUpdater = (
  */
 export type ContextValue = Record<string, unknown> | ContextUpdater;
 
+export type DeliveryState = 'disabled' | 'idle' | 'delivering' | 'paused' | 'degraded';
+
+/** UploadPlugin 与 OfflinePersistencePlugin 按稳定 logId 去重后的统一只读状态。 */
+export interface DeliveryStatus {
+  enabled: boolean;
+  state: DeliveryState;
+  totalPending: number;
+  queued: number;
+  inFlight: number;
+  parked: number;
+  persisted: number;
+  buffered: number;
+  persistedOnly: number;
+  replaying: number;
+  oldestPendingAgeMs: number;
+  consecutiveFailures: number;
+  attempts: { total: number; byReason: Record<string, number> };
+  drops: { total: number; byReason: Record<string, number> };
+  persistence: {
+    enabled: boolean;
+    backend: 'disabled' | 'initializing' | 'indexeddb' | 'localstorage' | 'noop';
+    bytes: number;
+    buffered: number;
+    quotaDrops: number;
+    giveUps: number;
+    replayed: number;
+  };
+}
+
 /**
  * AemeathJs 接口（供插件使用）
  */
@@ -360,6 +389,11 @@ export interface AemeathInterface {
    * 普通用户场景请优先使用 hasPlugin / getPlugins。
    */
   getPluginInstance(name: string): AemeathPlugin | undefined;
+
+  /** 聚合内存队列与持久层的投递状态。 */
+  getDeliveryStatus?(): DeliveryStatus;
+  /** 投递类插件通知统一状态变化；无监听器时可直接返回。 */
+  notifyDeliveryStatus?(): void;
 
   // 配置
   setConsoleEnabled(enabled: boolean): void;

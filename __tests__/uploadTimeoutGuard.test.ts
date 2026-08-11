@@ -1,7 +1,7 @@
 /**
  * 上传超时 × ignore 窗口
  *
- * 1.x 默认关闭超时（与 1.9 一致）。显式开启后：
+ * 1.10.1 默认 30 秒超时；显式设为 0 可关闭。开启时：
  * - 超时只结束等待，队列继续；
  * - 忽略窗口再宽限一段（避免迟到上报 I/O 被 NetworkPlugin 记成自反馈），
  *   到期或 onUpload settle 后揭开；
@@ -30,21 +30,22 @@ describe('uploadTimeoutMs × ignoreNetworkCapture', () => {
     vi.restoreAllMocks();
   });
 
-  it('默认不限制：慢于常见阈值的 onUpload 仍算成功', async () => {
+  it('显式 0 不限制：慢回调仍算成功', async () => {
     let resolveUpload!: (v: { success: true }) => void;
     const upload = new UploadPlugin({
       onUpload: () =>
         new Promise((resolve) => {
           resolveUpload = resolve;
         }),
-      queue: { deduplicationDelay: 0, maxRetries: 0 },
+      queue: { deduplicationDelay: 0, maxRetries: 0, uploadTimeoutMs: 0 },
       cache: { enabled: false },
       saveOnUnload: false,
     });
     logger.use(upload);
 
     const drops: string[] = [];
-    logger.on('upload:drop', (p: { reason?: string }) => {
+    logger.on('upload:drop', (...args: unknown[]) => {
+      const p = args[0] as { reason?: string };
       if (p.reason) drops.push(p.reason);
     });
 

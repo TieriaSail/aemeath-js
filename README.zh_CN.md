@@ -128,9 +128,16 @@ logger.updateContext('userId', '67890');
 
 > 想精确控制插件执行顺序？请看 [插件执行顺序](./docs/zh/8-plugin-ordering.md)（priority 字段）。
 
-### 可靠性（1.10，保守默认）
+### 可靠投递（1.10.1）
 
-`UploadPlugin` 默认仍是 **`offlinePolicy: 'legacy'`**。需要更强保障时再显式开启 `queue: { offlinePolicy: 'pause' }`、`payloadSanitize: true` 和/或 `offlinePersistence: true`。详见 [上报插件](./docs/zh/4-upload-plugin.md)。
+配置 `upload` 后，`offlinePolicy: 'pause'` 与离线持久化默认开启；可通过
+`offlinePersistence: false` 关闭持久化，或用 `queue: { offlinePolicy: 'legacy' }`
+恢复 1.10.0 重试行为。1.10.1 同时支持 HTTP `Retry-After` 自动解析、统一
+`getDeliveryStatus()` 状态中心，以及 `setUpload(null)` 真暂停。
+
+多标签页仍可能重复送达同一个稳定 `logId`。后端**必须**按
+`(项目/租户作用域, logId)` 幂等去重；`requestId` 每次尝试都会变化。详见
+[上报插件](./docs/zh/4-upload-plugin.md)与[断网续传](./docs/zh/11-offline-persistence.md)。
 
 ### `beforeSend` — 隐私保护与脱敏
 
@@ -502,4 +509,3 @@ module.exports = {
 ---
 
 > 本项目使用 AI 辅助开发。
-

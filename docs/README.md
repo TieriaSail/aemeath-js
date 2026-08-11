@@ -20,7 +20,8 @@
 | **Module 8** | 🧩 Plugin Ordering (priority field) | [View Docs](./en/8-plugin-ordering.md) |
 | **Module 9** | 🛡️ `beforeSend` — End-of-Pipeline Interceptor | [View Docs](./en/9-before-send.md) |
 | **Module 10** | 🧼 Payload Sanitize — Data URL / oversized payload handling (opt-in) | [View Docs](./en/10-payload-sanitize.md) |
-| **Module 11** | 📴 Offline Persistence — persist offline, replay online (opt-in) | [View Docs](./en/11-offline-persistence.md) |
+| **Module 11** | 📴 Offline Persistence — persist offline, replay online (enabled by default) | [View Docs](./en/11-offline-persistence.md) |
+| **Module 12** | 🚚 Unified Delivery Status — observe queue, persistence, retry, and parked state | [View Docs](./en/12-delivery-status.md) |
 
 ### 🔗 Links
 
@@ -46,7 +47,8 @@
 | **模块 8** | 🧩 插件执行顺序（priority 字段） | [查看文档](./zh/8-plugin-ordering.md) |
 | **模块 9** | 🛡️ `beforeSend` — 全链路最终拦截 | [查看文档](./zh/9-before-send.md) |
 | **模块 10** | 🧼 载荷清洗 — Data URL / 超大日志处理（opt-in） | [查看文档](./zh/10-payload-sanitize.md) |
-| **模块 11** | 📴 断网续传 — 离线落盘，联网补传（opt-in） | [查看文档](./zh/11-offline-persistence.md) |
+| **模块 11** | 📴 断网续传 — 离线落盘，联网补传（默认开启） | [查看文档](./zh/11-offline-persistence.md) |
+| **模块 12** | 🚚 统一投递状态 — 观察队列、持久化、重试与停放状态 | [查看文档](./zh/12-delivery-status.md) |
 
 ### 🔗 链接
 

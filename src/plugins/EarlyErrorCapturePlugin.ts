@@ -196,7 +196,7 @@ export class EarlyErrorCapturePlugin implements AemeathPlugin {
  *             该函数保留用于向后兼容，内部已转发到新的统一实现。
  */
 export function generateEarlyErrorScript(
-  options: Required<EarlyErrorCaptureOptions>,
+  options: EarlyErrorCaptureOptions,
 ): string {
   return getEarlyErrorCaptureScript({
     maxErrors: options.maxErrors,

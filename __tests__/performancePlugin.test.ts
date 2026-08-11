@@ -489,12 +489,11 @@ describe('PerformancePlugin', () => {
       expect(entry.tags?.category).toBe('performance');
       expect(entry.tags?.type).toBe('measurement');
       expect(entry.tags?.name).toBe('api-call');
-      expect(entry.context?.measurement?.duration).toBe(500);
+      expect((entry.context?.measurement as { duration?: number } | undefined)?.duration).toBe(500);
     });
 
     it('endMark 未匹配的标记应返回 null', () => {
       logger.use(new PerformancePlugin());
-      const plugin = logger.getPlugins().find(p => p.name === 'performance');
       // 通过实例测试
       const p = new PerformancePlugin();
       logger.destroy();

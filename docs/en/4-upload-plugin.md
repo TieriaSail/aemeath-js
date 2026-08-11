@@ -214,6 +214,7 @@ logger.use(
       concurrency: 1, // Concurrency (recommend 1)
       maxRetries: 3, // Max retry count
       uploadInterval: 30000, // Upload interval (ms)
+      uploadTimeoutMs: 30000, // Per-attempt timeout; 0 disables it
     },
 
     // Cache configuration
@@ -234,11 +235,12 @@ logger.use(
 | ---------------------- | ---------------------------------- | ------------------------- | -------------------- |
 | `onUpload`             | `(log: LogEntry) => Promise<UploadResult>` | **Required**              | Upload callback      |
 | `getPriority`          | `(log: LogEntry) => number`        | By level                  | Priority callback    |
-| `queue.maxSize`        | `number`                           | `100`                     | Max queue size       |
-| `queue.concurrency`    | `number`                           | `1`                       | Concurrent uploads   |
+| `queue.maxSize`        | `number`                           | `100`                     | Shared bound for queued, parked, and incomplete split-admission entries |
+| `queue.concurrency`    | `number`                           | `1`                       | Concurrent logical logs; chunks sharing one `splitId` remain serial |
 | `queue.maxRetries`     | `number`                           | `3`                       | Max retry count      |
 | `queue.uploadInterval` | `number`                           | `30000`                   | Upload interval (ms) |
-| `queue.offlinePolicy`  | `'pause' \| 'legacy'`              | `'legacy'`                | Offline strategy (1.10.0+; `pause` is opt-in) |
+| `queue.uploadTimeoutMs` | `number`                          | `30000`                   | Per-attempt timeout in ms; `0` disables it |
+| `queue.offlinePolicy`  | `'pause' \| 'legacy'`              | `'pause'`                 | Offline strategy (`legacy` restores 1.10.0 behavior) |
 | `queue.retryBackoff`   | `boolean \| { baseMs, maxMs }`     | follows `offlinePolicy`   | Exponential backoff (`legacy` off / `pause` on by default) |
 | `onDrop`               | `(log, info) => void`              | —                         | Called when a log is dropped (1.10.0+) |
 | `cache.enabled`        | `boolean`                          | `true`                    | Enable cache         |
@@ -330,34 +332,51 @@ See `examples/5-upload-plugin/` directory for complete examples:
 
 ---
 
-## 🛡️ Reliability & Drops (1.10.0+)
+## 🛡️ Reliable delivery (1.10.1+)
 
-1.10 keeps the old default: `queue.offlinePolicy` is **`legacy`** (no pause; backoff off by default). Opt into offline pausing explicitly:
+1.10.1 defaults to `queue.offlinePolicy: 'pause'`: transport failures pause the queue,
+recoverable server failures use bounded hot retries and then move to `parked`, and
+`Retry-After` is respected. Use `legacy` only when temporarily reproducing 1.10.0 behavior.
 
 ```typescript
-initAemeath({
+import { classifyHttpUploadResponse, initAemeath } from 'aemeath-js';
+
+const logger = initAemeath({
   upload: async (log) => {
     try {
       const res = await fetch('/api/logs', { method: 'POST', body: JSON.stringify(log) });
-      if (!res.ok) {
-        return { success: false, shouldRetry: res.status >= 500, retryReason: 'server' };
-      }
-      return { success: true };
+      return classifyHttpUploadResponse(res.status, res.headers.get('Retry-After'));
     } catch {
       return { success: false, shouldRetry: true, retryReason: 'network' };
     }
   },
-  queue: { offlinePolicy: 'pause' }, // opt-in: pause instead of burning retries
   onDrop: (log, info) => console.warn('dropped', info.reason, log.logId),
 });
+
+logger.getDeliveryStatus(); // one view of queued/in-flight/parked/persisted work
 ```
 
 Key points:
 
-- Return `retryReason: 'network' | 'server' | 'payload'` to remove ambiguity; omitted means `server`.
-- In `pause` mode, consecutive transport failures pause the queue (`upload:paused`) and resume later; `legacy` burns `maxRetries` on every failure.
-- Every drop is observable via `onDrop` / `upload:drop` (`max-retries`, `cache-expired`, `payload-too-large`, …).
-- For longer offline retention see optional [Offline Persistence](./11-offline-persistence.md); for oversized payloads see [Payload Sanitize](./10-payload-sanitize.md) (both opt-in).
+- `classifyHttpUploadResponse()` treats 2xx as success; 408/425/429/5xx as recoverable;
+  and other 4xx as terminal (401/403 remain recoverable for token refresh workflows).
+- Return the raw `retryAfter` header or `retryAfterMs`; thrown Axios-style errors with
+  `response.status` and `response.headers` are classified automatically too.
+- `flush()` may bypass SDK-local backoff/network pause, but never a server `Retry-After` deadline.
+- Known fetch network `TypeError` messages pause delivery; ordinary programming `TypeError`s
+  inside the callback use the bounded `callback-error` path instead.
+- `setUpload(null)` freezes queued and persisted work. Rebinding resumes it without
+  calling the previous endpoint or consuming retry budget.
+- Use `deliveryScope` and distinct cache/database keys per tenant. A scope switch is
+  rejected while pending work exists.
+- Every real drop and the SDK content-deduplication terminal (`deduplicated`) remain observable
+  through `onDrop`, `upload:drop`, and `delivery:dropped`. Recoverable failures moved to
+  `parked` are not drops.
+- `queue.maxSize` is one admission budget shared by queued, parked, and incomplete split entries.
+  SDK split groups are admitted/evicted atomically. A `tags.splitId` without `splitIndex` or
+  `splitTotal` remains an ordinary business tag and does not couple independent logs.
+- Standard `initAemeath({ upload })` enables [Offline Persistence](./11-offline-persistence.md)
+  by default; pass `offlinePersistence: false` to opt out.
 
-**Version:** 1.10.0  
-**Last Updated:** 2026-08-07
+**Version:** 1.10.1
+**Last Updated:** 2026-08-11

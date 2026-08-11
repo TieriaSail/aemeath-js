@@ -65,7 +65,8 @@ describe('UploadPlugin ignore 窗口生命周期', () => {
     logger.use(upload);
 
     const drops: string[] = [];
-    logger.on('upload:drop', (p: { log?: { message?: string } }) => {
+    logger.on('upload:drop', (...args: unknown[]) => {
+      const p = args[0] as { log?: { message?: string } };
       if (p.log?.message) drops.push(p.log.message);
     });
 
@@ -92,7 +93,8 @@ describe('UploadPlugin ignore 窗口生命周期', () => {
     logger.use(upload);
 
     const successes: string[] = [];
-    logger.on('upload:success', (p: { log?: { message?: string } }) => {
+    logger.on('upload:success', (...args: unknown[]) => {
+      const p = args[0] as { log?: { message?: string } };
       if (p.log?.message) successes.push(p.log.message);
     });
 
@@ -105,6 +107,29 @@ describe('UploadPlugin ignore 窗口生命周期', () => {
     await new Promise((r) => setTimeout(r, 20));
 
     expect(successes).toContain('emit-after-upload-uninstall');
+  });
+
+  it('卸载后飞行中的可重试失败落定时会释放最后一个 logger 引用', async () => {
+    let rejectUpload!: (error: Error) => void;
+    const upload = new UploadPlugin({
+      onUpload: () =>
+        new Promise((_resolve, reject) => {
+          rejectUpload = reject;
+        }),
+      queue: { deduplicationDelay: 0, maxRetries: 3, offlinePolicy: 'pause' },
+      cache: { enabled: false },
+      saveOnUnload: false,
+    });
+    logger.use(upload);
+
+    logger.error('retryable-after-uninstall');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    upload.uninstall(logger);
+    rejectUpload(new Error('temporary failure'));
+    await new Promise((resolve) => setTimeout(resolve, 40));
+
+    expect(upload.getQueueStatus().inFlight).toBe(0);
+    expect((upload as unknown as { emitTarget: unknown }).emitTarget).toBeNull();
   });
 
   it('uninstall 时挂起的 onUpload 不会永久致盲 NetworkPlugin', async () => {
@@ -129,7 +154,8 @@ describe('UploadPlugin ignore 窗口生命周期', () => {
       logger.use(upload);
 
       const networkLogs: string[] = [];
-      logger.on('log', (entry) => {
+      logger.on('log', (...args: unknown[]) => {
+        const entry = args[0] as { message?: string };
         networkLogs.push(String(entry.message));
       });
 

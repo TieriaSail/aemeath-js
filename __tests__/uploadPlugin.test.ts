@@ -2,9 +2,65 @@
  * UploadPlugin 上传插件测试
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { UploadPlugin, type UploadCallback } from '../src/plugins/UploadPlugin';
+import {
+  UploadPlugin,
+  parseRetryAfter,
+  classifyHttpUploadResponse,
+  type UploadCallback,
+} from '../src/plugins/UploadPlugin';
 import { AemeathLogger } from '../src/core/Logger';
 import type { LogEntry } from '../src/types';
+
+describe('HTTP 投递分类工具', () => {
+  it('解析 delta-seconds、HTTP-date 与非法 Retry-After', () => {
+    const now = Date.UTC(2026, 0, 1, 0, 0, 0);
+    expect(parseRetryAfter('120', now)).toBe(120_000);
+    expect(parseRetryAfter(new Date(now + 90_000).toUTCString(), now)).toBe(90_000);
+    expect(parseRetryAfter(new Date(now - 1000).toUTCString(), now)).toBe(0);
+    expect(parseRetryAfter('1.5', now)).toBeUndefined();
+    expect(parseRetryAfter('-1', now)).toBeUndefined();
+    expect(parseRetryAfter('not-a-date', now)).toBeUndefined();
+  });
+
+  it('区分成功、可恢复服务端失败与永久 4xx', () => {
+    expect(classifyHttpUploadResponse(204)).toEqual({ success: true });
+    expect(classifyHttpUploadResponse(429, '120')).toMatchObject({
+      success: false,
+      shouldRetry: true,
+      retryReason: 'rate-limit',
+      retryAfter: '120',
+    });
+    expect(classifyHttpUploadResponse(503)).toMatchObject({
+      success: false,
+      shouldRetry: true,
+      retryReason: 'server',
+    });
+    expect(classifyHttpUploadResponse(413)).toMatchObject({
+      success: false,
+      shouldRetry: false,
+      retryReason: 'payload',
+    });
+    expect(classifyHttpUploadResponse(409)).toMatchObject({
+      success: false,
+      shouldRetry: false,
+      retryReason: 'payload',
+    });
+    expect(classifyHttpUploadResponse(404)).toMatchObject({
+      success: false,
+      shouldRetry: false,
+      retryReason: 'payload',
+    });
+    expect(classifyHttpUploadResponse(408)).toMatchObject({
+      success: false,
+      shouldRetry: true,
+    });
+    expect(classifyHttpUploadResponse(302)).toMatchObject({
+      success: false,
+      shouldRetry: false,
+      retryReason: 'payload',
+    });
+  });
+});
 
 describe('UploadPlugin', () => {
   let uploadFn: ReturnType<typeof vi.fn>;
@@ -181,6 +237,103 @@ describe('UploadPlugin', () => {
       expect(timestamps[2]! - timestamps[1]!).toBeGreaterThanOrEqual(2000);
     });
 
+    it('原始 Retry-After 应覆盖较短的本地退避', async () => {
+      const retryFn = vi
+        .fn()
+        .mockResolvedValueOnce({
+          success: false,
+          shouldRetry: true,
+          retryReason: 'rate-limit',
+          retryAfter: '5',
+        })
+        .mockResolvedValueOnce({ success: true });
+      const retryPlugin = new UploadPlugin({
+        onUpload: retryFn,
+        queue: { maxRetries: 2, deduplicationDelay: 10, retryBackoff: { baseMs: 100 } },
+        cache: { enabled: false },
+        saveOnUnload: false,
+      });
+
+      logger.use(retryPlugin);
+      logger.error('rate limited');
+      await vi.advanceTimersByTimeAsync(4900);
+      expect(retryFn).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(200);
+      expect(retryFn).toHaveBeenCalledTimes(2);
+    });
+
+    it('axios 风格抛错会读取 response.headers 的 Retry-After', async () => {
+      const error = Object.assign(new Error('rate limited'), {
+        response: {
+          status: 429,
+          headers: { 'retry-after': '1' },
+        },
+      });
+      const retryFn = vi
+        .fn()
+        .mockRejectedValueOnce(error)
+        .mockResolvedValueOnce({ success: true });
+      const retryPlugin = new UploadPlugin({
+        onUpload: retryFn,
+        queue: { maxRetries: 2, deduplicationDelay: 10, retryBackoff: false },
+        cache: { enabled: false },
+        saveOnUnload: false,
+      });
+
+      logger.use(retryPlugin);
+      logger.error('axios rate limited');
+      await vi.advanceTimersByTimeAsync(900);
+      expect(retryFn).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(200);
+      expect(retryFn).toHaveBeenCalledTimes(2);
+    });
+
+    it('axios 风格抛出的 HTTP 409 与返回值分类一致，直接终态丢弃', async () => {
+      const dropped: string[] = [];
+      const conflictFn = vi.fn().mockRejectedValue(Object.assign(new Error('conflict'), {
+        response: { status: 409 },
+      }));
+      const conflictPlugin = new UploadPlugin({
+        onUpload: conflictFn,
+        queue: { maxRetries: 3, deduplicationDelay: 10, retryBackoff: false },
+        cache: { enabled: false },
+        saveOnUnload: false,
+        onDrop: (_log, info) => dropped.push(info.reason),
+      });
+
+      logger.use(conflictPlugin);
+      logger.error('axios conflict');
+      await vi.advanceTimersByTimeAsync(500);
+
+      expect(conflictFn).toHaveBeenCalledTimes(1);
+      expect(dropped).toEqual(['no-retry']);
+    });
+
+    it('HTTP 302 无论由回调返回还是由 client 抛出，都必须采用同一终态策略', async () => {
+      const run = async (mode: 'return' | 'throw'): Promise<{ calls: number; drops: string[] }> => {
+        const drops: string[] = [];
+        const callback = vi.fn(async () => {
+          if (mode === 'return') return classifyHttpUploadResponse(302);
+          throw Object.assign(new Error('redirect response'), { response: { status: 302 } });
+        });
+        const redirectPlugin = new UploadPlugin({
+          onUpload: callback,
+          queue: { maxRetries: 3, deduplicationDelay: 10, retryBackoff: false },
+          cache: { enabled: false },
+          saveOnUnload: false,
+          onDrop: (_log, info) => drops.push(info.reason),
+        });
+        logger.use(redirectPlugin);
+        logger.error(`redirect-${mode}`);
+        await vi.advanceTimersByTimeAsync(500);
+        logger.uninstall('upload');
+        return { calls: callback.mock.calls.length, drops };
+      };
+
+      expect(await run('return')).toEqual({ calls: 1, drops: ['no-retry'] });
+      expect(await run('throw')).toEqual({ calls: 1, drops: ['no-retry'] });
+    });
+
     it('shouldRetry=false 时不应重试', async () => {
       const noRetryFn = vi
         .fn()
@@ -201,7 +354,7 @@ describe('UploadPlugin', () => {
       expect(noRetryFn).toHaveBeenCalledTimes(1);
     });
 
-    it('超过最大重试次数后应放弃（链路正常、单条毒丸日志）', async () => {
+    it('超过热重试预算后应停放，而不是把可恢复失败当作丢弃', async () => {
       const alwaysFailFn = vi
         .fn()
         .mockResolvedValue({ success: false, shouldRetry: true, retryReason: 'server' });
@@ -222,8 +375,8 @@ describe('UploadPlugin', () => {
 
       // 1 次初始 + 2 次重试 = 3 次
       expect(alwaysFailFn).toHaveBeenCalledTimes(3);
-      expect(onDrop).toHaveBeenCalledTimes(1);
-      expect(onDrop.mock.calls[0]![1]).toMatchObject({ reason: 'max-retries' });
+      expect(onDrop).not.toHaveBeenCalled();
+      expect(maxRetryPlugin.getQueueStatus()).toMatchObject({ length: 0, parked: 1 });
     });
 
     it('连续传输层失败达到阈值后应暂停队列而不是丢弃日志', async () => {
@@ -251,7 +404,7 @@ describe('UploadPlugin', () => {
       expect(onDrop).not.toHaveBeenCalled();
     });
 
-    it('服务端持续 5xx 不应被误判为离线：耗尽预算后丢弃，队列不暂停', async () => {
+    it('服务端持续 5xx 不应被误判为离线：耗尽热预算后停放，队列不暂停', async () => {
       // 服务端回了话就说明链路是通的。若把它算作离线证据，后端故障会让队列
       // 无限期暂停、maxRetries 永远耗不完，日志一路堆到溢出。
       const serverDownFn = vi
@@ -275,7 +428,8 @@ describe('UploadPlugin', () => {
       expect(serverDownFn).toHaveBeenCalledTimes(3);
       expect(plugin.getQueueStatus().paused).toBe(false);
       expect(plugin.getQueueStatus().length).toBe(0);
-      expect(onDrop.mock.calls[0]![1]).toMatchObject({ reason: 'max-retries' });
+      expect(plugin.getQueueStatus().parked).toBe(1);
+      expect(onDrop).not.toHaveBeenCalled();
     });
 
     it('legacy 策略下应保持旧行为：不暂停、失败即耗预算', async () => {
@@ -354,7 +508,7 @@ describe('UploadPlugin', () => {
   // ==================== 缓存（localStorage） ====================
 
   describe('本地缓存', () => {
-    it('启用缓存时应保存到 localStorage', async () => {
+    it('启用缓存时应合并异步写入 localStorage', async () => {
       const cachePlugin = new UploadPlugin({
         onUpload: vi
           .fn()
@@ -367,7 +521,8 @@ describe('UploadPlugin', () => {
       logger.use(cachePlugin);
       logger.info('cached msg');
 
-      // 日志入队后应立即缓存
+      // 热路径只排一个 0ms 合并写，避免每条日志同步序列化并写盘。
+      await vi.advanceTimersByTimeAsync(0);
       expect(localStorage.setItem).toHaveBeenCalledWith(
         '__test_cache__',
         expect.any(String),
@@ -499,4 +654,3 @@ describe('UploadPlugin', () => {
     });
   });
 });
-

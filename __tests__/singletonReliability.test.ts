@@ -1,8 +1,7 @@
 /**
  * initAemeath 上的可靠性选项 —— 接线集成测试
  *
- * 1.x / 1.10：payloadSanitize 默认关闭（opt-in）；offlinePersistence 默认关闭；
- * offlinePolicy 默认 legacy。
+ * 1.x / 1.10.1：payloadSanitize 仍默认关闭；配置 upload 后持久化和 pause 默认开启。
  */
 import 'fake-indexeddb/auto';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -73,7 +72,7 @@ describe('initAemeath — 可靠性选项接线', () => {
     mod.resetAemeath();
   });
 
-  it('offlinePersistence: true 时装上，并能真的落盘+补传', async () => {
+  it('配置 upload 后默认装上持久化，并能真的落盘+补传', async () => {
     let online = true;
     const uploadFn = vi.fn(async (_log: LogEntry): Promise<UploadResult> => {
       if (!online) throw new Error('network unreachable');
@@ -86,9 +85,7 @@ describe('initAemeath — 可靠性选项接线', () => {
       errorCapture: false,
       safeGuard: { enabled: false },
       enableConsole: false,
-      // 离线落盘主路径依赖 pause；legacy 下仍会尝试上传
-      queue: { offlinePolicy: 'pause', suspectedOfflineThreshold: 1 },
-      offlinePersistence: true,
+      queue: { suspectedOfflineThreshold: 1 },
     });
 
     expect(logger.hasPlugin('offline-persistence')).toBe(true);
@@ -115,6 +112,98 @@ describe('initAemeath — 可靠性选项接线', () => {
     expect(sent).toHaveLength(1);
     expect(offline.getStatus().pending).toBe(0);
 
+    mod.resetAemeath();
+  });
+
+  it('offlinePersistence: false 可关闭默认持久化并禁用 Upload cache', async () => {
+    const mod = await import('../src/singleton/index');
+    const logger = mod.initAemeath({
+      upload: async () => ({
+        success: false,
+        shouldRetry: true,
+        retryReason: 'server',
+      }),
+      offlinePersistence: false,
+      errorCapture: false,
+      safeGuard: { enabled: false },
+      enableConsole: false,
+    });
+
+    expect(logger.hasPlugin('upload')).toBe(true);
+    expect(logger.hasPlugin('offline-persistence')).toBe(false);
+    logger.error('memory only');
+    await settle(10);
+    expect(localStorage.getItem('__logger_upload_queue__')).toBeNull();
+
+    mod.resetAemeath();
+  });
+
+  it('显式关闭后可在一次增量调用里重新开启', async () => {
+    const mod = await import('../src/singleton/index');
+    const logger = mod.initAemeath({
+      upload: async () => ({ success: true }),
+      offlinePersistence: false,
+    });
+    expect(logger.hasPlugin('offline-persistence')).toBe(false);
+
+    mod.initAemeath({ offlinePersistence: true });
+    expect(logger.hasPlugin('offline-persistence')).toBe(true);
+    const offline = logger.getPluginInstance('offline-persistence') as
+      import('../src/plugins/OfflinePersistencePlugin').OfflinePersistencePlugin;
+    await offline.whenReady();
+
+    mod.resetAemeath();
+  });
+
+  it('setUpload 懒安装时默认装持久化，并尊重之前的显式关闭', async () => {
+    const mod = await import('../src/singleton/index');
+    let logger = mod.getAemeath();
+    mod.setUpload(async () => ({ success: true }));
+    expect(logger.hasPlugin('offline-persistence')).toBe(true);
+    mod.resetAemeath();
+
+    logger = mod.initAemeath({ offlinePersistence: false });
+    mod.setUpload(async () => ({ success: true }));
+    expect(logger.hasPlugin('upload')).toBe(true);
+    expect(logger.hasPlugin('offline-persistence')).toBe(false);
+    mod.resetAemeath();
+  });
+
+  it('setUpload(null) 真正暂停，并在重新绑定后原样恢复', async () => {
+    const mod = await import('../src/singleton/index');
+    const initialUpload = vi.fn(async () => ({ success: true }));
+    const logger = mod.initAemeath({ upload: initialUpload, offlinePersistence: false });
+
+    mod.setUpload(null);
+    logger.error('after pause');
+    await settle(10);
+    expect(initialUpload).not.toHaveBeenCalled();
+
+    const upload = logger.getPluginInstance('upload') as
+      import('../src/plugins/UploadPlugin').UploadPlugin;
+    expect(upload.getQueueStatus()).toMatchObject({ paused: true, length: 1 });
+
+    const resumed = vi.fn(async () => ({ success: true }));
+    mod.setUpload(resumed);
+    await settle(15);
+    expect(resumed).toHaveBeenCalledWith(expect.objectContaining({ message: 'after pause' }));
+    expect(upload.getQueueStatus()).toMatchObject({ paused: false, length: 0 });
+    mod.resetAemeath();
+  });
+
+  it('deliveryScope 变化时若仍有待投递日志则拒绝切换租户', async () => {
+    const mod = await import('../src/singleton/index');
+    const logger = mod.initAemeath({
+      upload: async () => ({ success: true }),
+      deliveryScope: 'tenant-a',
+      offlinePersistence: false,
+    });
+    mod.setUpload(null);
+    logger.error('tenant-a-secret');
+    await settle(8);
+
+    expect(() => mod.setUpload(async () => ({ success: true }), { deliveryScope: 'tenant-b' }))
+      .toThrow(/Refusing to switch upload deliveryScope/);
     mod.resetAemeath();
   });
 
@@ -222,14 +311,14 @@ describe('initAemeath — 可靠性选项接线', () => {
     mod.resetAemeath();
   });
 
-  it('queue.offlinePolicy 等新配置能透传到 UploadPlugin（默认 legacy）', async () => {
+  it('queue.offlinePolicy 默认 pause', async () => {
     const mod = await import('../src/singleton/index');
     const logger = mod.initAemeath({
       upload: async () => ({ success: false, shouldRetry: true, retryReason: 'network' }),
       errorCapture: false,
       safeGuard: { enabled: false },
       enableConsole: false,
-      queue: { maxRetries: 1 },
+      queue: { maxRetries: 1, suspectedOfflineThreshold: 1 },
     });
 
     logger.error('legacy path');
@@ -238,20 +327,19 @@ describe('initAemeath — 可靠性选项接线', () => {
     const upload = logger.getPluginInstance('upload') as unknown as {
       getQueueStatus(): { paused: boolean; drops: { total: number } };
     };
-    // 1.10 默认 legacy：不暂停
-    expect(upload.getQueueStatus().paused).toBe(false);
+    expect(upload.getQueueStatus().paused).toBe(true);
 
     mod.resetAemeath();
   });
 
-  it('显式 queue.offlinePolicy: pause 会启用暂停', async () => {
+  it('显式 queue.offlinePolicy: legacy 可恢复旧行为', async () => {
     const mod = await import('../src/singleton/index');
     const logger = mod.initAemeath({
       upload: async () => ({ success: false, shouldRetry: true, retryReason: 'network' }),
       errorCapture: false,
       safeGuard: { enabled: false },
       enableConsole: false,
-      queue: { offlinePolicy: 'pause', maxRetries: 1, suspectedOfflineThreshold: 1 },
+      queue: { offlinePolicy: 'legacy', maxRetries: 1, suspectedOfflineThreshold: 1 },
     });
 
     logger.error('pause path');
@@ -260,7 +348,7 @@ describe('initAemeath — 可靠性选项接线', () => {
     const upload = logger.getPluginInstance('upload') as unknown as {
       getQueueStatus(): { paused: boolean };
     };
-    expect(upload.getQueueStatus().paused).toBe(true);
+    expect(upload.getQueueStatus().paused).toBe(false);
 
     mod.resetAemeath();
   });

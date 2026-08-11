@@ -6,6 +6,7 @@ import { AemeathLogger } from '../src/core/Logger';
 import { UploadPlugin, type UploadResult } from '../src/plugins/UploadPlugin';
 import { OfflinePersistencePlugin } from '../src/plugins/OfflinePersistencePlugin';
 import * as storeModule from '../src/plugins/offline/OfflineStore';
+import { LogLevel } from '../src/types';
 
 const settle = async (n = 20): Promise<void> => {
   for (let i = 0; i < n; i++) await new Promise((r) => setTimeout(r, 10));
@@ -195,6 +196,56 @@ describe('localStorage 删除失败保留墓碑', () => {
     logger2.destroy();
   });
 
+  it('noop 后端处理成功事件后不得泄漏全局删除墓碑到下一实例', async () => {
+    const keyPrefix = `noop-tomb-${Math.random()}`;
+    const dbName = `noop-tomb-${Math.random()}`;
+    const realCreate = storeModule.createOfflineStore;
+    const deleted: string[] = [];
+    let firstOpen = true;
+    vi.spyOn(storeModule, 'createOfflineStore').mockImplementation(async (opts) => {
+      if (firstOpen) {
+        firstOpen = false;
+        return storeModule.createNoopStore();
+      }
+      const store = await realCreate({
+        ...opts,
+        preference: 'localstorage',
+        dbName,
+        keyPrefix,
+      });
+      const realDelete = store.delete.bind(store);
+      return {
+        ...store,
+        async delete(logId: string) {
+          deleted.push(logId);
+          await realDelete(logId);
+        },
+      };
+    });
+
+    const ghost = {
+      logId: 'never-persisted-in-noop',
+      level: 'error' as const,
+      message: 'already delivered',
+      timestamp: Date.now(),
+    };
+    const offline1 = new OfflinePersistencePlugin({ storage: 'localstorage', key: keyPrefix, dbName });
+    logger.use(offline1);
+    await offline1.whenReady();
+    logger.emit('upload:success', { log: ghost });
+    await settle(5);
+    offline1.uninstall(logger as never);
+    logger.destroy();
+
+    logger = new AemeathLogger({ enableConsole: false });
+    const offline2 = new OfflinePersistencePlugin({ storage: 'localstorage', key: keyPrefix, dbName });
+    logger.use(offline2);
+    await offline2.whenReady();
+
+    expect(deleted).not.toContain(ghost.logId);
+    offline2.uninstall(logger as never);
+  });
+
   it('delete 后记录仍可读时不清 PENDING，remount 会再删且不补传', async () => {
     const dbName = `kv-tomb-${Math.random()}`;
     const keyPrefix = `__aemeath_offline_${Math.random().toString(36).slice(2)}__`;
@@ -312,7 +363,7 @@ describe('localStorage 删除失败保留墓碑', () => {
         replayAttempts: 0,
         log: {
           logId: seedId,
-          level: 'error',
+          level: LogLevel.ERROR,
           message: 'sticky-delivered',
           timestamp: Date.now(),
         },

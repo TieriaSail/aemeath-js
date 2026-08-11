@@ -1,6 +1,6 @@
 {
   "name": "aemeath-js",
-  "version": "1.10.0",
+  "version": "1.10.1",
   "description": "A modular, type-safe logging system with plugin architecture",
   "keywords": [
     "logger",
@@ -116,6 +116,7 @@
     "README.zh_CN.md",
     "QUICK_START.md",
     "QUICK_START.zh_CN.md",
+    "CHANGELOG.md",
     "docs",
     "LICENSE"
   ],

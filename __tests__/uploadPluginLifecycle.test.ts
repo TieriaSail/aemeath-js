@@ -74,7 +74,7 @@ describe('UploadPlugin — 生命周期', () => {
     expect(calls).toBeGreaterThanOrEqual(2);
   });
 
-  it('同实例 remount：旧飞行 success 只扇出终态，不拆掉新生命周期的 inFlight', async () => {
+  it('同实例 remount：旧请求未定论前不得从缓存恢复出第二个同 logId 请求', async () => {
     const releases: Array<(r: UploadResult) => void> = [];
     let logId = '';
     const uploadFn = vi.fn((log: LogEntry) => {
@@ -91,7 +91,8 @@ describe('UploadPlugin — 生命周期', () => {
     });
 
     const successes: string[] = [];
-    logger.on('upload:success', (p: { log?: { message?: string } }) => {
+    logger.on('upload:success', (...args: unknown[]) => {
+      const p = args[0] as { log?: { message?: string } };
       if (p.log?.message) successes.push(p.log.message);
     });
 
@@ -101,23 +102,94 @@ describe('UploadPlugin — 生命周期', () => {
     expect(uploadFn).toHaveBeenCalledTimes(1);
 
     logger.uninstall('upload');
-    // 复装：cache 恢复后会再开一条飞行
+    // 复装时缓存里虽然包含卸载前的 inFlight，但内存中仍有真实请求在等待响应。
+    // 恢复层必须与当前所有权合并，不能把同一 logId 再发一次。
     logger.use(plugin);
     await vi.advanceTimersByTimeAsync(200);
-    expect(uploadFn).toHaveBeenCalledTimes(2);
-    expect(releases).toHaveLength(2);
+    expect(uploadFn).toHaveBeenCalledTimes(1);
+    expect(releases).toHaveLength(1);
 
-    // 旧 attempt 先成功：必须 emit，但不得把新飞行从 inFlight 拆掉
+    // 旧 attempt 的成功就是该稳定 logId 的终态，缓存和新生命周期都应一起对账。
     releases[0]!({ success: true });
     await vi.advanceTimersByTimeAsync(50);
     expect(successes).toEqual(['mid-flight']);
-    expect(plugin.isInFlight(logId)).toBe(true);
-
-    // 新飞行仍能正常收尾（若旧路径误删 inFlight，这里会状态错乱）
-    releases[1]!({ success: true });
-    await vi.advanceTimersByTimeAsync(50);
-    expect(successes.filter((m) => m === 'mid-flight')).toHaveLength(2);
+    expect(plugin.isInFlight(logId)).toBe(false);
     expect(plugin.getQueueStatus().length).toBe(0);
+    await vi.advanceTimersByTimeAsync(20);
+    expect(cachedIds()).not.toContain(logId);
+  });
+
+  it('缓存恢复也必须经过分片完整性准入，残片不能直接调用 onUpload', async () => {
+    const now = Date.now();
+    localStorage.setItem(CACHE_KEY, JSON.stringify([{
+      log: {
+        logId: 'cached-fragment-1',
+        level: 'error',
+        message: 'partial cached split',
+        timestamp: now,
+        tags: { splitId: 'cached-partial', splitIndex: 1, splitTotal: 2 },
+      },
+      priority: 100,
+      retryCount: 0,
+      timestamp: now,
+      cachedAt: now,
+    }]));
+    const uploadFn = vi.fn(async (): Promise<UploadResult> => ({ success: true }));
+    const plugin = new UploadPlugin({
+      onUpload: uploadFn,
+      queue: { offlinePolicy: 'pause', deduplicationDelay: 0 },
+      cache: { enabled: true },
+      saveOnUnload: false,
+    });
+
+    logger.use(plugin);
+    await vi.advanceTimersByTimeAsync(200);
+
+    expect(uploadFn).not.toHaveBeenCalled();
+    expect(plugin.getQueueStatus().pendingItems).toEqual([]);
+    expect(cachedIds()).toEqual([]);
+  });
+
+  it('缓存分片坐标完整但 logId 重复时也必须整组隔离', async () => {
+    const now = Date.now();
+    localStorage.setItem(CACHE_KEY, JSON.stringify([1, 2].map((index) => ({
+      log: {
+        logId: 'same-id',
+        level: 'error',
+        message: `cached-${index}`,
+        timestamp: now,
+        tags: { splitId: 'duplicate-id-split', splitIndex: index, splitTotal: 2 },
+      },
+      priority: 100,
+      retryCount: 0,
+      timestamp: now,
+      cachedAt: now,
+    }))));
+    const uploadFn = vi.fn(async (): Promise<UploadResult> => ({ success: true }));
+    const plugin = new UploadPlugin({
+      onUpload: uploadFn,
+      queue: { offlinePolicy: 'pause', deduplicationDelay: 0 },
+      cache: { enabled: true },
+      saveOnUnload: false,
+    });
+
+    logger.use(plugin);
+    await vi.advanceTimersByTimeAsync(200);
+
+    expect(uploadFn).not.toHaveBeenCalled();
+    expect(plugin.getQueueStatus().pendingItems).toEqual([]);
+    expect(cachedIds()).toEqual([]);
+  });
+
+  it('损坏的缓存容器会被隔离，不能在每次启动重复触发恢复失败', () => {
+    localStorage.setItem(CACHE_KEY, '{broken');
+    const plugin = new UploadPlugin({
+      onUpload: async () => ({ success: true }) as UploadResult,
+      cache: { enabled: true },
+      saveOnUnload: false,
+    });
+    logger.use(plugin);
+    expect(localStorage.getItem(CACHE_KEY)).toBeNull();
   });
 
   it('复装同一个插件实例后必须还能上传，而不是变成哑巴', async () => {

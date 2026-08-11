@@ -128,9 +128,17 @@ All plugins are optional. Only import what you need — unused plugins are tree-
 
 > Need to control plugin execution order? See [Plugin Ordering](./docs/en/8-plugin-ordering.md) (priority field).
 
-### Reliability (1.10, conservative defaults)
+### Reliable delivery (1.10.1)
 
-`UploadPlugin` keeps **`offlinePolicy: 'legacy'`** by default. Opt into `queue: { offlinePolicy: 'pause' }`, `payloadSanitize: true`, and/or `offlinePersistence: true` when you want the stronger reliability path. See [Upload Plugin](./docs/en/4-upload-plugin.md).
+With `upload` configured, `offlinePolicy: 'pause'` and offline persistence are enabled by
+default; opt out with `offlinePersistence: false` or restore 1.10.0 retry behavior with
+`queue: { offlinePolicy: 'legacy' }`. 1.10.1 also parses HTTP `Retry-After`, exposes a
+unified `getDeliveryStatus()`, and supports true runtime pause through `setUpload(null)`.
+
+Multi-tab delivery can still repeat a stable `logId`. Your backend **must** deduplicate on
+`(project/tenant scope, logId)`; `requestId` changes on every attempt. See
+[Upload Plugin](./docs/en/4-upload-plugin.md) and
+[Offline Persistence](./docs/en/11-offline-persistence.md).
 
 ### `beforeSend` — privacy & redaction
 

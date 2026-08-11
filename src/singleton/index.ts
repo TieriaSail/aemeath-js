@@ -14,7 +14,9 @@ import { EarlyErrorCapturePlugin } from '../plugins/EarlyErrorCapturePlugin';
 import {
   UploadPlugin,
   type UploadResult,
+  type UploadCallback,
   type UploadDropCallback,
+  type UploadBindingOptions,
 } from '../plugins/UploadPlugin';
 import {
   PayloadSanitizePlugin,
@@ -22,6 +24,7 @@ import {
 } from '../plugins/PayloadSanitizePlugin';
 import {
   OfflinePersistencePlugin,
+  purgeOfflinePersistenceStorage,
   type OfflinePersistencePluginOptions,
 } from '../plugins/OfflinePersistencePlugin';
 import { SafeGuardPlugin, type SafeGuardMode } from '../plugins/SafeGuardPlugin';
@@ -41,6 +44,10 @@ export type { RouteMatchConfig };
  * 全局 AemeathJs 实例
  */
 let globalAemeath: AemeathLogger | null = null;
+/** 记住显式退出，避免稍后通过 setUpload / 增量 init 又把持久化装回来。 */
+let offlinePersistenceConfig: boolean | OfflinePersistencePluginOptions | undefined;
+/** 关闭持久化时保留最近一次有效参数，后续传 true 可按原配置恢复。 */
+let offlinePersistenceOptions: OfflinePersistencePluginOptions = {};
 
 /**
  * AemeathJs 初始化配置
@@ -144,6 +151,9 @@ export interface AemeathInitOptions {
    */
   upload?: (log: LogEntry) => Promise<UploadResult>;
 
+  /** 投递目标稳定作用域；多租户必须为每个租户使用独立存储 key */
+  deliveryScope?: string;
+
   /**
    * 可选：自定义优先级
    *
@@ -177,10 +187,10 @@ export interface AemeathInitOptions {
     /**
      * 网络不可用时的策略
      *
-     * - `'legacy'`（1.10 默认）：与 1.9 一致，失败即消耗重试预算
-     * - `'pause'`：判定离线时暂停队列，不消耗重试预算（opt-in）
+     * - `'pause'`（1.10.1 默认）：判定离线时暂停队列，不消耗重试预算
+     * - `'legacy'`：1.10.0 及更早的行为，仅用于回归或临时兼容
      *
-     * @default 'legacy'
+     * @default 'pause'
      */
     offlinePolicy?: 'pause' | 'legacy';
     /** 重试退避；`legacy` 默认关，`pause` 默认开 */
@@ -239,17 +249,18 @@ export interface AemeathInitOptions {
   payloadSanitize?: boolean | PayloadSanitizePluginOptions;
 
   /**
-   * 断网续传（默认关闭）
+   * 断网续传（配置 upload 时默认开启）
    *
    * 开启后，断网期间的日志会落盘（IndexedDB，不可用时降级到 localStorage），
    * 网络恢复后自动补传；补传只进上传队列，不会重放业务侧的日志监听。
    *
-   * 需要同时提供 `upload`；这是**尽力而为**的持久化。
+   * 需要同时提供 `upload`；这是**尽力而为**的持久化。若不希望日志写入
+   * 本地持久存储，可显式传入 `false`。
    *
-   * @default false
+   * @default true
    * @example
    * ```javascript
-   * initAemeath({ upload, offlinePersistence: true });
+   * initAemeath({ upload, offlinePersistence: false });
    * ```
    */
   offlinePersistence?: boolean | OfflinePersistencePluginOptions;
@@ -492,6 +503,13 @@ export interface AemeathInitOptions {
  * ```
  */
 export function initAemeath(options: AemeathInitOptions = {}): AemeathLogger {
+  const requestedOfflinePersistence = options.offlinePersistence;
+  const nextOfflinePersistenceConfig = requestedOfflinePersistence !== undefined
+    ? requestedOfflinePersistence
+    : offlinePersistenceConfig;
+  const nextOfflinePersistenceOptions = typeof requestedOfflinePersistence === 'object'
+    ? requestedOfflinePersistence
+    : offlinePersistenceOptions;
   if (globalAemeath) {
     // 兼容场景：用户在 initAemeath 之前先调了 getAemeath()（兜底创建了实例），
     // 或重复调用了 initAemeath()。整个 options 不会再被应用（避免重复 use 同名
@@ -520,29 +538,63 @@ export function initAemeath(options: AemeathInitOptions = {}): AemeathLogger {
       honored.push('payloadSanitize');
     }
     if (options.upload && !globalAemeath.hasPlugin('upload')) {
+      const localPersistence = requestedOfflinePersistence === false
+        ? false
+        : requestedOfflinePersistence !== undefined || offlinePersistenceConfig !== false;
       globalAemeath.use(
         new UploadPlugin({
           onUpload: options.upload,
+          deliveryScope: options.deliveryScope,
           getPriority: options.getPriority,
           queue: options.queue,
           cache: { enabled: options.cache?.enabled !== false, ...options.cache },
+          localPersistence,
           onDrop: options.onDrop,
         }),
       );
       // 随 UploadPlugin 一起生效的选项要记入 honored，否则会被误报成「已忽略」
-      honored.push('upload', 'getPriority', 'queue', 'cache', 'onDrop');
+      honored.push('upload', 'deliveryScope', 'getPriority', 'queue', 'cache', 'onDrop');
     }
-    if (
-      options.offlinePersistence &&
-      globalAemeath.hasPlugin('upload') &&
-      !globalAemeath.hasPlugin('offline-persistence')
-    ) {
-      globalAemeath.use(
-        new OfflinePersistencePlugin(
-          typeof options.offlinePersistence === 'object' ? options.offlinePersistence : {},
-        ),
-      );
+    // 持久化随 UploadPlugin 默认开启；显式 false 必须能撤销并清理已有副本。
+    if (requestedOfflinePersistence === false) {
+      offlinePersistenceConfig = false;
+      const upload = globalAemeath.getPluginInstance('upload') as UploadPlugin | undefined;
+      upload?.setCachePersistenceEnabled(false, true);
+      const offline = globalAemeath.getPluginInstance('offline-persistence') as
+        | OfflinePersistencePlugin
+        | undefined;
+      offline?.requestPurgeOnUninstall();
+      globalAemeath.uninstall('offline-persistence');
+      void purgeOfflinePersistenceStorage(offlinePersistenceOptions).catch((error) => {
+        console.warn('[Aemeath] Failed to purge offline persistence:', error);
+      });
       honored.push('offlinePersistence');
+    } else {
+      const alreadyInstalled = globalAemeath.hasPlugin('offline-persistence');
+      if (requestedOfflinePersistence !== undefined) {
+        if (alreadyInstalled) {
+          // 已运行的持久层不热切库；true 只作幂等确认。
+          if (requestedOfflinePersistence === true) honored.push('offlinePersistence');
+        } else {
+          // 先更新配置再安装，保证一次调用即可从 false 重新开启。
+          offlinePersistenceConfig = requestedOfflinePersistence;
+          if (typeof requestedOfflinePersistence === 'object') {
+            offlinePersistenceOptions = requestedOfflinePersistence;
+          }
+          honored.push('offlinePersistence');
+        }
+      }
+      if (
+        offlinePersistenceConfig !== false &&
+        globalAemeath.hasPlugin('upload') &&
+        !globalAemeath.hasPlugin('offline-persistence')
+      ) {
+        globalAemeath.use(new OfflinePersistencePlugin(offlinePersistenceOptions));
+      }
+      if (requestedOfflinePersistence !== undefined) {
+        const upload = globalAemeath.getPluginInstance('upload') as UploadPlugin | undefined;
+        upload?.setCachePersistenceEnabled(true);
+      }
     }
     if (typeof console !== 'undefined' && console.warn) {
       const ignored = Object.keys(options).filter((k) => !honored.includes(k));
@@ -620,26 +672,36 @@ export function initAemeath(options: AemeathInitOptions = {}): AemeathLogger {
   if (options.upload) {
     const uploadPlugin = new UploadPlugin({
       onUpload: options.upload,
+      deliveryScope: options.deliveryScope,
       getPriority: options.getPriority,
       queue: options.queue,
       cache: { enabled: options.cache?.enabled !== false, ...options.cache },
+      localPersistence: nextOfflinePersistenceConfig !== false,
       onDrop: options.onDrop,
     });
     logger.use(uploadPlugin);
 
-    // 4b. 断网续传（可选，必须在 UploadPlugin 之后安装）
-    if (options.offlinePersistence) {
-      logger.use(
-        new OfflinePersistencePlugin(
-          typeof options.offlinePersistence === 'object' ? options.offlinePersistence : {},
-        ),
+    // 4b. 断网续传（默认开启，可显式关闭；必须在 UploadPlugin 之后安装）
+    if (nextOfflinePersistenceConfig !== false) {
+      logger.use(new OfflinePersistencePlugin(nextOfflinePersistenceOptions));
+    } else {
+      void purgeOfflinePersistenceStorage(nextOfflinePersistenceOptions).catch((error) => {
+        console.warn('[Aemeath] Failed to purge offline persistence:', error);
+      });
+    }
+  } else if (requestedOfflinePersistence !== undefined) {
+    if (requestedOfflinePersistence === false) {
+      void purgeOfflinePersistenceStorage(nextOfflinePersistenceOptions).catch((error) => {
+        console.warn('[Aemeath] Failed to purge offline persistence:', error);
+      });
+    }
+    if (typeof console !== 'undefined' && console.warn) {
+      console.warn(
+        '[Aemeath] `offlinePersistence` was configured without an `upload` callback. '
+          + 'The plugin is not installed yet; the option is retained and will be applied if '
+          + 'upload is configured later through setUpload() or incremental initAemeath().',
       );
     }
-  } else if (options.offlinePersistence && typeof console !== 'undefined' && console.warn) {
-    console.warn(
-      '[Aemeath] `offlinePersistence` was enabled but no `upload` callback was provided. '
-        + 'There is nothing to persist or replay; the option is ignored.',
-    );
   }
 
   // 5. 网络请求监控（默认启用）
@@ -682,6 +744,9 @@ export function initAemeath(options: AemeathInitOptions = {}): AemeathLogger {
   // 始终安装（即便没传 beforeSend 钩子也安装，便于运行时通过 setBeforeSend 动态设置）
   logger.use(new BeforeSendPlugin({ beforeSend: options.beforeSend }));
 
+  // 配置仅在本轮初始化完整走通后提交，避免构造阶段异常污染下一次初始化。
+  offlinePersistenceConfig = nextOfflinePersistenceConfig;
+  offlinePersistenceOptions = nextOfflinePersistenceOptions;
   globalAemeath = logger;
   return logger;
 }
@@ -733,6 +798,48 @@ export function setBeforeSend(hook: BeforeSendHook | null): void {
         + 'global instance. The hook is ignored. (This typically means the instance was '
         + 'created without the singleton helpers.)',
     );
+  }
+}
+
+/**
+ * 在运行时设置、替换或暂停 upload 回调。
+ *
+ * 传 `null` 会冻结队列和持久副本；重新绑定后从原位置恢复。它只适合更新同一
+ * 投递目标的 token 或实现。切换项目/租户前必须先确认
+ * `getDeliveryStatus().totalPending === 0`，然后 reset，并隔离 cache key、dbName、KV key。
+ */
+export function setUpload(
+  callback: UploadCallback | null,
+  options: UploadBindingOptions = {},
+): void {
+  if (!globalAemeath) {
+    if (typeof console !== 'undefined' && console.warn) {
+      console.warn(
+        '[Aemeath] setUpload() was called before any Aemeath instance exists. '
+          + 'The callback is dropped. Call initAemeath()/getAemeath() first, '
+          + 'or pass `upload` to initAemeath() directly.',
+      );
+    }
+    return;
+  }
+
+  const existing = globalAemeath.getPluginInstance('upload') as UploadPlugin | undefined;
+  if (existing) {
+    existing.setOnUpload(callback, options);
+    return;
+  }
+
+  // callback 为 null 时先以失败占位构造，再立即冻结，避免缓存恢复被误判为成功。
+  const upload = new UploadPlugin({
+    onUpload: callback ?? (async () => ({ success: false, shouldRetry: true })),
+    deliveryScope: options.deliveryScope,
+    localPersistence: offlinePersistenceConfig !== false,
+    cache: { enabled: true },
+  });
+  if (callback === null) upload.setOnUpload(null);
+  globalAemeath.use(upload);
+  if (offlinePersistenceConfig !== false) {
+    globalAemeath.use(new OfflinePersistencePlugin(offlinePersistenceOptions));
   }
 }
 
@@ -819,6 +926,8 @@ export function resetAemeath(): void {
     globalAemeath.destroy?.();
   }
   globalAemeath = null;
+  offlinePersistenceConfig = undefined;
+  offlinePersistenceOptions = {};
   // R15.2: 清理早期错误脚本注入的 window globals，让 reset 真正彻底。
   // 否则下次 initAemeath() 会受到 __LOGGER_INITIALIZED__ / __EARLY_ERRORS__ /
   // __flushEarlyErrors__ / __EARLY_ERROR_CAPTURE_LOADED__ 残留状态影响：

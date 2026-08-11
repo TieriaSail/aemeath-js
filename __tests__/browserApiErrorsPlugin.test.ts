@@ -131,7 +131,7 @@ describe('BrowserApiErrorsPlugin', () => {
 
       const div = document.createElement('div');
       expect(() => {
-        div.addEventListener('click', null);
+        div.addEventListener('click', null as unknown as EventListener);
       }).not.toThrow();
     });
 
@@ -215,7 +215,7 @@ describe('BrowserApiErrorsPlugin', () => {
 
       // Set up an interceptor as the "original" so we can inspect what gets passed
       let capturedCallback: Function | null = null;
-      const interceptor = (cb: Function, ...rest: unknown[]) => {
+      const interceptor = (cb: Function, ..._rest: unknown[]) => {
         capturedCallback = cb;
         return 0 as unknown as ReturnType<typeof setTimeout>;
       };
@@ -272,7 +272,6 @@ describe('BrowserApiErrorsPlugin', () => {
       // code path doesn't add its own error
       let threwFromPlugin = false;
       try {
-        // @ts-expect-error testing string handler
         setTimeout('void 0', 0);
       } catch (e: any) {
         // Node.js throws ERR_INVALID_ARG_TYPE — that's expected,

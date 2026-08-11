@@ -7,6 +7,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { UploadPlugin, type UploadResult } from '../src/plugins/UploadPlugin';
 import { AemeathLogger } from '../src/core/Logger';
+import { LogLevel, type LogEntry } from '../src/types';
 
 describe('UploadPlugin 并发与崩溃恢复', () => {
   let logger: AemeathLogger;
@@ -20,6 +21,109 @@ describe('UploadPlugin 并发与崩溃恢复', () => {
     logger.destroy();
     localStorage.clear();
     vi.useRealTimers();
+  });
+
+  it('queue.concurrency 必须形成真实并发上限，而不是始终退化为串行', async () => {
+    let active = 0;
+    let maxActive = 0;
+    const releases: Array<() => void> = [];
+    const plugin = new UploadPlugin({
+      onUpload: async (): Promise<UploadResult> => {
+        active++;
+        maxActive = Math.max(maxActive, active);
+        await new Promise<void>((resolve) => releases.push(resolve));
+        active--;
+        return { success: true };
+      },
+      queue: { offlinePolicy: 'pause', deduplicationDelay: 0, concurrency: 3 },
+      cache: { enabled: false },
+      saveOnUnload: false,
+    });
+    logger.use(plugin);
+    for (let i = 0; i < 5; i++) logger.error(`parallel-${i}`);
+
+    const flushing = plugin.flush();
+    await vi.waitFor(() => expect(releases).toHaveLength(3));
+    expect(maxActive).toBe(3);
+    releases.splice(0).forEach((release) => release());
+    await vi.waitFor(() => expect(releases).toHaveLength(2));
+    releases.splice(0).forEach((release) => release());
+    await flushing;
+
+    expect(active).toBe(0);
+    expect(plugin.getQueueStatus()).toMatchObject({ length: 0, inFlight: 0 });
+  });
+
+  it('不同日志可并发，但同一 splitId 必须串行，首片永久拒收时不得发出兄弟分片', async () => {
+    const attempted: number[] = [];
+    const dropped: number[] = [];
+    const plugin = new UploadPlugin({
+      onUpload: async (log): Promise<UploadResult> => {
+        attempted.push(Number(log.tags?.splitIndex));
+        return log.tags?.splitIndex === 1
+          ? { success: false, shouldRetry: false, error: 'reject first chunk' }
+          : { success: true };
+      },
+      queue: { deduplicationDelay: 0, concurrency: 3 },
+      cache: { enabled: false },
+      saveOnUnload: false,
+      onDrop: (log) => dropped.push(Number(log.tags?.splitIndex)),
+    });
+    logger.use(plugin);
+    const chunks: LogEntry[] = [1, 2, 3].map((index) => ({
+      logId: `split-${index}`,
+      level: LogLevel.ERROR,
+      message: 'split chunk',
+      timestamp: Date.now(),
+      tags: { splitId: 'concurrent-split', splitIndex: index, splitTotal: 3 },
+    }));
+
+    plugin.requeue(chunks);
+    await plugin.flush();
+
+    expect(attempted).toEqual([1]);
+    expect(dropped.sort()).toEqual([1, 2, 3]);
+  });
+
+  it('同组一片收到 Retry-After 时，兄弟分片也必须等到期限后才能发送', async () => {
+    vi.useFakeTimers();
+    const attempted: number[] = [];
+    let first = true;
+    const plugin = new UploadPlugin({
+      onUpload: async (log): Promise<UploadResult> => {
+        attempted.push(Number(log.tags?.splitIndex));
+        if (log.tags?.splitIndex === 1 && first) {
+          first = false;
+          return {
+            success: false,
+            shouldRetry: true,
+            retryReason: 'rate-limit',
+            retryAfterMs: 500,
+          };
+        }
+        return { success: true };
+      },
+      queue: { deduplicationDelay: 0, concurrency: 3, retryBackoff: false },
+      cache: { enabled: false },
+      saveOnUnload: false,
+    });
+    logger.use(plugin);
+    const chunks: LogEntry[] = [1, 2, 3].map((index) => ({
+      logId: `deferred-split-${index}`,
+      level: LogLevel.ERROR,
+      message: 'deferred split chunk',
+      timestamp: Date.now(),
+      tags: { splitId: 'deferred-split', splitIndex: index, splitTotal: 3 },
+    }));
+
+    plugin.requeue(chunks);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(attempted).toEqual([1]);
+
+    await vi.advanceTimersByTimeAsync(499);
+    expect(attempted).toEqual([1]);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(attempted).toContain(2);
   });
 
   it('并发 flush()：后一个不能把前一个截断，两个都要等到队列真的空', async () => {
@@ -111,7 +215,8 @@ describe('UploadPlugin 并发与崩溃恢复', () => {
       saveOnUnload: false,
     });
     logger.use(plugin);
-    logger.on('log', (entry) => {
+    logger.on('log', (...args: unknown[]) => {
+      const entry = args[0] as LogEntry;
       produced.push(entry.message);
     });
 

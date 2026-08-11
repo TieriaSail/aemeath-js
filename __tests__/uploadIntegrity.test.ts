@@ -8,7 +8,7 @@ import { UploadPlugin, type UploadResult } from '../src/plugins/UploadPlugin';
 import { PayloadSanitizePlugin } from '../src/plugins/PayloadSanitizePlugin';
 import { BeforeSendPlugin } from '../src/plugins/BeforeSendPlugin';
 import { AemeathLogger } from '../src/core/Logger';
-import type { LogEntry } from '../src/types';
+import { LogLevel, type LogEntry } from '../src/types';
 
 function setOnLine(value: boolean): void {
   Object.defineProperty(window.navigator, 'onLine', {
@@ -32,6 +32,66 @@ describe('清洗 + 上传的数据完整性', () => {
     logger.destroy();
     vi.useRealTimers();
     localStorage.clear();
+  });
+
+  it('去重丢弃回调同步重新入队的日志不能被队列提交覆盖', async () => {
+    const uploaded: string[] = [];
+    let rescued = false;
+    let plugin!: UploadPlugin;
+    plugin = new UploadPlugin({
+      onUpload: async (log) => {
+        uploaded.push(log.logId);
+        return { success: true } as UploadResult;
+      },
+      queue: { offlinePolicy: 'pause', deduplicationDelay: 0 },
+      cache: { enabled: false },
+      saveOnUnload: false,
+      onDrop: (_log, info) => {
+        if (!rescued && info.reason === 'deduplicated') {
+          rescued = true;
+          plugin.requeue({
+            logId: 'dedup-rescue',
+            level: LogLevel.ERROR,
+            message: 'requeued from onDrop',
+            timestamp: Date.now(),
+          });
+        }
+      },
+    });
+    logger.use(plugin);
+    logger.error('same message');
+    logger.error('same message');
+
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(rescued).toBe(true);
+    expect(uploaded).toContain('dedup-rescue');
+    expect(uploaded).toHaveLength(2);
+  });
+
+  it('所有入队入口共享 logId 唯一所有权，同一生命周期不能并发重复请求', async () => {
+    const uploaded: string[] = [];
+    const plugin = new UploadPlugin({
+      onUpload: async (log) => {
+        uploaded.push(log.logId);
+        return { success: true } as UploadResult;
+      },
+      queue: { offlinePolicy: 'pause', deduplicationDelay: 0, concurrency: 4 },
+      cache: { enabled: false },
+      saveOnUnload: false,
+    });
+    logger.use(plugin);
+    const log = {
+      logId: 'stable-one-owner',
+      level: 'error',
+      message: 'same identity',
+      timestamp: Date.now(),
+    } as LogEntry;
+
+    plugin.requeue([log, { ...log }]);
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(uploaded).toEqual(['stable-one-owner']);
   });
 
   it('两条完全相同、且都会被拆分的日志仍然要能去重', async () => {
@@ -180,24 +240,18 @@ describe('清洗 + 上传的数据完整性', () => {
     expect(droppedChunks.length === 0 || droppedChunks.length === splitTotal).toBe(true);
   });
 
-  it('溢出淘汰时已 inFlight 的分片也必须整组丢弃，后端不得收到残组', async () => {
-    const releases: Array<(r: UploadResult) => void> = [];
-    const uploaded: string[] = [];
+  it('未收齐的分片不得调用 onUpload，后端不会先收到孤片', async () => {
+    const received: string[] = [];
+    const dropped: Array<{ id: string; reason: string }> = [];
     const plugin = new UploadPlugin({
-      onUpload: (log) => {
-        if (log.tags?.splitId === 'g1') {
-          return new Promise<UploadResult>((res) => {
-            releases.push(res);
-          });
-        }
-        return Promise.resolve({ success: true } as UploadResult);
+      onUpload: async (log) => {
+        received.push(log.logId);
+        return { success: true } as UploadResult;
       },
-      queue: { offlinePolicy: 'pause', deduplicationDelay: 10, maxSize: 1 },
+      queue: { offlinePolicy: 'pause', deduplicationDelay: 10, maxSize: 3 },
       cache: { enabled: false },
       saveOnUnload: false,
-    });
-    logger.on('upload:success', (p: { log?: LogEntry }) => {
-      if (p.log?.logId) uploaded.push(p.log.logId);
+      onDrop: (log, info) => dropped.push({ id: log.logId, reason: info.reason }),
     });
     logger.use(plugin);
 
@@ -210,21 +264,13 @@ describe('清洗 + 上传的数据完整性', () => {
         tags: { splitId: 'g1', splitIndex: index, splitTotal: 3 },
       }) as LogEntry;
 
-    // maxSize=1：先飞起 p1，再让 p2 占住唯一队列槽
+    // 只收到一片时必须停留在接纳区；超时后整组拒绝，不能先请求后补救。
     plugin.requeue(mk('p1', 1));
     await vi.advanceTimersByTimeAsync(200);
-    expect(releases).toHaveLength(1);
-    plugin.requeue(mk('p2', 2));
-    await vi.advanceTimersByTimeAsync(50);
 
-    // p3 触发 overflow：淘汰队列里的 p2，并标记 inFlight 的 p1；p3 自身也同组丢掉
-    plugin.requeue(mk('p3', 3));
-    await vi.advanceTimersByTimeAsync(50);
-
-    for (const release of releases) release({ success: true });
-    await vi.advanceTimersByTimeAsync(200);
-
-    expect(uploaded).toEqual([]);
+    expect(received).toEqual([]);
+    expect(dropped).toEqual([{ id: 'p1', reason: 'storage-rejected' }]);
+    expect(plugin.isPending('p1')).toBe(false);
   });
 
   it('splitTotal 大于 maxSize 时不得留下后续独苗残组', () => {
@@ -258,24 +304,247 @@ describe('清洗 + 上传的数据完整性', () => {
     expect(plugin.isPending('p5')).toBe(false);
   });
 
-  it('overflow 标记不得跨 remount 吞掉同 logId 的新成功', async () => {
-    let hang = true;
-    let release!: (r: UploadResult) => void;
+  it('未收齐分片与 queue/parked 共用同一个容量上限，最后一片再原子转换', () => {
+    setOnLine(false);
+    const dropped: string[] = [];
+    const plugin = new UploadPlugin({
+      onUpload: async () => ({ success: true }) as UploadResult,
+      queue: { offlinePolicy: 'pause', deduplicationDelay: 60_000, maxSize: 4 },
+      cache: { enabled: false },
+      saveOnUnload: false,
+      onDrop: (log, info) => {
+        if (info.reason === 'queue-overflow') dropped.push(log.logId);
+      },
+    });
+    logger.use(plugin);
+    logger.error('resident-1');
+    logger.error('resident-2');
+
+    const mk = (group: string, id: string, index: number, total = 3): LogEntry => ({
+      logId: id,
+      level: LogLevel.ERROR,
+      message: 'split admission capacity',
+      timestamp: Date.now(),
+      tags: { splitId: group, splitIndex: index, splitTotal: total },
+    });
+    plugin.requeue(mk('reserved', 'r1', 1));
+    plugin.requeue(mk('reserved', 'r2', 2));
+
+    expect(plugin.getQueueStatus()).toMatchObject({ length: 2, parked: 0, admitting: 2 });
+    plugin.requeue(mk('other', 'other-1', 1, 2), { priority: 1 });
+    expect(dropped).toContain('other-1');
+    expect(plugin.isPending('other-1')).toBe(false);
+    expect(
+      plugin.getQueueStatus().length
+        + plugin.getQueueStatus().parked
+        + plugin.getQueueStatus().admitting,
+    ).toBeLessThanOrEqual(4);
+
+    plugin.requeue(mk('reserved', 'r3', 3));
+    expect(plugin.getQueueStatus()).toMatchObject({ length: 4, parked: 0, admitting: 0 });
+    expect(['r1', 'r2', 'r3'].every((id) => plugin.isPending(id))).toBe(true);
+  });
+
+  it('高优先级普通日志应原子淘汰低优先级未收齐分片组', () => {
+    setOnLine(false);
+    const dropped: string[] = [];
+    const plugin = new UploadPlugin({
+      onUpload: async () => ({ success: true }) as UploadResult,
+      queue: { offlinePolicy: 'pause', deduplicationDelay: 60_000, maxSize: 3 },
+      cache: { enabled: false },
+      saveOnUnload: false,
+      onDrop: (log, info) => {
+        if (info.reason === 'queue-overflow') dropped.push(log.logId);
+      },
+    });
+    logger.use(plugin);
+    logger.error('resident');
+    const chunk = (id: string, index: number): LogEntry => ({
+      logId: id,
+      level: LogLevel.ERROR,
+      message: 'low-priority admission',
+      timestamp: Date.now(),
+      tags: { splitId: 'low-admission', splitIndex: index, splitTotal: 3 },
+    });
+    plugin.requeue(chunk('low-1', 1), { priority: 1 });
+    plugin.requeue(chunk('low-2', 2), { priority: 1 });
+
+    plugin.requeue({
+      logId: 'high-incoming',
+      level: LogLevel.ERROR,
+      message: 'high-priority ordinary log',
+      timestamp: Date.now(),
+    }, { priority: 100 });
+
+    expect(dropped.sort()).toEqual(['low-1', 'low-2']);
+    expect(plugin.isPending('low-1')).toBe(false);
+    expect(plugin.isPending('low-2')).toBe(false);
+    expect(plugin.isPending('high-incoming')).toBe(true);
+    expect(plugin.getQueueStatus()).toMatchObject({ length: 2, admitting: 0 });
+  });
+
+  it('容量淘汰回调同步重入时，完整分片组仍必须一次性取得所有权', () => {
+    setOnLine(false);
+    let injected = false;
+    let plugin!: UploadPlugin;
+    const entry = (logId: string): LogEntry => ({
+      logId,
+      level: LogLevel.ERROR,
+      message: logId,
+      timestamp: Date.now(),
+    });
+    plugin = new UploadPlugin({
+      onUpload: async () => ({ success: true }) as UploadResult,
+      queue: { offlinePolicy: 'pause', deduplicationDelay: 60_000, maxSize: 3 },
+      cache: { enabled: false },
+      saveOnUnload: false,
+      onDrop: (log, info) => {
+        if (!injected && log.logId === 'low-a' && info.reason === 'queue-overflow') {
+          injected = true;
+          plugin.requeue(entry('reentrant'), { priority: 200 });
+        }
+      },
+    });
+    logger.use(plugin);
+    plugin.requeue(entry('low-a'), { priority: 1 });
+    plugin.requeue(entry('low-b'), { priority: 1 });
+    const group = [1, 2].map((index): LogEntry => ({
+      ...entry(`atomic-${index}`),
+      tags: { splitId: 'atomic-reentrant', splitIndex: index, splitTotal: 2 },
+    }));
+
+    plugin.requeue(group, { priority: 100 });
+
+    expect(injected).toBe(true);
+    expect(group.every((item) => plugin.isPending(item.logId))).toBe(true);
+    expect(plugin.isPending('reentrant')).toBe(true);
+    expect(plugin.getQueueStatus()).toMatchObject({ length: 3, admitting: 0 });
+  });
+
+  it('容量淘汰必须把新条目纳入优先级比较，低优先级不能挤掉高优先级', () => {
+    setOnLine(false);
+    const dropped: string[] = [];
+    const plugin = new UploadPlugin({
+      onUpload: async () => ({ success: true }) as UploadResult,
+      queue: { offlinePolicy: 'pause', deduplicationDelay: 60_000, maxSize: 1 },
+      cache: { enabled: false },
+      saveOnUnload: false,
+      onDrop: (log, info) => {
+        if (info.reason === 'queue-overflow') dropped.push(log.logId);
+      },
+    });
+    logger.use(plugin);
+    const entry = (logId: string): LogEntry => ({
+      logId,
+      level: LogLevel.ERROR,
+      message: logId,
+      timestamp: Date.now(),
+    });
+    plugin.requeue(entry('high'), { priority: 100 });
+    plugin.requeue(entry('low'), { priority: 1 });
+
+    expect(plugin.isPending('high')).toBe(true);
+    expect(plugin.isPending('low')).toBe(false);
+    expect(dropped).toEqual(['low']);
+  });
+
+  it('同一 splitId 只能有一个待投递组所有者', () => {
+    setOnLine(false);
+    const rejected: string[] = [];
+    const plugin = new UploadPlugin({
+      onUpload: async () => ({ success: true }) as UploadResult,
+      queue: { offlinePolicy: 'pause', deduplicationDelay: 60_000, maxSize: 6 },
+      cache: { enabled: false },
+      saveOnUnload: false,
+      onDrop: (log, info) => {
+        if (info.reason === 'storage-rejected') rejected.push(log.logId);
+      },
+    });
+    logger.use(plugin);
+    const group = (prefix: string): LogEntry[] => [1, 2].map((index) => ({
+      logId: `${prefix}-${index}`,
+      level: LogLevel.ERROR,
+      message: prefix,
+      timestamp: Date.now(),
+      tags: { splitId: 'owned-split', splitIndex: index, splitTotal: 2 },
+    }));
+    plugin.requeue(group('first'));
+    plugin.requeue(group('second'));
+
+    expect(group('first').every((item) => plugin.isPending(item.logId))).toBe(true);
+    expect(group('second').every((item) => plugin.isPending(item.logId))).toBe(false);
+    expect(rejected.sort()).toEqual(['second-1', 'second-2']);
+  });
+
+  it('只有分片坐标才启用原子组语义，裸 splitId 业务标签不能级联丢弃', async () => {
+    const attempted: string[] = [];
+    const dropped: string[] = [];
+    const upload = new UploadPlugin({
+      onUpload: async (log): Promise<UploadResult> => {
+        attempted.push(log.logId);
+        return log.logId === 'business-tag-a'
+          ? { success: false, shouldRetry: false }
+          : { success: true };
+      },
+      queue: { concurrency: 1, deduplicationDelay: 0, retryBackoff: false },
+      cache: { enabled: false },
+      saveOnUnload: false,
+      onDrop: (log) => dropped.push(log.logId),
+    });
+    logger.use(upload);
+    upload.requeue(['a', 'b'].map((suffix): LogEntry => ({
+      logId: `business-tag-${suffix}`,
+      level: LogLevel.ERROR,
+      message: `independent ${suffix}`,
+      timestamp: Date.now(),
+      tags: { splitId: 'business-correlation-only' },
+    })));
+
+    await vi.advanceTimersByTimeAsync(1000);
+
+    expect(attempted).toEqual(['business-tag-a', 'business-tag-b']);
+    expect(dropped).toEqual(['business-tag-a']);
+  });
+
+  it('完整分片组可通过原子淘汰腾出容量，不能因可靠性保护退化为无条件拒绝', () => {
+    setOnLine(false);
+    const splitDrops: string[] = [];
+    const plugin = new UploadPlugin({
+      onUpload: async () => ({ success: true }) as UploadResult,
+      queue: { offlinePolicy: 'pause', deduplicationDelay: 50, maxSize: 4 },
+      cache: { enabled: false },
+      saveOnUnload: false,
+      onDrop: (log) => {
+        if (log.tags?.splitId === 'admit-group') splitDrops.push(log.logId);
+      },
+    });
+    logger.use(plugin);
+    logger.error('filler-1');
+    logger.error('filler-2');
+    const chunks = [1, 2, 3].map((index): LogEntry => ({
+      logId: `admit-${index}`,
+      level: LogLevel.ERROR,
+      message: 'atomic admission',
+      timestamp: Date.now(),
+      tags: { splitId: 'admit-group', splitIndex: index, splitTotal: 3 },
+    }));
+    plugin.requeue(chunks);
+
+    expect(splitDrops).toEqual([]);
+    expect(chunks.every((chunk) => plugin.isPending(chunk.logId))).toBe(true);
+    expect(plugin.getQueueStatus().length).toBe(4);
+  });
+
+  it('未收齐分片的接纳状态不得跨 remount 污染新的完整组', async () => {
     const successes: string[] = [];
     const plugin = new UploadPlugin({
-      onUpload: (log) => {
-        if (hang && log.logId === 'p1') {
-          return new Promise<UploadResult>((res) => {
-            release = res;
-          });
-        }
-        return Promise.resolve({ success: true } as UploadResult);
-      },
-      queue: { offlinePolicy: 'pause', deduplicationDelay: 10, maxSize: 1 },
+      onUpload: async () => ({ success: true }) as UploadResult,
+      queue: { offlinePolicy: 'pause', deduplicationDelay: 10, maxSize: 3 },
       cache: { enabled: false },
       saveOnUnload: false,
     });
-    logger.on('upload:success', (p: { log?: LogEntry }) => {
+    logger.on('upload:success', (...args: unknown[]) => {
+      const p = args[0] as { log?: LogEntry };
       if (p.log?.logId) successes.push(p.log.logId);
     });
     logger.use(plugin);
@@ -290,22 +559,45 @@ describe('清洗 + 上传的数据完整性', () => {
       }) as LogEntry;
 
     plugin.requeue(mk('p1', 1));
-    await vi.advanceTimersByTimeAsync(200);
-    plugin.requeue(mk('p2', 2));
-    plugin.requeue(mk('p3', 3));
-    await vi.advanceTimersByTimeAsync(50);
-
     logger.uninstall('upload');
-    hang = false;
     logger.use(plugin);
     plugin.requeue(mk('p1', 1));
-    await vi.advanceTimersByTimeAsync(200);
+    plugin.requeue(mk('p2', 2));
+    plugin.requeue(mk('p3', 3));
+    await vi.advanceTimersByTimeAsync(500);
 
-    expect(successes).toContain('p1');
+    expect(successes.sort()).toEqual(['p1', 'p2', 'p3']);
+  });
 
-    // 旧飞行若仍挂起，settle 不得把上面的成功抹掉；这里放行仅避免未处理 Promise
-    release?.({ success: true });
-    await vi.advanceTimersByTimeAsync(50);
+  it('分片拒绝与未收齐状态都必须有硬上限，恶意 splitId 不能造成常驻内存增长', () => {
+    const plugin = new UploadPlugin({
+      onUpload: async () => ({ success: true }) as UploadResult,
+      queue: { offlinePolicy: 'pause', deduplicationDelay: 60_000, maxSize: 1 },
+      cache: { enabled: false },
+      saveOnUnload: false,
+    });
+    logger.use(plugin);
+    const mk = (group: string, id: string, index: number): LogEntry => ({
+      logId: id,
+      level: LogLevel.ERROR,
+      message: 'hostile split metadata',
+      timestamp: Date.now(),
+      tags: { splitId: group, splitIndex: index, splitTotal: 2 },
+    });
+
+    for (let i = 0; i < 1100; i++) {
+      plugin.requeue([mk(`rejected-${i}`, `r-${i}-1`, 1), mk(`rejected-${i}`, `r-${i}-2`, 2)]);
+    }
+    for (let i = 0; i < 1100; i++) {
+      plugin.requeue(mk(`pending-${i}`, `p-${i}`, 1));
+    }
+
+    const internals = plugin as unknown as {
+      rejectedSplitIds: Map<string, unknown>;
+      pendingSplitAdmissions: Map<string, unknown>;
+    };
+    expect(internals.rejectedSplitIds.size).toBeLessThanOrEqual(1024);
+    expect(internals.pendingSplitAdmissions.size).toBeLessThanOrEqual(1024);
   });
 
   it('线上实际字节数要真的落在用户声明的 maxBytes 之内', async () => {

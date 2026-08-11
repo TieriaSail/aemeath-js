@@ -158,7 +158,7 @@ describe('Webpack Plugin', () => {
       hooks: {
         compilation: { tap: vi.fn() },
         emit: {
-          tapAsync: vi.fn((name: string, cb: Function) => {
+          tapAsync: vi.fn((_name: string, cb: Function) => {
             cb({ assets }, () => {});
           }),
         },
@@ -242,4 +242,3 @@ describe('Rsbuild Plugin', () => {
     expect(result.headTags[1]).toBe(existingHeadTag);
   });
 });
-

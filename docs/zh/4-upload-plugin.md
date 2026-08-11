@@ -256,6 +256,7 @@ logger.use(
       concurrency: 1, // 并发数（建议保持为 1）
       maxRetries: 3, // 最大重试次数
       uploadInterval: 30000, // 上传间隔（毫秒）
+      uploadTimeoutMs: 30000, // 单次上传超时；设为 0 可关闭
     },
 
     // 缓存配置
@@ -276,11 +277,12 @@ logger.use(
 | ---------------------- | ------------------------------------------ | ------------------------- | --------------------------------- |
 | `onUpload`             | `(log: LogEntry) => Promise<UploadResult>` | **必需**                  | 上传回调函数（返回 UploadResult） |
 | `getPriority`          | `(log: LogEntry) => number`                | 按 level                  | 优先级回调                        |
-| `queue.maxSize`        | `number`                                   | `100`                     | 队列最大长度                      |
-| `queue.concurrency`    | `number`                                   | `1`                       | 并发上传数                        |
+| `queue.maxSize`        | `number`                                   | `100`                     | queued、parked 与未收齐分片准入项共用的总上限 |
+| `queue.concurrency`    | `number`                                   | `1`                       | 逻辑日志并发数；同一 `splitId` 的分片保持串行 |
 | `queue.maxRetries`     | `number`                                   | `3`                       | 最大重试次数                      |
 | `queue.uploadInterval` | `number`                                   | `30000`                   | 自动上传间隔（毫秒）              |
-| `queue.offlinePolicy`  | `'pause' \| 'legacy'`                      | `'legacy'`                | 断网策略（1.10.0+；`pause` 为 opt-in） |
+| `queue.uploadTimeoutMs` | `number`                                  | `30000`                   | 单次上传等待上限（毫秒）；`0` 关闭 |
+| `queue.offlinePolicy`  | `'pause' \| 'legacy'`                      | `'pause'`                 | 断网策略（`legacy` 可恢复 1.10.0 行为） |
 | `queue.retryBackoff`   | `boolean \| { baseMs, maxMs }`             | 随 `offlinePolicy`        | 指数退避（`legacy` 默认关 / `pause` 默认开） |
 | `onDrop`               | `(log, info) => void`                      | —                         | 日志被丢弃时回调（1.10.0+）       |
 | `cache.enabled`        | `boolean`                                  | `true`                    | 是否启用缓存                      |
@@ -372,34 +374,50 @@ onUpload: async (log) => {
 
 ---
 
-## 🛡️ 可靠性与丢弃（1.10.0+）
+## 🛡️ 可靠投递（1.10.1+）
 
-1.10 默认保持旧行为：`queue.offlinePolicy` 为 **`legacy`**（不暂停、默认关闭退避）。需要断网暂停时显式开启：
+1.10.1 默认使用 `queue.offlinePolicy: 'pause'`：传输层失败会暂停；可恢复的服务端失败
+先进行有界热重试，耗尽后进入 `parked`；服务端 `Retry-After` 会被遵守。只有需要临时
+复现 1.10.0 行为时才使用 `legacy`。
 
 ```typescript
-initAemeath({
+import { classifyHttpUploadResponse, initAemeath } from 'aemeath-js';
+
+const logger = initAemeath({
   upload: async (log) => {
     try {
       const res = await fetch('/api/logs', { method: 'POST', body: JSON.stringify(log) });
-      if (!res.ok) {
-        return { success: false, shouldRetry: res.status >= 500, retryReason: 'server' };
-      }
-      return { success: true };
+      return classifyHttpUploadResponse(res.status, res.headers.get('Retry-After'));
     } catch {
       return { success: false, shouldRetry: true, retryReason: 'network' };
     }
   },
-  queue: { offlinePolicy: 'pause' }, // opt-in：断网暂停而不是烧重试预算
   onDrop: (log, info) => console.warn('dropped', info.reason, log.logId),
 });
+
+logger.getDeliveryStatus(); // 统一查看 queued/in-flight/parked/persisted
 ```
 
 要点：
 
-- 返回 `retryReason: 'network' | 'server' | 'payload'` 可消除歧义；省略时按 `server` 处理。
-- `pause` 模式下传输层连续失败会暂停队列（`upload:paused`），恢复后继续；`legacy` 则每次失败都消耗 `maxRetries`。
-- 任意丢弃都会走 `onDrop` / `upload:drop`（含 `max-retries`、`cache-expired`、`payload-too-large` 等）。
-- 更长的离线保留请用可选的 [断网续传](./11-offline-persistence.md)；载荷清洗见 [载荷清洗](./10-payload-sanitize.md)（均需 opt-in）。
+- `classifyHttpUploadResponse()`：2xx 成功；408/425/429/5xx 可恢复；其余 4xx
+  为永久失败（401/403 为刷新凭证场景保留可恢复语义）。
+- 可返回原始 `retryAfter` 或换算后的 `retryAfterMs`；Axios 风格抛错中的
+  `response.status` / `response.headers` 也会自动解析。
+- `flush()` 只会跳过 SDK 自己的本地退避/网络暂停，不会越过服务端 `Retry-After`。
+- 带已知 fetch 网络失败文案的 `TypeError` 才会暂停投递；回调自身的普通编程
+  `TypeError` 会进入有界的 `callback-error` 路径。
+- `setUpload(null)` 会真正冻结内存队列与持久副本；重新绑定后原样恢复，不调用旧端点、
+  不消耗重试预算。
+- 多租户必须设置 `deliveryScope`，并隔离 cache key、dbName 和 KV key；有待投递数据时
+  SDK 会拒绝切换 scope。
+- 真正丢弃以及 SDK 内容去重终态（`deduplicated`）会通过 `onDrop`、`upload:drop`、
+  `delivery:dropped` 明确可观测；进入 `parked` 的可恢复失败不算丢弃。
+- `queue.maxSize` 是 queued、parked 与未收齐分片共用的准入预算；SDK 分片按整组
+  接纳和淘汰。只有同时带 `splitIndex` 或 `splitTotal` 的 `tags.splitId` 才启用
+  原子组语义，裸 `splitId` 仍是普通业务标签，不会绑定独立日志。
+- 标准入口 `initAemeath({ upload })` 默认启用[断网续传](./11-offline-persistence.md)；
+  可用 `offlinePersistence: false` 显式关闭。
 
-**版本**：1.10.0  
-**最后更新**：2026-08-07
+**版本**：1.10.1
+**最后更新**：2026-08-11

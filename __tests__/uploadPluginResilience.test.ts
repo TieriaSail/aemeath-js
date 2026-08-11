@@ -36,6 +36,32 @@ describe('UploadPlugin — 终止性保证', () => {
     localStorage.clear();
   });
 
+  it('自定义宿主 emit 抛错不能打断队列或留下幽灵 in-flight', async () => {
+    const uploadFn = vi.fn(async (): Promise<UploadResult> => ({ success: true }));
+    const plugin = new UploadPlugin({
+      onUpload: uploadFn,
+      queue: { deduplicationDelay: 0 },
+      cache: { enabled: false },
+      saveOnUnload: false,
+    });
+    logger.use(plugin);
+    const emit = vi.spyOn(logger, 'emit').mockImplementation(() => {
+      throw new Error('custom host emit failed');
+    });
+
+    expect(() => plugin.requeue({
+      logId: 'emit-failure-log',
+      level: LogLevel.ERROR,
+      message: 'must still upload',
+      timestamp: Date.now(),
+    })).not.toThrow();
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(uploadFn).toHaveBeenCalledTimes(1);
+    expect(plugin.getQueueStatus()).toMatchObject({ length: 0, inFlight: 0 });
+    emit.mockRestore();
+  });
+
   it('legacy 策略下 onUpload 抛异常必须耗尽预算后丢弃，不能无限重试', async () => {
     const uploadFn = vi.fn(async (_log: LogEntry): Promise<UploadResult> => {
       throw new Error('network down');
@@ -114,7 +140,7 @@ describe('UploadPlugin — 终止性保证', () => {
     expect(plugin.getQueueStatus().paused).toBe(true);
   });
 
-  it('抛出的 HTTP 错误（axios 风格）不算离线：耗预算丢弃，队列不暂停', async () => {
+  it('抛出的 HTTP 错误（axios 风格）不算离线：耗尽热预算后停放，队列不暂停', async () => {
     // axios / ky / got 默认对 4xx-5xx **抛异常**，异常上挂着 response。
     // 把"回调抛了"一律当成离线，等于让后端故障把整条上报链路静默挂起 ——
     // 这和"服务端 5xx 不算离线证据"是同一条原则，只是走的另一条分支。
@@ -139,7 +165,8 @@ describe('UploadPlugin — 终止性保证', () => {
     await vi.advanceTimersByTimeAsync(30_000);
 
     expect(plugin.getQueueStatus().paused).toBe(false);
-    expect(dropped).toEqual(['max-retries']);
+    expect(plugin.getQueueStatus().parked).toBe(1);
+    expect(dropped).toEqual([]);
   });
 
   it('fetch 的网络异常（TypeError）仍然算离线：暂停而不是丢弃', async () => {
@@ -165,7 +192,7 @@ describe('UploadPlugin — 终止性保证', () => {
     expect(dropped).toEqual([]);
   });
 
-  it('回调自身的 bug（普通 Error）按服务端失败处理，不把链路挂起', async () => {
+  it('回调自身的 bug（普通 Error）按可观测失败停放，不把链路挂起', async () => {
     // 用户回调里写错了变量名之类。这不是离线的证据，当成离线会让整条链路
     // 因为一个代码 bug 永久停摆 —— 耗预算丢弃至少是有界且可观测的
     const uploadFn = vi.fn(async (_log: LogEntry): Promise<UploadResult> => {
@@ -185,12 +212,60 @@ describe('UploadPlugin — 终止性保证', () => {
     await vi.advanceTimersByTimeAsync(30_000);
 
     expect(plugin.getQueueStatus().paused).toBe(false);
-    expect(dropped).toEqual(['max-retries']);
+    expect(plugin.getQueueStatus().parked).toBe(1);
+    expect(dropped).toEqual([]);
+  });
+
+  it('回调自身的 TypeError 不作为断网证据', async () => {
+    const uploadFn = vi.fn(async (_log: LogEntry): Promise<UploadResult> => {
+      throw new TypeError("Cannot read properties of undefined (reading 'token')");
+    });
+    const plugin = new UploadPlugin({
+      onUpload: uploadFn,
+      queue: {
+        offlinePolicy: 'pause',
+        deduplicationDelay: 10,
+        maxRetries: 1,
+        suspectedOfflineThreshold: 1,
+      },
+      cache: { enabled: false },
+      saveOnUnload: false,
+    });
+    logger.use(plugin);
+
+    logger.error('type error in callback');
+    await vi.advanceTimersByTimeAsync(30_000);
+
+    expect(plugin.getQueueStatus()).toMatchObject({ paused: false, parked: 1 });
+    expect(plugin.getQueueStatus().attempts.byReason['callback-error']).toBeGreaterThan(0);
+  });
+
+  it('AbortError 不作为断网证据，耗尽热预算后进入 parked', async () => {
+    const uploadFn = vi.fn(async (): Promise<UploadResult> => {
+      const error = new Error('cancelled by host');
+      error.name = 'AbortError';
+      throw error;
+    });
+    const dropped: string[] = [];
+    const plugin = new UploadPlugin({
+      onUpload: uploadFn,
+      queue: { deduplicationDelay: 10, maxRetries: 1, suspectedOfflineThreshold: 1 },
+      cache: { enabled: false },
+      saveOnUnload: false,
+      onDrop: (_log, info) => dropped.push(info.reason),
+    });
+    logger.use(plugin);
+
+    logger.error('host cancelled');
+    await vi.advanceTimersByTimeAsync(5000);
+
+    expect(plugin.getQueueStatus()).toMatchObject({ paused: false, length: 0, parked: 1 });
+    expect(dropped).toEqual([]);
   });
 
   it('上传超时按传输层失败处理：暂停等网络，不消耗重试预算', async () => {
     // 超时的分类靠的是插件给异常打的标，不是匹配错误文案。
-    // 1.x 默认关闭 uploadTimeoutMs；本用例显式开启以锁定超时语义。
+    // 不显式传 uploadTimeoutMs，锁定 1.10.1 默认 30 秒的保护语义。
     const uploadFn = vi.fn(() => new Promise<UploadResult>(() => {}));
     const dropped: string[] = [];
     const plugin = new UploadPlugin({
@@ -200,7 +275,6 @@ describe('UploadPlugin — 终止性保证', () => {
         deduplicationDelay: 10,
         maxRetries: 2,
         suspectedOfflineThreshold: 1,
-        uploadTimeoutMs: 30_000,
       },
       cache: { enabled: false },
       saveOnUnload: false,
@@ -286,8 +360,45 @@ describe('UploadPlugin — 终止性保证', () => {
     await vi.advanceTimersByTimeAsync(60_000);
 
     expect(uploadFn.mock.calls.length).toBeLessThanOrEqual(3);
-    expect(dropped).toEqual(['max-retries']);
+    expect(dropped).toEqual([]);
     expect(plugin.getQueueStatus().length).toBe(0);
+    expect(plugin.getQueueStatus().parked).toBe(1);
+  });
+
+  it('缓存分片任一 logId 已被实时日志持有时必须跳过整组，不能恢复残片', () => {
+    const now = Date.now();
+    const plugin = new UploadPlugin({
+      onUpload: async (): Promise<UploadResult> => ({ success: true }),
+      queue: { deduplicationDelay: 0 },
+      cache: { enabled: true, key: CACHE_KEY },
+      saveOnUnload: false,
+    });
+    plugin.setOnUpload(null);
+    plugin.requeue({
+      logId: 'shared-live-id',
+      level: LogLevel.ERROR,
+      message: 'live owner',
+      timestamp: now,
+    });
+    localStorage.setItem(CACHE_KEY, JSON.stringify([1, 2].map((index) => ({
+      log: {
+        logId: index === 1 ? 'shared-live-id' : 'cached-split-2',
+        level: LogLevel.ERROR,
+        message: `cached split ${index}`,
+        timestamp: now,
+        tags: { splitId: 'cached-identity-conflict', splitIndex: index, splitTotal: 2 },
+      },
+      priority: 50,
+      retryCount: 0,
+      timestamp: now,
+      cachedAt: now,
+    }))));
+
+    logger.use(plugin);
+
+    expect(plugin.getQueueStatus()).toMatchObject({ length: 1, admitting: 0 });
+    expect(plugin.getQueueStatus().pendingItems?.map((item) => item.logId))
+      .toEqual(['shared-live-id']);
   });
 });
 

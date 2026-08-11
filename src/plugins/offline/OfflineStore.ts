@@ -13,6 +13,7 @@
  */
 
 import type { LogEntry } from '../../types';
+import { getSdkSplitId } from '../../utils/splitIdentity';
 
 export type OfflineBackend = 'indexeddb' | 'localstorage' | 'noop';
 
@@ -34,6 +35,18 @@ export interface OfflineRecordMeta {
   bytes: number;
   /** 已经补传失败的次数 */
   replayAttempts: number;
+  /** `null` 表示已确认不是分片；`undefined` 仅用于兼容旧 KV 索引。 */
+  splitId?: string | null;
+  /** 服务端/冷却策略要求的最早再次尝试时间 */
+  notBefore?: number;
+  /** 服务端 Retry-After 的不可绕过期限（与 SDK 本地调度期限分离）。 */
+  serverNotBefore?: number;
+  /** parked 的跨生命周期退避次数 */
+  parkCount?: number;
+  /** 最近一次可重试失败的分类 */
+  lastRetryReason?: string;
+  /** 已进入终态但物理删除失败；hydrate 时只能继续删除 */
+  terminal?: true;
 }
 
 export interface OfflineRecord extends OfflineRecordMeta {
@@ -56,6 +69,7 @@ const IDB_OPEN_TIMEOUT_MS = 3000;
 const IDB_STORE_NAME = 'records';
 
 function toMeta(record: OfflineRecord): OfflineRecordMeta {
+  const rawSplitId = getSdkSplitId(record.log);
   return {
     logId: record.logId,
     storedAt: record.storedAt,
@@ -63,7 +77,76 @@ function toMeta(record: OfflineRecord): OfflineRecordMeta {
     priority: record.priority,
     bytes: record.bytes,
     replayAttempts: record.replayAttempts,
+    splitId: rawSplitId === undefined ? null : String(rawSplitId),
+    notBefore: record.notBefore,
+    serverNotBefore: record.serverNotBefore,
+    parkCount: record.parkCount,
+    lastRetryReason: record.lastRetryReason,
+    terminal: record.terminal,
   };
+}
+
+function isOfflineRecordMeta(value: unknown): value is OfflineRecordMeta {
+  if (value == null || typeof value !== 'object') return false;
+  const meta = value as Partial<OfflineRecordMeta>;
+  return typeof meta.logId === 'string'
+    && meta.logId.length > 0
+    && Number.isFinite(meta.storedAt)
+    && meta.storedAt! >= 0
+    && Number.isFinite(meta.capturedAt)
+    && meta.capturedAt! >= 0
+    && Number.isFinite(meta.priority)
+    && Number.isSafeInteger(meta.bytes)
+    && meta.bytes! >= 0
+    && Number.isSafeInteger(meta.replayAttempts)
+    && meta.replayAttempts! >= 0
+    && (meta.splitId === undefined || meta.splitId === null || typeof meta.splitId === 'string')
+    && (meta.notBefore === undefined || Number.isFinite(meta.notBefore))
+    && (meta.serverNotBefore === undefined || Number.isFinite(meta.serverNotBefore))
+    && (meta.parkCount === undefined
+      || (Number.isSafeInteger(meta.parkCount) && meta.parkCount >= 0))
+    && (meta.lastRetryReason === undefined || typeof meta.lastRetryReason === 'string')
+    && (meta.terminal === undefined || typeof meta.terminal === 'boolean');
+}
+
+function isOfflineRecord(value: unknown, expectedLogId?: string): value is OfflineRecord {
+  if (value == null || typeof value !== 'object') return false;
+  const record = value as Partial<OfflineRecord>;
+  if (!isOfflineRecordMeta(record)) return false;
+  const recordWithLog = value as Partial<OfflineRecord>;
+  if (
+    (expectedLogId !== undefined && record.logId !== expectedLogId) ||
+    recordWithLog.log == null ||
+    typeof recordWithLog.log !== 'object'
+  ) {
+    return false;
+  }
+  const log = recordWithLog.log as Partial<LogEntry>;
+  const logSplitId = getSdkSplitId(log as LogEntry);
+  const rawBusinessSplitId = log.tags && typeof log.tags === 'object'
+    ? (log.tags as Record<string, unknown>)['splitId']
+    : undefined;
+  // 兼容旧版本把裸业务 splitId 冗余进 record.splitId 的副本；hydrate 会把它
+  // 规范化为 null。新写入只有真正带坐标的 SDK 分片才允许非空 splitId。
+  const legacyBareSplit = logSplitId === undefined
+    && rawBusinessSplitId !== undefined
+    && record.splitId === String(rawBusinessSplitId);
+  const splitIdentityMatches = logSplitId === undefined
+    ? record.splitId === undefined || record.splitId === null || legacyBareSplit
+    : record.splitId === undefined || record.splitId === logSplitId;
+  return log.logId === record.logId
+    && typeof log.message === 'string'
+    && (log.level === 'debug'
+      || log.level === 'info'
+      || log.level === 'track'
+      || log.level === 'warn'
+      || log.level === 'error')
+    && Number.isFinite(log.timestamp)
+    && log.timestamp! >= 0
+    && record.capturedAt === log.timestamp
+    && splitIdentityMatches
+    && (log.requestId === undefined || typeof log.requestId === 'string')
+    && (log.tags === undefined || (log.tags !== null && typeof log.tags === 'object'));
 }
 
 // ==================== noop ====================
@@ -107,35 +190,112 @@ export function createKeyValueStore(
   const indexKey = `${keyPrefix}:index`;
   const recordKey = (logId: string) => `${keyPrefix}:r:${logId}`;
 
-  const readIndex = (): OfflineRecordMeta[] => {
+  /**
+   * 对宿主 KV 做一次保守的稳定读取。
+   *
+   * 小程序适配器可能把底层读取异常吞成 `null`，浏览器存储也可能只在一次调用上
+   * 抛错。首读为空/失败时再读一次，可以恢复一次性故障；两次仍不可确认时，后续
+   * 写入的回读校验会拒绝变更，绝不能把“读失败”当成“旧数据不存在”。
+   */
+  const readValue = (key: string): string | null => {
+    let firstError: unknown;
     try {
-      const raw = storage.getItem(indexKey);
-      if (!raw) return [];
-      const parsed = JSON.parse(raw);
-      return Array.isArray(parsed) ? (parsed as OfflineRecordMeta[]) : [];
+      const value = storage.getItem(key);
+      if (value !== null) return value;
+    } catch (error) {
+      firstError = error;
+    }
+
+    try {
+      const value = storage.getItem(key);
+      if (value !== null) return value;
+      if (firstError !== undefined) throw firstError;
+      return null;
+    } catch (error) {
+      throw firstError ?? error;
+    }
+  };
+
+  const readIndex = (): OfflineRecordMeta[] => {
+    const raw = readValue(indexKey);
+    if (raw === null) return [];
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
     } catch {
-      return [];
+      throw new Error('offline key-value index is corrupted');
+    }
+    if (!Array.isArray(parsed)) {
+      throw new Error('offline key-value index is corrupted: expected an array');
+    }
+    const metas: OfflineRecordMeta[] = [];
+    for (const value of parsed) {
+      if (isOfflineRecordMeta(value)) {
+        metas.push(value);
+        continue;
+      }
+      // 没有身份的垃圾项不可能指向一个可寻址正文，可以安全隔离；带 logId 的
+      // 坏元数据则可能仍有正文，静默过滤会在下一次写索引时把它永久变成孤儿。
+      const logId = value && typeof value === 'object'
+        ? (value as { logId?: unknown }).logId
+        : undefined;
+      if (typeof logId === 'string' && logId.length > 0) {
+        throw new Error('offline key-value index is corrupted: invalid metadata entry');
+      }
+    }
+    return metas;
+  };
+
+  const writeValue = (key: string, value: string): void => {
+    storage.setItem(key, value);
+    if (readValue(key) !== value) {
+      throw new Error(`key-value storage write did not stick: ${key}`);
+    }
+  };
+
+  const removeValue = (key: string): void => {
+    storage.removeItem(key);
+    if (readValue(key) !== null) {
+      throw new Error(`key-value storage remove did not stick: ${key}`);
     }
   };
 
   const writeIndex = (metas: OfflineRecordMeta[]): void => {
-    storage.setItem(indexKey, JSON.stringify(metas));
+    writeValue(indexKey, JSON.stringify(metas));
   };
 
   return {
     backend: 'localstorage',
 
     async put(record) {
-      // 先写记录本体再更新索引：反过来的话中途失败会留下"索引里有、实际没有"的幽灵项
-      storage.setItem(recordKey(record.logId), JSON.stringify(record));
-      const metas = readIndex().filter((m) => m.logId !== record.logId);
-      metas.push(toMeta(record));
+      if (!isOfflineRecord(record)) {
+        const invalidId = (record as unknown as { logId?: unknown })?.logId;
+        throw new Error(`offline key-value record is invalid: ${String(invalidId ?? '')}`);
+      }
+      const key = recordKey(record.logId);
+      // put 同时承担新建与 retry deadline/attempts 更新。更新失败时必须恢复旧正文，
+      // 不能把此前已经可靠落盘的副本当作“本次新写入”直接删掉。
+      const previous = readValue(key);
+      // 必须在改正文前确认旧索引可读。否则一次短暂读故障会把旧索引覆盖成只含
+      // 当前记录，留下永远无法 hydrate 的正文孤儿。
+      const previousMetas = readIndex();
+      const nextMetas = previousMetas.filter((m) => m.logId !== record.logId);
+      nextMetas.push(toMeta(record));
+      const serialized = JSON.stringify(record);
       try {
-        writeIndex(metas);
+        writeValue(key, serialized);
+        writeIndex(nextMetas);
       } catch (err) {
-        // 索引写失败就把刚写的记录回滚掉，避免不可回收的孤儿
+        // 正文和索引一起回滚，保留最后一份已知一致的状态。
         try {
-          storage.removeItem(recordKey(record.logId));
+          if (previous === null) removeValue(key);
+          else writeValue(key, previous);
+        } catch {
+          /* ignore */
+        }
+        try {
+          if (previousMetas.length === 0) removeValue(indexKey);
+          else writeIndex(previousMetas);
         } catch {
           /* ignore */
         }
@@ -144,39 +304,38 @@ export function createKeyValueStore(
     },
 
     async get(logId) {
-      try {
-        const raw = storage.getItem(recordKey(logId));
-        if (!raw) return null;
-        const parsed = JSON.parse(raw) as OfflineRecord;
-        return parsed && parsed.log ? parsed : null;
-      } catch {
-        return null;
+      const raw = readValue(recordKey(logId));
+      if (raw === null) return null;
+      const parsed: unknown = JSON.parse(raw);
+      if (!isOfflineRecord(parsed, logId)) {
+        throw new Error(`offline record is corrupted: ${logId}`);
       }
+      return parsed;
     },
 
     async delete(logId) {
-      // 与 IDB 路径对齐：失败必须 reject，好让上层保留「已送达待删」墓碑。
-      // 以前吞掉异常会让 safeDelete 误以为删干净了。
-      let removeFailed = false;
+      const key = recordKey(logId);
+      const previous = readValue(key);
+      const previousMetas = readIndex();
+      const nextMetas = previousMetas.filter((m) => m.logId !== logId);
       try {
-        storage.removeItem(recordKey(logId));
-      } catch {
-        removeFailed = true;
-      }
-      try {
-        writeIndex(readIndex().filter((m) => m.logId !== logId));
-      } catch {
-        removeFailed = true;
-      }
-      try {
-        if (storage.getItem(recordKey(logId)) != null) {
-          removeFailed = true;
+        removeValue(key);
+        if (nextMetas.length === 0) removeValue(indexKey);
+        else writeIndex(nextMetas);
+      } catch (error) {
+        // 删除只有在正文与索引同时成功后才算完成；否则尽力回到旧的一致状态。
+        try {
+          if (previous !== null) writeValue(key, previous);
+        } catch {
+          /* ignore */
         }
-      } catch {
-        removeFailed = true;
-      }
-      if (removeFailed) {
-        throw new Error('key-value offline delete failed');
+        try {
+          if (previousMetas.length === 0) removeValue(indexKey);
+          else writeIndex(previousMetas);
+        } catch {
+          /* ignore */
+        }
+        throw error;
       }
     },
 
@@ -185,18 +344,24 @@ export function createKeyValueStore(
     },
 
     async clear() {
-      for (const meta of readIndex()) {
+      const metas = readIndex();
+      const remaining: OfflineRecordMeta[] = [];
+      let firstError: unknown;
+      for (const meta of metas) {
         try {
-          storage.removeItem(recordKey(meta.logId));
-        } catch {
-          /* ignore */
+          removeValue(recordKey(meta.logId));
+        } catch (error) {
+          remaining.push(meta);
+          firstError ??= error;
         }
       }
       try {
-        storage.removeItem(indexKey);
-      } catch {
-        /* ignore */
+        if (remaining.length > 0) writeIndex(remaining);
+        else removeValue(indexKey);
+      } catch (error) {
+        firstError ??= error;
       }
+      if (firstError !== undefined) throw firstError;
     },
 
     close() {
@@ -320,20 +485,59 @@ export async function createIndexedDbStore(dbName: string): Promise<OfflineStore
   ): Promise<T> =>
     new Promise<T>((resolve, reject) => {
       let tx: IDBTransaction;
+      let operationSettled = false;
+      let transactionCompleted = false;
+      let operationResult: T;
+      let promiseSettled = false;
+      const rejectOnce = (error: unknown): void => {
+        if (promiseSettled) return;
+        promiseSettled = true;
+        reject(error);
+      };
+      const resolveWhenCommitted = (): void => {
+        if (promiseSettled || !operationSettled || !transactionCompleted) return;
+        promiseSettled = true;
+        resolve(operationResult);
+      };
       try {
         tx = db.transaction(IDB_STORE_NAME, mode);
       } catch (err) {
-        reject(err);
+        rejectOnce(err);
         return;
       }
-      tx.onabort = () => reject(tx.error ?? new Error('IndexedDB transaction aborted'));
-      tx.onerror = () => reject(tx.error ?? new Error('IndexedDB transaction failed'));
+      // IDBRequest.onsuccess 只表示请求执行完，不代表 readwrite 事务已经提交。
+      // 对外的“持久化成功”必须以 transaction.oncomplete 为唯一提交边界。
+      tx.oncomplete = () => {
+        transactionCompleted = true;
+        resolveWhenCommitted();
+      };
+      tx.onabort = () => rejectOnce(tx.error ?? new Error('IndexedDB transaction aborted'));
+      tx.onerror = () => rejectOnce(tx.error ?? new Error('IndexedDB transaction failed'));
       // 同步发起请求：事务只在当前任务内有效，推迟到后续微任务再碰 store
       // 就可能撞上 TransactionInactiveError
       try {
-        Promise.resolve(run(tx.objectStore(IDB_STORE_NAME))).then(resolve, reject);
+        Promise.resolve(run(tx.objectStore(IDB_STORE_NAME))).then(
+          (value) => {
+            operationResult = value;
+            operationSettled = true;
+            resolveWhenCommitted();
+          },
+          (error) => {
+            try {
+              tx.abort();
+            } catch {
+              /* transaction may already be inactive */
+            }
+            rejectOnce(error);
+          },
+        );
       } catch (err) {
-        reject(err);
+        try {
+          tx.abort();
+        } catch {
+          /* transaction may already be inactive */
+        }
+        rejectOnce(err);
       }
     });
 
@@ -341,12 +545,24 @@ export async function createIndexedDbStore(dbName: string): Promise<OfflineStore
     backend: 'indexeddb',
 
     put(record) {
+      if (!isOfflineRecord(record)) {
+        const invalidId = (record as unknown as { logId?: unknown })?.logId;
+        return Promise.reject(
+          new Error(`offline IndexedDB record is invalid: ${String(invalidId ?? '')}`),
+        );
+      }
       return withStore('readwrite', (store) => requestToPromise(store.put(record)).then(() => undefined));
     },
 
     get(logId) {
       return withStore('readonly', (store) =>
-        requestToPromise<OfflineRecord | undefined>(store.get(logId)).then((r) => r ?? null),
+        requestToPromise<unknown>(store.get(logId)).then((record) => {
+          if (record === undefined) return null;
+          if (!isOfflineRecord(record, logId)) {
+            throw new Error(`offline IndexedDB record is corrupted: ${logId}`);
+          }
+          return record;
+        }),
       );
     },
 
@@ -374,10 +590,12 @@ export async function createIndexedDbStore(dbName: string): Promise<OfflineStore
                 resolve(metas);
                 return;
               }
-              const value = cursor.value as OfflineRecord | undefined;
-              if (value && typeof value.logId === 'string') {
-                metas.push(toMeta(value));
+              const value: unknown = cursor.value;
+              if (!isOfflineRecord(value)) {
+                reject(new Error('offline IndexedDB record is corrupted'));
+                return;
               }
+              metas.push(toMeta(value));
               cursor.continue();
             };
             request.onerror = () =>
@@ -408,6 +626,8 @@ export interface CreateStoreOptions {
   preference: 'auto' | 'indexeddb' | 'localstorage';
   dbName: string;
   keyPrefix: string;
+  /** 清盘等场景要求命中指定后端，禁止把失败自动降级成另一个后端。 */
+  allowFallback?: boolean;
   onFallback?: (from: string, reason: unknown) => void;
 }
 
@@ -420,13 +640,20 @@ export interface CreateStoreOptions {
  * 1.x：无 PlatformAdapter；KV 回退固定使用浏览器 localStorage。
  */
 export async function createOfflineStore(options: CreateStoreOptions): Promise<OfflineStore> {
-  const { preference, dbName, keyPrefix, onFallback } = options;
+  const { preference, dbName, keyPrefix, allowFallback = true, onFallback } = options;
 
-  if (preference !== 'localstorage' && hasIndexedDb()) {
-    try {
-      return await createIndexedDbStore(dbName);
-    } catch (err) {
-      onFallback?.('indexeddb', err);
+  if (preference !== 'localstorage') {
+    if (hasIndexedDb()) {
+      try {
+        return await createIndexedDbStore(dbName);
+      } catch (err) {
+        onFallback?.('indexeddb', err);
+        if (!allowFallback) throw err;
+      }
+    } else if (!allowFallback) {
+      const error = new Error('IndexedDB is unavailable');
+      onFallback?.('indexeddb', error);
+      throw error;
     }
   }
 
@@ -434,7 +661,9 @@ export async function createOfflineStore(options: CreateStoreOptions): Promise<O
   if (storage && probeKeyValueStorage(storage, keyPrefix)) {
     return createKeyValueStore(storage, keyPrefix);
   }
-  onFallback?.('localstorage', new Error('key-value storage is not writable'));
+  const error = new Error('key-value storage is not writable');
+  onFallback?.('localstorage', error);
+  if (!allowFallback) throw error;
   return createNoopStore();
 }
 
@@ -451,7 +680,8 @@ function probeKeyValueStorage(storage: SyncKeyValueStorage, keyPrefix: string): 
     storage.setItem(probeKey, token);
     const readBack = storage.getItem(probeKey);
     storage.removeItem(probeKey);
-    return readBack === token;
+    const removed = storage.getItem(probeKey);
+    return readBack === token && removed === null;
   } catch {
     return false;
   }

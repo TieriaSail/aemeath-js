@@ -1,22 +1,23 @@
 # Offline Persistence
 
-> v1.10.0+ · **Optional plugin**, disabled by default · Persist while offline, replay when back online
+> v1.10.1+ · Enabled by default by `initAemeath({ upload })` · Persist while offline, replay when back online
 
-> **1.10 note**: `UploadPlugin` `queue.offlinePolicy` defaults to `legacy` (no pause). To pause the queue offline and use the `upload:paused` snapshot path below, set `queue: { offlinePolicy: 'pause' }` explicitly.
+> To keep delivery memory-only, pass `offlinePersistence: false`. Manual plugin assembly
+> remains explicit: install `OfflinePersistencePlugin` after `UploadPlugin`.
 
 ---
 
 ## 🚀 Quick start
 
 ```typescript
-import { initAemeath } from 'aemeath-js';
+import { classifyHttpUploadResponse, initAemeath } from 'aemeath-js';
 
 initAemeath({
   upload: async (log) => {
     const res = await fetch('/api/logs', { method: 'POST', body: JSON.stringify(log) });
-    return { success: res.ok, retryReason: res.ok ? undefined : 'server' };
+    return classifyHttpUploadResponse(res.status, res.headers.get('Retry-After'));
   },
-  offlinePersistence: true, // that's it
+  // offlinePersistence defaults to true
 });
 ```
 
@@ -82,13 +83,20 @@ upload queue directly: no second pass through `beforeSend`, no `logger.on('log')
 listeners firing again, no other plugin reprocessing them. Your analytics won't
 suddenly gain a batch of events because someone's WiFi came back.
 
-**No duplicate uploads.** When the network returns, the in-memory queue and the
-persisted store may both hold the same entry. Before replaying, the plugin checks
-`upload.isPending(logId)` and skips anything already queued or in flight.
+**No same-instance duplicate uploads.** When the network returns, the in-memory queue
+and persisted store may both hold the same entry. Before replaying, the plugin checks
+`upload.isPending(logId)` and skips queued, in-flight, or parked copies. Cross-tab
+coordination is not part of 1.10.1; the backend idempotency requirement below is mandatory.
 
-**Replay attempts are bounded.** After `maxReplayAttempts` failures (default 3) an
-entry is abandoned and cleaned up, reported through `onDrop` with reason
-`offline-give-up`. No zombie records hold onto quota forever.
+**Recoverable failures are parked, not deleted.** Bounded hot retries protect the endpoint;
+after that, the entry moves to `parked` and keeps its durable copy. Terminal responses
+(`shouldRetry: false`, non-retryable 4xx, payload rejection) are deleted immediately.
+`maxReplayAttempts` remains a termination guard for the legacy replay path.
+
+**Split identity is structural.** Only `tags.splitId` accompanied by `splitIndex` or
+`splitTotal` receives atomic group handling. A bare `splitId` remains a normal business tag,
+so independent logs are never deferred, evicted, or deleted as accidental siblings. Legacy KV
+records written with the old interpretation are normalized once during hydration.
 
 ---
 
@@ -124,7 +132,7 @@ initAemeath({
     maxEntries: 500,           // max records retained
     maxTotalBytes: 2_000_000,  // max bytes retained
     replayBatchSize: 10,       // entries per replay round
-    maxReplayAttempts: 3,      // give up after this many failures
+    maxReplayAttempts: 3,      // legacy replay termination guard
     replayTimeoutMs: 60000,    // reconciliation timeout
     dbName: 'aemeath-offline', // IndexedDB database name
     key: '__aemeath_offline__',// localStorage key prefix
@@ -137,10 +145,10 @@ initAemeath({
 | ------------------- | ----------------------------------------- | -------------------- | ----------------------------------------------- |
 | `storage`           | `'auto' \| 'indexeddb' \| 'localstorage'` | `'auto'`             | Preference; still falls back if unavailable     |
 | `ttl`               | `number`                                  | 7 days               | Measured from the moment it was persisted       |
-| `maxEntries`        | `number`                                  | IDB 500 / KV 100     | **Disk** max records; oldest evicted (memory queue unaffected) |
-| `maxTotalBytes`     | `number`                                  | IDB 2MB / KV 512KB   | **Disk** max bytes; oldest evicted (memory queue unaffected) |
+| `maxEntries`        | `number`                                  | IDB 500 / KV 100     | Durable record limit and basis for the bounded transient write-intent buffer |
+| `maxTotalBytes`     | `number`                                  | IDB 2MB / KV 512KB   | Durable byte limit and basis for the bounded transient write-intent buffer |
 | `replayBatchSize`   | `number`                                  | `10`                 | Prevents a thundering herd on recovery          |
-| `maxReplayAttempts` | `number`                                  | `3`                  | Then abandoned and reported via `onDrop`        |
+| `maxReplayAttempts` | `number`                                  | `3`                  | Legacy replay termination guard                  |
 | `replayTimeoutMs`   | `number`                                  | `60000`              | Requeue window when neither success nor failure arrives |
 | `dbName`            | `string`                                  | `'aemeath-offline'`  | IndexedDB database name                         |
 | `key`               | `string`                                  | `'__aemeath_offline__'` | Key prefix for the KV backend                |
@@ -149,9 +157,9 @@ initAemeath({
 Manual installation (when not using `initAemeath`):
 
 ```typescript
-import { Aemeath, UploadPlugin, OfflinePersistencePlugin } from 'aemeath-js';
+import { AemeathLogger, UploadPlugin, OfflinePersistencePlugin } from 'aemeath-js';
 
-const logger = new Aemeath();
+const logger = new AemeathLogger();
 logger.use(new UploadPlugin({ onUpload }));
 logger.use(new OfflinePersistencePlugin()); // must come after UploadPlugin
 ```
@@ -167,6 +175,12 @@ IndexedDB ──unavailable──► localStorage ──unavailable──► noo
 **Why IndexedDB first**: capacity measured in hundreds of MB rather than 5MB; an
 async API that doesn't block the main thread; per-key reads and writes instead of
 reserializing the whole collection every time. localStorage is only a fallback.
+
+If a previous launch fell back to localStorage while IndexedDB was temporarily unavailable,
+the next healthy launch migrates those KV records into IndexedDB commit-first and deletes each
+KV copy only after the IDB transaction commits. Hydration and replay start after reconciliation;
+an integrity or migration failure enters a delete-only degraded state instead of treating a
+partially known store as empty.
 
 Real cases that hit the fallback: IndexedDB `open()` hangs in Safari private mode
 (we time out after 2 seconds), some WebViews disable IndexedDB entirely, and an
@@ -195,15 +209,17 @@ never silently:
 Eviction is by persist time rather than priority: offline logs usually share the
 same priority, so chronological order is the only stable, predictable criterion.
 
-### `maxEntries` / `maxTotalBytes` only bound disk
+### Persistence budget vs upload queue
 
-These options cap **what is persisted to the offline store**, not the in-memory
+These options cap committed offline records and also derive a bounded in-memory budget for
+uncommitted write intents while storage is temporarily failing. They do not cap the separate
 `UploadPlugin` queue:
 
 | Scenario | Who decides | Outcome |
 |---|---|---|
 | Same tab: offline → online (page stays open) | Memory queue | Entries evicted from disk **may still upload from memory** |
 | After close / reload (only disk left) | `maxEntries` / `maxTotalBytes` | Eviction sticks; oldest entries are not replayed |
+| Transient storage failure | Persistence write-intent buffer | Writes retry with exponential backoff; overflow is reported, never allowed to grow without bound |
 
 This split is intentional: a brief outage with the tab still open should not
 throw away in-memory logs just because the disk budget filled up. Disk quota
@@ -217,13 +233,9 @@ entry from the memory queue.
 ```typescript
 initAemeath({
   upload,
-  offlinePersistence: true,
   onDrop: (log, info) => {
     if (info.reason === 'storage-quota') {
       // storage full, this one didn't make it onto disk
-    }
-    if (info.reason === 'offline-give-up') {
-      // replay failed repeatedly, abandoned
     }
   },
 });
@@ -233,6 +245,9 @@ initAemeath({
 
 ## 🔭 Inspecting state
 
+For the combined upload + persistence view, prefer
+[`logger.getDeliveryStatus()`](./12-delivery-status.md).
+
 ```typescript
 const plugin = getAemeath().getPluginInstance('offline-persistence');
 
@@ -240,38 +255,53 @@ plugin.getStatus();
 // {
 //   backend: 'indexeddb',  // or 'localstorage' / 'noop' / 'initializing'
 //   pending: 42,           // awaiting replay
+//   buffered: 2,           // writes/metadata updates not committed yet
 //   bytes: 128374,         // estimated footprint
 //   replaying: 3,          // currently in flight
 //   quotaDrops: 0,         // dropped due to quota
 //   giveUps: 0,            // abandoned after repeated failures
 //   replayed: 137,         // successfully replayed
+//   items: [{ logId, capturedAt, state: 'persisted' | 'replaying' | 'buffering' }],
 // }
 
-await plugin.clear(); // wipe all persisted copies
+await plugin.clear(); // wipe persisted copies and uncommitted write/delete intents
 ```
 
 ---
 
 ## 🚧 Known limitations
 
-**Multiple tabs can replay the same entry.** Each tab holds its own storage handle,
-so one entry may be replayed by several tabs at once. Deduplicate by `logId` on the
-backend — it stays stable across retries and replays. (Cross-tab locking is planned.)
+### Mandatory backend idempotency (`logId`)
 
-**Best effort, not transactional.** IndexedDB writes are async; if the process is
-killed (a crash, or shutting down right after `window.close()`), the last few
-in-flight writes are lost.
+**Multiple tabs can replay the same entry.** 1.10.1 prevents duplicates inside one
+SDK instance, but it does not elect a single browser tab. The same record can therefore
+reach your endpoint more than once.
 
-**Give each instance its own `dbName` when a page runs several.** `dbName` defaults to
-`'aemeath-offline'`. If two instances share a store, logs one project buffered offline get
+Your ingestion endpoint **must** make `(project/tenant scope, logId)` unique and return
+success for a repeated key without inserting a second row. `logId` stays stable across
+retries and offline replay; `requestId` changes for every attempt and must not be used as
+the deduplication key. Split payload chunks already have distinct `logId` values.
+
+This is a correctness requirement, not an optional optimization. Cross-tab coordination
+is planned for 2.6.0, but backend idempotency remains necessary for uncertain network
+outcomes even after that work ships.
+
+**Commit-aware, but still best effort at process shutdown.** An IndexedDB operation is reported
+successful only after its transaction completes; a request-level success is not enough. The SDK
+still cannot finish work that the browser terminates before commit, and the KV fallback cannot make
+its separate record/index keys one native transaction. Failed operations remain observable and are
+not reported as durable.
+
+**Give each instance its own `dbName`, KV `key`, and upload `cache.key` when a page runs
+several.** If two instances share either possible backend resource, logs one project buffered offline get
 replayed automatically to the other project's endpoint — and because replay happens on its own,
 this kind of cross-wiring is especially hard to trace. When the SDK detects the collision it
 **deactivates the second instance** (`getStatus().backend` returns `'noop'`) and warns on the
 console. To persist on both, name the stores apart:
 
 ```ts
-new OfflinePersistencePlugin({ dbName: 'host-offline' });
-new OfflinePersistencePlugin({ dbName: 'widget-offline' });
+new OfflinePersistencePlugin({ dbName: 'host-offline', key: 'host-offline-kv' });
+new OfflinePersistencePlugin({ dbName: 'widget-offline', key: 'widget-offline-kv' });
 ```
 
 `UploadPlugin.cache.key` has the same requirement; see
@@ -280,13 +310,11 @@ new OfflinePersistencePlugin({ dbName: 'widget-offline' });
 **No encryption.** Records are stored as plain JSON. If your logs carry sensitive
 data, redact in [`beforeSend`](./9-before-send.md) — it runs before anything is persisted.
 
-**Relies on `logId` idempotency.** Replays reuse the original `logId` (`requestId`
-changes every attempt), so your backend must deduplicate by `logId`.
-
 ---
 
 ## 🔗 Related
 
 - [UploadPlugin](./4-upload-plugin.md) — queueing, retries, drops and events
+- [Unified delivery status](./12-delivery-status.md) — combined state and lifecycle aliases
 - [Payload sanitize](./10-payload-sanitize.md) — keeps entries small enough to persist
 - [`beforeSend` hook](./9-before-send.md) — redact before anything hits disk

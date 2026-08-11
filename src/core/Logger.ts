@@ -17,10 +17,14 @@ import type {
   AemeathInterface,
   ContextUpdater,
   ContextValue,
+  DeliveryStatus,
 } from '../types';
 import { LogLevel as LogLevelEnum, ErrorCategory } from '../types';
 import { RouteMatcher, type RouteMatchConfig } from '../utils/routeMatcher';
 import { generateId } from '../utils/generateId';
+import { getSdkSplitId } from '../utils/splitIdentity';
+import type { UploadQueueStatus } from '../plugins/UploadPlugin';
+import type { OfflinePersistenceStatus } from '../plugins/OfflinePersistencePlugin';
 
 /**
  * 一条日志经 afterLog 扇出后最多保留多少条
@@ -30,42 +34,56 @@ import { generateId } from '../utils/generateId';
  */
 const MAX_FANOUT_ENTRIES = 64;
 
+const DELIVERY_EVENT_ALIASES: Readonly<Record<string, string>> = {
+  'upload:enqueued': 'delivery:queued',
+  'upload:attempt': 'delivery:attempt',
+  'upload:retry-scheduled': 'delivery:retry-scheduled',
+  'upload:parked': 'delivery:parked',
+  'upload:unparked': 'delivery:unparked',
+  'upload:success': 'delivery:delivered',
+  'upload:drop': 'delivery:dropped',
+  'upload:paused': 'delivery:paused',
+  'upload:resumed': 'delivery:resumed',
+  'upload:offline-unavailable': 'delivery:persistence-unavailable',
+};
+
 /**
  * 扇出截断时保持 splitId 分组完整：放不下的整组丢弃，绝不留下残片。
  */
 function truncateFanoutPreservingSplits(entries: LogEntry[], max: number): LogEntry[] {
   if (entries.length <= max) return entries;
 
-  const result: LogEntry[] = [];
-  let i = 0;
-  while (i < entries.length) {
-    const current = entries[i]!;
-    const splitId = current.tags?.splitId;
+  // splitId 是全局组身份，不是“相邻元素游程”。插件完全可能交错返回
+  // A1/B1/A2/B2；按相邻片段截断会把每一片都误当完整组。先建立原子单元，
+  // 同时保留各组第一次出现的相对顺序，再做容量裁剪。
+  const units: LogEntry[][] = [];
+  const splitUnits = new Map<string, LogEntry[]>();
+  for (const entry of entries) {
+    const splitId = getSdkSplitId(entry);
     if (splitId === undefined) {
-      if (result.length + 1 > max) break;
-      result.push(current);
-      i++;
+      units.push([entry]);
       continue;
     }
-
-    const sid = String(splitId);
-    const group: LogEntry[] = [];
-    let j = i;
-    while (j < entries.length && String(entries[j]!.tags?.splitId ?? '') === sid) {
-      group.push(entries[j]!);
-      j++;
+    let unit = splitUnits.get(splitId);
+    if (!unit) {
+      unit = [];
+      splitUnits.set(splitId, unit);
+      units.push(unit);
     }
+    unit.push(entry);
+  }
 
-    if (result.length + group.length > max) {
+  const result: LogEntry[] = [];
+  for (const unit of units) {
+    if (result.length + unit.length > max) {
       // 单组本身就超过上限：整组放行，避免"本意是拆分保留"却静默丢光。
       // 多组场景下放不下的后续组整组丢弃，绝不留下残片。
       if (result.length === 0) {
-        return group;
+        return unit;
       }
       break;
     }
-    result.push(...group);
-    i = j;
+    result.push(...unit);
   }
   return result;
 }
@@ -219,9 +237,9 @@ export class AemeathLogger implements AemeathInterface {
           // 用户写 beforeSend 时想的是"这条日志不要发"，可拆分之后钩子是按分片
           // 逐个调用的：只拦住带敏感字段的那一片，另外两片照发不误，
           // 既漏了数据又在后端留下拼不回来的碎片。
-          const splitId = current.tags?.splitId;
+          const splitId = getSdkSplitId(current);
           if (splitId !== undefined) {
-            (suppressedSplitIds ??= new Set()).add(String(splitId));
+            (suppressedSplitIds ??= new Set()).add(splitId);
           }
           continue;
         }
@@ -261,7 +279,7 @@ export class AemeathLogger implements AemeathInterface {
       // 而且用户的本意本来就是"这条日志不要发"
       if (suppressedSplitIds) {
         const kept = entries.filter(
-          (it) => !suppressedSplitIds.has(String(it.tags?.splitId ?? '')),
+          (it) => !suppressedSplitIds.has(getSdkSplitId(it) ?? ''),
         );
         if (kept.length !== entries.length) {
           this.debugWarn(
@@ -573,16 +591,24 @@ export class AemeathLogger implements AemeathInterface {
   }
 
   public emit(event: string, ...args: unknown[]): void {
-    const listeners = this.eventListeners.get(event);
-    if (!listeners) return;
-
-    listeners.forEach((listener) => {
-      try {
-        listener(...args);
-      } catch (err) {
-        this.debugWarn(`Error in event listener for "${event}":`, err);
+    const dispatch = (target: string): void => {
+      const listeners = this.eventListeners.get(target);
+      if (!listeners) return;
+      for (const listener of Array.from(listeners)) {
+        try {
+          listener(...args);
+        } catch (err) {
+          this.debugWarn(`Error in event listener for "${target}":`, err);
+        }
       }
-    });
+    };
+
+    dispatch(event);
+    const alias = DELIVERY_EVENT_ALIASES[event];
+    if (alias) {
+      dispatch(alias);
+      this.notifyDeliveryStatus();
+    }
   }
 
   // ==================== 插件系统 ====================
@@ -626,6 +652,9 @@ export class AemeathLogger implements AemeathInterface {
       // 与 plugin:uninstall 对称：OfflinePersistence 靠它在 Upload 被单独 remount
       // 后重新唤醒盘上补传（upload:resumed 不会在 install 时发出）。
       this.emit('plugin:install', plugin.name);
+      if (plugin.name === 'upload' || plugin.name === 'offline-persistence') {
+        this.notifyDeliveryStatus();
+      }
     } catch (err) {
       this.debugWarn(`Failed to install plugin "${plugin.name}":`, err);
       return this;
@@ -640,6 +669,125 @@ export class AemeathLogger implements AemeathInterface {
 
   public getPluginInstance(name: string): AemeathPlugin | undefined {
     return this.pluginInstances.find((p) => p.name === name);
+  }
+
+  public getDeliveryStatus(): DeliveryStatus {
+    const uploadPlugin = this.getPluginInstance('upload') as
+      | (AemeathPlugin & { getQueueStatus?: () => UploadQueueStatus })
+      | undefined;
+    const offlinePlugin = this.getPluginInstance('offline-persistence') as
+      | (AemeathPlugin & { getStatus?: () => OfflinePersistenceStatus })
+      | undefined;
+    let upload: Partial<UploadQueueStatus> | undefined;
+    let offline: Partial<OfflinePersistenceStatus> | undefined;
+    try {
+      upload = uploadPlugin?.getQueueStatus?.();
+    } catch (err) {
+      this.debugWarn('Upload delivery status provider failed:', err);
+    }
+    try {
+      offline = offlinePlugin?.getStatus?.();
+    } catch (err) {
+      this.debugWarn('Offline delivery status provider failed:', err);
+    }
+
+    const count = (value: unknown): number =>
+      typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : 0;
+    const stats = (value: unknown): { total: number; byReason: Record<string, number> } => {
+      if (!value || typeof value !== 'object') return { total: 0, byReason: {} };
+      const raw = value as { total?: unknown; byReason?: unknown };
+      const byReason: Record<string, number> = {};
+      if (raw.byReason && typeof raw.byReason === 'object') {
+        for (const [reason, amount] of Object.entries(raw.byReason)) {
+          if (typeof amount === 'number' && Number.isFinite(amount) && amount >= 0) {
+            byReason[reason] = amount;
+          }
+        }
+      }
+      return { total: count(raw.total), byReason };
+    };
+
+    const uploadItems = (Array.isArray(upload?.pendingItems)
+      ? upload.pendingItems
+      : Array.isArray(upload?.items) ? upload.items : [])
+      .filter((item): item is UploadQueueStatus['items'][number] =>
+        !!item && typeof item.logId === 'string' && item.logId.length > 0,
+      );
+    const offlineItems = (Array.isArray(offline?.items) ? offline.items : [])
+      .filter((item): item is NonNullable<OfflinePersistenceStatus['items']>[number] =>
+        !!item && typeof item.logId === 'string' && item.logId.length > 0,
+      );
+    const validBackends = new Set(['initializing', 'indexeddb', 'localstorage', 'noop']);
+    const backend = typeof offline?.backend === 'string' && validBackends.has(offline.backend)
+      ? offline.backend as OfflinePersistenceStatus['backend']
+      : offlinePlugin ? 'initializing' as const : 'disabled' as const;
+    const queued = count(upload?.length);
+    const inFlight = count(upload?.inFlight);
+    const parked = count(upload?.parked);
+    const persisted = count(offline?.pending);
+    const buffered = count(offline?.buffered);
+    const replaying = count(offline?.replaying);
+    const consecutiveFailures = count(upload?.consecutiveFailures);
+    const ids = new Set<string>();
+    let persistedOnly = 0;
+    let oldestCapturedAt = Infinity;
+    for (const item of uploadItems) {
+      ids.add(item.logId);
+      if (Number.isFinite(item.capturedAt)) oldestCapturedAt = Math.min(oldestCapturedAt, item.capturedAt);
+    }
+    for (const item of offlineItems) {
+      if (item.state !== 'buffering' && !ids.has(item.logId)) persistedOnly++;
+      ids.add(item.logId);
+      if (Number.isFinite(item.capturedAt)) oldestCapturedAt = Math.min(oldestCapturedAt, item.capturedAt);
+    }
+    const anonymousUpload = Math.max(0, queued + inFlight + parked - uploadItems.length);
+    const persistedItems = offlineItems.filter((item) => item.state !== 'buffering').length;
+    const bufferedItems = offlineItems.filter((item) => item.state === 'buffering').length;
+    const anonymousPersisted = Math.max(0, persisted - persistedItems);
+    const anonymousBuffered = Math.max(0, buffered - bufferedItems);
+    const anonymousOffline = anonymousPersisted + anonymousBuffered;
+    const anonymousPending = Math.max(anonymousUpload, anonymousOffline);
+    persistedOnly += Math.max(0, anonymousPersisted - anonymousUpload);
+
+    return {
+      enabled: !!uploadPlugin,
+      state: !uploadPlugin
+        ? 'disabled'
+        : upload?.paused === true
+          ? 'paused'
+          : backend === 'noop' || parked > 0 || buffered > 0 || consecutiveFailures > 0
+            ? 'degraded'
+            : ids.size + anonymousPending > 0 ? 'delivering' : 'idle',
+      totalPending: ids.size + anonymousPending,
+      queued,
+      inFlight,
+      parked,
+      persisted,
+      buffered,
+      persistedOnly,
+      replaying,
+      oldestPendingAgeMs: oldestCapturedAt === Infinity
+        ? 0
+        : Math.max(0, Date.now() - oldestCapturedAt),
+      consecutiveFailures,
+      attempts: stats(upload?.attempts),
+      drops: stats(upload?.drops),
+      persistence: {
+        enabled: !!offlinePlugin,
+        backend,
+        bytes: count(offline?.bytes),
+        buffered,
+        quotaDrops: count(offline?.quotaDrops),
+        giveUps: count(offline?.giveUps),
+        replayed: count(offline?.replayed),
+      },
+    };
+  }
+
+  public notifyDeliveryStatus(): void {
+    if (this.eventListeners.has('delivery:status')) {
+      this.emit('delivery:status', this.getDeliveryStatus());
+    }
   }
 
   public uninstall(name: string): boolean {
@@ -663,6 +811,9 @@ export class AemeathLogger implements AemeathInterface {
     this.emit('plugin:uninstall', name);
     this.plugins.delete(name);
     this.debugLog(`Plugin "${name}" uninstalled`);
+    if (name === 'upload' || name === 'offline-persistence') {
+      this.notifyDeliveryStatus();
+    }
     return true;
   }
 
@@ -744,4 +895,3 @@ export class AemeathLogger implements AemeathInterface {
     this.asyncContextWarned.clear();
   }
 }
-
