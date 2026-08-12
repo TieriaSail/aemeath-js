@@ -1,6 +1,6 @@
 # 断网续传（OfflinePersistence）
 
-> v2.5.0+ · 配置 `upload` 后**默认开启** · 断网期间落盘，联网后自动补传
+> v2.6.0+ · 配置 `upload` 后**默认开启持久化** · 多标签协调需显式安装独立插件
 
 > ⚠️ 持久副本是明文 JSON，默认最长保留 7 天。请先通过 `beforeSend` 脱敏，并按
 > 业务合规要求评估是否适用；不允许本地持久化的项目请显式配置
@@ -19,8 +19,14 @@ import { initAemeath, classifyHttpUploadResponse } from 'aemeath-js';
 
 initAemeath({
   upload: async (log) => {
-    const res = await fetch('/api/logs', { method: 'POST', body: JSON.stringify(log) });
-    return classifyHttpUploadResponse(res.status, res.headers.get('Retry-After'));
+    const res = await fetch('/api/logs', {
+      method: 'POST',
+      body: JSON.stringify(log),
+    });
+    return classifyHttpUploadResponse(
+      res.status,
+      res.headers.get('Retry-After'),
+    );
   },
 });
 ```
@@ -29,19 +35,55 @@ initAemeath({
 浏览器关掉再打开也能恢复。可用 `offlinePersistence: false` 显式关闭；标准入口会同时
 关闭并清除 Upload queue cache 与 OfflinePersistence 副本，确保之后不再本地留存。
 
+浏览器应用确实存在多标签同时运行时，再显式安装独立插件：
+
+```typescript
+import {
+  AemeathLogger,
+  OfflinePersistencePlugin,
+  UploadPlugin,
+} from 'aemeath-js';
+import { CrossTabDeliveryPlugin } from 'aemeath-js/plugins/CrossTabDeliveryPlugin';
+
+const logger = new AemeathLogger();
+// 必须先预装协调插件，再安装会恢复缓存的 Upload 和 Offline。
+logger.use(new CrossTabDeliveryPlugin());
+logger.use(new UploadPlugin({ onUpload: upload }));
+logger.use(new OfflinePersistencePlugin());
+```
+
+2.6.0 beta 中，多标签模式要求使用上面的显式安装顺序；不要先调用
+`initAemeath({ upload })` 再补装插件。后者已经按 2.5.2 语义同步启动 Upload 缓存恢复，
+插件不能追溯撤销已经发出的请求。这个约束换来的是：未启用插件时连缓存恢复时序也与
+2.5.2 保持一致，而不是为了等待一个未来可能安装的插件而延迟所有用户。
+
+未安装时仍使用原来的单上下文补传，不创建 leader、不打开 BroadcastChannel，也不探测
+Web Locks；IndexedDB 仍使用 2.5.2 的 v1 `records` 存储，KV 也不写
+namespace 绑定。该插件不在根入口和小程序入口中，小程序无需配置关闭选项。
+
+启用插件时使用独立的 `${dbName}-aemeath-delivery-v2` 数据库，不会把默认 v1 数据库
+升级到更高版本。因此灰度混跑 2.5 页面或回滚版本时，旧 SDK 仍能正常打开 v1；但这只是
+**格式兼容**，不是把尚未送达的 v2 数据自动迁回 v1。移除插件前应先停止产生新日志，等
+`offline.getStatus()` 的 `pending / buffered / replaying` 全部为 `0`，且
+`crossTab.getStatus().leased === 0`，再移除配置并发布。紧急回滚时不要删除 v2 数据库；恢复
+插件后仍可继续排空。首次升级只有在 `namespace` 保持默认的 `dbName:key` 规范身份时才自动迁移
+无绑定的 v1 日志；自定义 namespace 无法证明旧正文属于哪个项目，SDK 会跳过读取和
+迁移。若最终必须使用自定义 namespace，应先用默认配置完成迁移和补传，确认待投递数为
+零后，再同时更换新的 `dbName` 与 namespace；不能把已绑定的同一数据库直接改绑。
+
 ---
 
 ## 🤔 和 `cache` 有什么区别
 
 `UploadPlugin` 自带的 `cache` 是**队列镜像**，只解决页面重载：
 
-| 场景                       | `cache`（内置） | `offlinePersistence` |
-| -------------------------- | --------------- | -------------------- |
-| 刷新页面 / 关闭后重开      | ✅              | ✅                   |
-| 断网几分钟后恢复           | ⚠️ 队列暂停期间靠它兜底 | ✅ 自动补传 |
-| 断网期间关闭浏览器，次日打开 | ❌ 默认 1 小时 TTL 已过 | ✅ 默认保留 7 天 |
-| 可恢复失败耗尽热重试预算   | ✅ 镜像 `parked` 状态 | ✅ 保留持久副本 |
-| 存储介质                   | localStorage（~5MB 整源共享） | IndexedDB（默认 2MB 预算） |
+| 场景                         | `cache`（内置）               | `offlinePersistence`       |
+| ---------------------------- | ----------------------------- | -------------------------- |
+| 刷新页面 / 关闭后重开        | ✅                            | ✅                         |
+| 断网几分钟后恢复             | ⚠️ 队列暂停期间靠它兜底       | ✅ 自动补传                |
+| 断网期间关闭浏览器，次日打开 | ❌ 默认 1 小时 TTL 已过       | ✅ 默认保留 7 天           |
+| 可恢复失败耗尽热重试预算     | ✅ 镜像 `parked` 状态         | ✅ 保留持久副本            |
+| 存储介质                     | localStorage（~5MB 整源共享） | IndexedDB（默认 2MB 预算） |
 
 一句话：`cache` 保的是**队列**，`offlinePersistence` 保的是**日志**。
 这两个机制内部仍独立，但标准入口的总开关 `offlinePersistence: false` 会同时关闭两者；
@@ -51,7 +93,8 @@ initAemeath({
 
 ## 🔧 工作原理
 
-全部基于 `UploadPlugin` 的事件，不侵入主上传通道：
+OfflinePersistence 默认使用单上下文持久状态机；安装 CrossTabDeliveryPlugin 后，恢复所有权
+才升级为跨标签租约状态机：
 
 ```
         断网
@@ -63,7 +106,7 @@ initAemeath({
                  └─ upload:enqueued{paused} ► 落盘
           │
         可恢复失败耗尽热预算
-          └── upload:parked ─────────────────► 保留持久副本
+          └── upload:parked ─────────────────► 持久化 parked 期限
         （兜底）queue-overflow / legacy drop ─► 落盘
           │
         网络恢复
@@ -71,8 +114,9 @@ initAemeath({
           ├── UploadPlugin 自己发出还在内存队列里的日志
           │      └─ upload:success ─────────► 删除持久副本
           │
-          └── online / upload:resumed
-                 └─ 分批 upload.requeue() ──► 补传剩余的
+          └── online / upload:resumed ──────► 单上下文补传
+              （显式安装 CrossTabDeliveryPlugin 时）
+              BroadcastChannel（仅唤醒）──► IDB 选主 + 整组 claim + fencing receipt
 ```
 
 五条关键设计：
@@ -88,9 +132,14 @@ initAemeath({
 经过 `beforeSend`、不会触发业务侧的 `logger.on('log')`、不会被其它插件重复加工。
 你的埋点统计不会因为一次断网恢复而凭空多出一批。
 
-**同一页面内避免双份恢复。** 网络恢复的瞬间，内存队列和持久层可能各持有同一条
-日志的副本。补传前会检查 `upload.isPending(logId)`，本页面已在队列或正在飞行的一律
-跳过。该检查不跨标签页；2.6 的跨标签设计见下方限制说明。
+**显式启用后，跨标签只有一个恢复协调者。** IndexedDB 中的 leader lease、单调 epoch、逐记录 lease
+和随机 fencing token 共同决定所有权。BroadcastChannel 只负责低延迟唤醒，Web Locks
+只降低选主争用；两者都不是正确性来源。旧标签的失败、停放或终态回调若 token 已过期，
+会被明确忽略；真实成功仍可按 `logId` 删除。
+
+**Upload cache 先交接、后删除。** 页面启动时，Upload queue cache 不再和 OfflineStore
+各自补传。缓存恢复项先冻结并写入 OfflineStore，全部提交或明确终态后才删除旧 cache；
+交接过程中再次崩溃仍可从原 cache 恢复。
 
 **parked 不消耗补传生命周期。** 默认上传策略下，可恢复失败耗尽热预算后由
 `UploadPlugin` 持有在 `parked` 区，磁盘副本保持不动。冷却/`Retry-After` 到期（或显式
@@ -106,15 +155,18 @@ legacy 兼容保护：只有旧式
 
 ## 🕐 补传日志上的时间字段
 
-补传的日志会带上三个额外信息，让你能区分"当时发生"和"事后补传"：
+投递日志有三个不同身份字段，后端不要混用：
 
 ```jsonc
 {
-  "timestamp": 1717000000000,     // 捕获时刻，永远不变
+  "logId": "stable-across-retries", // 生命周期稳定；后端幂等键
+  "requestId": "this-request-only", // 每次真实网络调用都变化
+  "deliveryAttempt": 3, // 每次真实调用递增；多标签插件领取后会持久延续
+  "timestamp": 1717000000000, // 捕获时刻，永远不变
   "tags": {
-    "offlineReplay": true,        // 这是一条补传日志
-    "uploadedAt": 1717003600000,  // 实际发出时刻（所有日志都有）
-  }
+    "offlineReplay": true, // 这是一条补传日志
+    "uploadedAt": 1717003600000, // 实际发出时刻（所有日志都有）
+  },
 }
 ```
 
@@ -129,42 +181,61 @@ legacy 兼容保护：只有旧式
 initAemeath({
   upload,
   offlinePersistence: {
-    storage: 'auto',           // 'auto' | 'indexeddb' | 'localstorage'
+    storage: 'auto', // 'auto' | 'indexeddb' | 'localstorage'
     ttl: 7 * 24 * 3600 * 1000, // 持久副本有效期
-    maxEntries: 500,           // 最多保留条数
-    maxTotalBytes: 2_000_000,  // 最多占用字节
-    replayBatchSize: 10,       // 每轮补传条数
-    maxReplayAttempts: 3,      // legacy 补传失败保护；parked 不计数
-    replayTimeoutMs: 60000,    // 补传对账超时
+    maxEntries: 500, // 最多保留条数
+    maxTotalBytes: 2_000_000, // 最多占用字节
+    replayBatchSize: 10, // 每轮补传条数
+    maxReplayAttempts: 3, // legacy 补传失败保护；parked 不计数
+    replayTimeoutMs: 60000, // 补传对账超时
     dbName: 'aemeath-offline', // IndexedDB 库名
-    key: '__aemeath_offline__',// localStorage key 前缀
+    key: '__aemeath_offline__', // localStorage key 前缀
     debug: false,
   },
 });
 ```
 
-| 配置项              | 类型                                          | 默认值             | 说明                             |
-| ------------------- | --------------------------------------------- | ------------------ | -------------------------------- |
-| `storage`           | `'auto' \| 'indexeddb' \| 'localstorage'`     | `'auto'`           | 后端偏好，不可用时仍会降级       |
-| `ttl`               | `number`                                      | 7 天               | 从落盘时刻算起                   |
-| `maxEntries`        | `number`                                      | IDB 500 / KV 100   | 已提交副本条数上限，也是暂态写意图缓冲的有界预算基数 |
-| `maxTotalBytes`     | `number`                                      | IDB 2MB / KV 512KB | 已提交副本字节上限，也是暂态写意图缓冲的有界预算基数 |
-| `replayBatchSize`   | `number`                                      | `10`               | 避免恢复瞬间打爆服务端           |
-| `maxReplayAttempts` | `number`                                      | `3`                | legacy 补传失败保护；parked 不计数 |
-| `replayTimeoutMs`   | `number`                                      | `60000`            | 既无成功也无失败回执时的重投间隔 |
-| `dbName`            | `string`                                      | `'aemeath-offline'`| IndexedDB 数据库名               |
-| `key`               | `string`                                      | `'__aemeath_offline__'` | KV 后端 key 前缀            |
-| `debug`             | `boolean`                                     | `false`            | 输出内部调试日志                 |
+| 配置项              | 类型                                      | 默认值                  | 说明                                                 |
+| ------------------- | ----------------------------------------- | ----------------------- | ---------------------------------------------------- |
+| `storage`           | `'auto' \| 'indexeddb' \| 'localstorage'` | `'auto'`                | 后端偏好，不可用时仍会降级                           |
+| `ttl`               | `number`                                  | 7 天                    | 从落盘时刻算起                                       |
+| `maxEntries`        | `number`                                  | IDB 500 / KV 100        | 已提交副本条数上限，也是暂态写意图缓冲的有界预算基数 |
+| `maxTotalBytes`     | `number`                                  | IDB 2MB / KV 512KB      | 已提交副本字节上限，也是暂态写意图缓冲的有界预算基数 |
+| `replayBatchSize`   | `number`                                  | `10`                    | 避免恢复瞬间打爆服务端                               |
+| `maxReplayAttempts` | `number`                                  | `3`                     | legacy 补传失败保护；parked 不计数                   |
+| `replayTimeoutMs`   | `number`                                  | `60000`                 | 既无成功也无失败回执时的重投间隔                     |
+| `dbName`            | `string`                                  | `'aemeath-offline'`     | IndexedDB 数据库名                                   |
+| `key`               | `string`                                  | `'__aemeath_offline__'` | KV 后端 key 前缀                                     |
+| `debug`             | `boolean`                                 | `false`                 | 输出内部调试日志                                     |
 
 也可以手动安装（不使用 `initAemeath` 时）：
 
 ```typescript
-import { Aemeath, UploadPlugin, OfflinePersistencePlugin } from 'aemeath-js';
+import {
+  AemeathLogger,
+  UploadPlugin,
+  OfflinePersistencePlugin,
+} from 'aemeath-js';
+import { CrossTabDeliveryPlugin } from 'aemeath-js/plugins/CrossTabDeliveryPlugin';
 
-const logger = new Aemeath();
+const logger = new AemeathLogger();
+// 可选协调插件必须最先安装，才能在 Upload 恢复 cache 前声明接管。
+const crossTab = new CrossTabDeliveryPlugin({
+  namespace: 'project-a', // 可选；默认由 Offline 的 dbName + key 稳定派生
+  debug: false,
+});
+const offline = new OfflinePersistencePlugin();
+logger.use(crossTab);
 logger.use(new UploadPlugin({ onUpload }));
-logger.use(new OfflinePersistencePlugin()); // 必须在 UploadPlugin 之后
+logger.use(offline); // 必须在 UploadPlugin 之后
 ```
+
+`namespace` 与协调诊断开关属于可选插件，不属于 `OfflinePersistencePluginOptions`：
+
+| CrossTab 配置项 | 类型      | 默认值       | 说明                                                  |
+| --------------- | --------- | ------------ | ----------------------------------------------------- |
+| `namespace`     | `string`  | `dbName:key` | v2 投递隔离域；已有 v1 待投递数据时先用默认值完成迁移 |
+| `debug`         | `boolean` | `false`      | 输出协调器诊断日志                                    |
 
 ---
 
@@ -174,15 +245,31 @@ logger.use(new OfflinePersistencePlugin()); // 必须在 UploadPlugin 之后
 IndexedDB ──不可用──► localStorage ──不可用──► noop（不落盘，只警告）
 ```
 
-**为什么优先 IndexedDB**：容量以百 MB 计而不是 5MB；异步 API 不阻塞主线程；
-按 key 读写不需要每次序列化整个集合。localStorage 只是兜底。
+**为什么多标签插件只接受 IndexedDB**：除了容量和异步 API，它还能在一个事务里原子校验
+leader epoch、领取整组记录并写入 fencing token。localStorage 无法提供相同保证，因此
+CrossTabDeliveryPlugin 不会伪装成“尽力协调”；后端降级到 KV 时，它报告 `unsupported`，
+OfflinePersistence 恢复原来的单上下文补传。
+
+> **服务端必须按 `logId` 做幂等去重。** SDK 的租约和 fencing 能消除同版本正常运行时的
+> 多标签竞争，但无法把“服务端已接收、浏览器在提交成功证明前崩溃”变成分布式 exactly-once；
+> 2.5/2.6 灰度混跑或紧急回滚也可能产生重复请求。`deliveryAttempt` 只用于观测尝试世代，
+> 不能替代 `logId` 唯一约束。
+
+显式安装多标签插件后，一个 IndexedDB `dbName` 或 KV `key` 只能绑定一个 `namespace`。不同项目/租户仍应配置不同
+的 `dbName` 与 `key`；若误用同一物理资源，SDK 会在读取任何日志正文前拒绝冲突绑定或安全
+降级，不能依靠只隔离 leader 来掩盖串台风险。`clear()` 只清投递数据，不解除该身份绑定。
+
+SDK 分片在协调数据库中以整组事务提交，其他标签页不会看到“已写第一片、其余尚未写”
+的中间状态。`replayBatchSize` 是每轮吞吐软目标：如果一个完整分片组本身超过该值，仍会
+整组领取一次，而不是永久饿死。TTL 清理同样在事务中复核活动 lease；真实请求在途时，
+卸载协调插件不会提前释放该记录，接任标签只能等待结果或 lease 到期。
 
 如果上一次启动因 IndexedDB 暂时不可用而降级到 localStorage，下次 IndexedDB 恢复时，
 SDK 会先把旧 KV 记录提交到 IndexedDB，确认提交成功后再删除 KV 副本，然后才开始
 hydrate 和补传。迁移或完整性扫描失败时本轮进入只删不写的降级态，不会把半边数据
 伪装成空库继续写入。
 
-会走到降级的真实场景：Safari 无痕模式下 IndexedDB 打开会挂起（我们有 2 秒超时）、
+会走到降级的真实场景：Safari 无痕模式下 IndexedDB 打开会挂起（我们有 3 秒超时）、
 部分 WebView 禁用了 IndexedDB、以及 `storage: 'localstorage'` 显式指定。
 
 两种都不可用时（比如某些隐私模式下 `localStorage.setItem` 静默失败），插件退化为
@@ -211,11 +298,11 @@ hydrate 和补传。迁移或完整性扫描失败时本轮进入只删不写的
 这两项约束已提交的离线副本；存储短暂故障时，未提交写意图也会按同一预算派生出的
 上限留在内存等待退避重试。它们不约束独立的 `UploadPlugin` 队列：
 
-| 场景 | 谁说了算 | 结果 |
-|---|---|---|
-| 同页断网 → 恢复（页面没关） | 内存队列 | 磁盘上被淘汰的条目，**仍可能从内存发出去** |
-| 关页 / 刷新后只剩磁盘 | `maxEntries` / `maxTotalBytes` | 淘汰生效，最早的补不回来 |
-| 存储短暂失败 | 持久化写意图缓冲 | 指数退避后重试；超过有界预算会明确上报，不会无限增长 |
+| 场景                        | 谁说了算                       | 结果                                                 |
+| --------------------------- | ------------------------------ | ---------------------------------------------------- |
+| 同页断网 → 恢复（页面没关） | 内存队列                       | 磁盘上被淘汰的条目，**仍可能从内存发出去**           |
+| 关页 / 刷新后只剩磁盘       | `maxEntries` / `maxTotalBytes` | 淘汰生效，最早的补不回来                             |
+| 存储短暂失败                | 持久化写意图缓冲               | 指数退避后重试；超过有界预算会明确上报，不会无限增长 |
 
 这是刻意的分层：临时断网、页面还开着时，不应因为磁盘满了就把内存里
 本来能发出去的日志一并扔掉。磁盘配额保护的是「页面死后还能捡回多少」。
@@ -273,12 +360,26 @@ const status = getAemeath().getDeliveryStatus();
 `logger.on('delivery:status', listener)` 可订阅统一快照，成功落盘另有
 `delivery:persisted` 事件。旧的 `plugin.getStatus()` 继续作为存储层诊断接口。
 
+多标签状态属于独立插件，不污染统一状态对象：
+
+```typescript
+const crossTab = getAemeath().getPluginInstance('cross-tab-delivery');
+crossTab.getStatus();
+// { state: 'active', mode: 'strong', role: 'leader', leaderEpoch, leased, ... }
+```
+
+也可订阅 `cross-tab-delivery:status`、`cross-tab-delivery:leader-changed`、
+`cross-tab-delivery:lease-recovered` 和 `cross-tab-delivery:degraded`。
+
 ---
 
 ## 🚧 已知限制
 
-**2.5 多标签页可能重复补传。** 每个标签页各自持有一份存储句柄，同一条日志可能被
-多个标签页同时补传。后端必须按 `logId` 幂等去重，并将重复项视为成功。
+**显式安装 CrossTabDeliveryPlugin 后会在 IndexedDB 上协调补传，但仍是至少一次。** 正常多标签恢复由 leader lease
+和记录 fencing 阻止并发补传；服务端已经提交、响应却丢失时，任何客户端都无法证明
+“未成功”，所以仍可能再次发送相同 `logId`。localStorage/KV 不参与跨标签协调；后端降级时
+恢复单上下文补传。
+后端必须按 `logId` 幂等去重，并将重复项视为成功。
 
 **以事务提交为成功边界，但进程关闭阶段仍是尽力而为。** IndexedDB 只有在事务
 `oncomplete` 后才报告成功，单个 request 的 success 不算落盘。若浏览器在提交前终止
@@ -293,7 +394,10 @@ B 自动补传到 B 的上报地址上 —— 补传是
 
 ```ts
 new OfflinePersistencePlugin({ dbName: 'host-offline', key: 'host-offline' });
-new OfflinePersistencePlugin({ dbName: 'widget-offline', key: 'widget-offline' });
+new OfflinePersistencePlugin({
+  dbName: 'widget-offline',
+  key: 'widget-offline',
+});
 ```
 
 `UploadPlugin` 的 `cache.key` 有同样的要求，见

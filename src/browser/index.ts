@@ -23,9 +23,9 @@ import {
 } from '../plugins/UploadPlugin';
 import {
   OfflinePersistencePlugin,
-  purgeOfflinePersistenceStorage,
   type OfflinePersistencePluginOptions,
 } from '../plugins/OfflinePersistencePlugin';
+import { purgeBrowserOfflinePersistenceStorage as purgeOfflinePersistenceStorage } from '../plugins/offline/BrowserOfflinePersistencePurge';
 import { PayloadSanitizePlugin } from '../plugins/PayloadSanitizePlugin';
 import { SafeGuardPlugin } from '../plugins/SafeGuardPlugin';
 import { detectPlatform } from '../platform/detect';

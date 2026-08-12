@@ -2,7 +2,11 @@
  * UploadPlugin —— 离线暂停 / 恢复 / requeue / 缓存 TTL / 上报期元数据
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { UploadPlugin, type UploadResult } from '../src/plugins/UploadPlugin';
+import {
+  UploadPlugin,
+  type DurableDeliveryReceipt,
+  type UploadResult,
+} from '../src/plugins/UploadPlugin';
 import { AemeathLogger } from '../src/core/Logger';
 import { LogLevel, type LogEntry } from '../src/types';
 
@@ -21,6 +25,37 @@ function makeEntry(overrides: Partial<LogEntry> = {}): LogEntry {
     message: 'restored',
     timestamp: Date.now(),
     ...overrides,
+  };
+}
+
+function makeReceipt(logId: string): DurableDeliveryReceipt {
+  let settled = false;
+  return {
+    logId,
+    isSettled: () => settled,
+    beginAttempt: vi.fn(async () => (settled ? null : 1)),
+    renew: vi.fn(async () => !settled),
+    succeed: vi.fn(async () => {
+      if (settled) return false;
+      settled = true;
+      return true;
+    }),
+    retry: vi.fn(async () => {
+      if (settled) return false;
+      settled = true;
+      return true;
+    }),
+    retryScheduled: vi.fn(async () => !settled),
+    park: vi.fn(async () => {
+      if (settled) return false;
+      settled = true;
+      return true;
+    }),
+    terminal: vi.fn(async () => {
+      if (settled) return false;
+      settled = true;
+      return true;
+    }),
   };
 }
 
@@ -278,6 +313,83 @@ describe('UploadPlugin — 离线与恢复', () => {
 
     expect(onDrop).toHaveBeenCalledTimes(1);
     expect(onDrop.mock.calls[0]![1]).toMatchObject({ reason: 'queue-overflow' });
+  });
+
+  it('never evicts a claimed receipt from synchronous queue capacity planning', async () => {
+    setOnLine(false);
+    const onDrop = vi.fn();
+    const plugin = new UploadPlugin({
+      onUpload: vi.fn().mockResolvedValue({ success: true } as UploadResult),
+      queue: { maxSize: 1, deduplicationDelay: 60_000 },
+      cache: { enabled: false },
+      saveOnUnload: false,
+      onDrop,
+    });
+    logger.use(plugin);
+    const receipt = makeReceipt('durable-capacity-owner');
+    await plugin.requeueCoordinated([
+      {
+        log: makeEntry({
+          logId: 'durable-capacity-owner',
+          message: 'durable owner',
+        }),
+        priority: 1,
+        receipt,
+      },
+    ]);
+
+    plugin.requeue(
+      makeEntry({ logId: 'ordinary-incoming', message: 'ordinary incoming' }),
+      { priority: 100 },
+    );
+
+    expect(plugin.isPending('durable-capacity-owner')).toBe(true);
+    expect(plugin.isPending('ordinary-incoming')).toBe(false);
+    expect(receipt.retry).not.toHaveBeenCalled();
+    expect(onDrop).toHaveBeenCalledWith(
+      expect.objectContaining({ logId: 'ordinary-incoming' }),
+      expect.objectContaining({ reason: 'queue-overflow' }),
+    );
+  });
+
+  it('returns an in-flight receipt to durable ownership when suspected offline pauses the queue', async () => {
+    const receipt = makeReceipt('coordinated-offline-handoff');
+    const uploadFn = vi.fn(async () => {
+      throw new TypeError('Failed to fetch');
+    });
+    const plugin = new UploadPlugin({
+      onUpload: uploadFn,
+      queue: {
+        maxSize: 10,
+        deduplicationDelay: 0,
+        suspectedOfflineThreshold: 1,
+      },
+      cache: { enabled: false },
+      saveOnUnload: false,
+    });
+    logger.use(plugin);
+    await plugin.requeueCoordinated([
+      {
+        log: makeEntry({
+          logId: 'coordinated-offline-handoff',
+          message: 'handoff after network failure',
+        }),
+        receipt,
+      },
+    ]);
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect(uploadFn).toHaveBeenCalledTimes(1);
+    expect(receipt.beginAttempt).toHaveBeenCalledTimes(1);
+    expect(receipt.retry).toHaveBeenCalledWith(
+      expect.objectContaining({
+        lastRetryReason: 'suspected-offline',
+      }),
+    );
+    expect(plugin.getQueueStatus()).toMatchObject({
+      paused: true,
+      length: 0,
+    });
   });
 
   it('上报的副本带 uploadedAt，且不污染队列里的原始日志', async () => {

@@ -11,6 +11,7 @@ export default defineConfig([
       'plugins/EarlyErrorCapturePlugin': 'src/plugins/EarlyErrorCapturePlugin.ts',
       'plugins/UploadPlugin': 'src/plugins/UploadPlugin.ts',
       'plugins/OfflinePersistencePlugin': 'src/plugins/OfflinePersistencePlugin.ts',
+      'plugins/CrossTabDeliveryPlugin': 'src/plugins/CrossTabDeliveryPlugin.ts',
       'plugins/offline/OfflineStore': 'src/plugins/offline/OfflineStore.ts',
       'plugins/PayloadSanitizePlugin': 'src/plugins/PayloadSanitizePlugin.ts',
       'plugins/BeforeSendPlugin': 'src/plugins/BeforeSendPlugin.ts',

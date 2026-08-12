@@ -62,6 +62,7 @@ describe('src/miniprogram.ts 精简入口（源码）', () => {
     expect(typeof mod.getAemeath).toBe('function');
     expect(typeof mod.isAemeathInitialized).toBe('function');
     expect(typeof mod.resetAemeath).toBe('function');
+    expect('CrossTabDeliveryPlugin' in mod).toBe(false);
   });
 
   it('initAemeath 未传 platform 时应抛出 TypeError（失败即失败，不静默）', async () => {
@@ -91,6 +92,7 @@ describe('src/miniprogram.ts 精简入口（源码）', () => {
     expect(logger.hasPlugin('browser-api-errors')).toBe(false);
     expect(logger.hasPlugin('early-error-capture')).toBe(false);
     expect(logger.hasPlugin('performance')).toBe(false);
+    expect(logger.hasPlugin('cross-tab-delivery')).toBe(false);
   });
 
   it('offlinePersistence: false 可关闭小程序端默认持久化', async () => {
@@ -397,6 +399,7 @@ const BUNDLE_EXISTS = existsSync(BUNDLE_PATH);
       'instrumentXHR',
       'SourceMapParser',
       'createParser',
+      'CrossTabDeliveryPlugin',
     ] as const;
 
     it('产物应为单文件（目录只含 index.js + package.json）', () => {
@@ -410,11 +413,11 @@ const BUNDLE_EXISTS = existsSync(BUNDLE_PATH);
       expect(pkg.main).toBe('index.js');
     });
 
-    it('产物体积应控制在 160KiB 以内（本仓库自设预算，非微信硬上限）', () => {
-      // 微信小程序主包硬顶是 2MB；160KiB 给可靠投递演进留出合理余量，同时仍能
+    it('产物体积应控制在 256KiB 以内（本仓库自设预算，非微信硬上限）', () => {
+      // 微信小程序主包硬顶是 2MB；256KiB 给可靠投递演进留出合理余量，同时仍能
       // 防止误把 sourcemap 解析器 / React / Vue 等大模块打进来。
       const stats = statSync(BUNDLE_PATH);
-      expect(stats.size).toBeLessThan(160 * 1024);
+      expect(stats.size).toBeLessThan(256 * 1024);
     });
 
     it('产物应可被 Node CommonJS require，所有预期 API 存在', () => {
@@ -445,6 +448,12 @@ const BUNDLE_EXISTS = existsSync(BUNDLE_PATH);
       expect(src).not.toContain("name='browser-api-errors'");
       expect(src).not.toContain('web-vitals');
       expect(src).not.toContain('createBrowserAdapter');
+      expect(src).not.toContain('cross-tab-delivery:leader-changed');
+      expect(src).not.toContain('aemeath-delivery-leader-');
+      expect(src).not.toContain('aemeath-delivery-v2');
+      expect(src).not.toContain('namespace-v2');
+      expect(src).not.toContain('leaderEpoch');
+      expect(src).not.toContain('BroadcastChannel');
     });
 
     it('initAemeath（来自 bundle）未传 platform 时应抛 TypeError', () => {

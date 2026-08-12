@@ -62,6 +62,7 @@ export type {
   UploadPluginOptions,
   UploadResult,
   UploadCallback,
+  UploadPayload,
   UploadBindingOptions,
   PriorityCallback,
   UploadRetryReason,

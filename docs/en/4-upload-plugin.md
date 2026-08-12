@@ -426,6 +426,7 @@ Upload-time metadata is added to the outgoing **copy** (the queued entry itself 
 | ----------------------------- | ----------------------------------------------------------------------------- |
 | `requestId`                   | Unique per attempt, for request correlation and diagnostics                     |
 | `logId`                       | Stable across retries, parking and replay; the backend must use it as the idempotency key |
+| `deliveryAttempt`             | Incremented before each real network call; records claimed by the opt-in cross-tab plugin persist it across tabs and restarts |
 | `tags.uploadedAt`             | **When it was sent.** Paired with `timestamp` (when it was captured) this makes real-time vs replayed obvious |
 | `tags.droppedSinceLastReport` | How many entries were dropped since the last success (only present when > 0)    |
 

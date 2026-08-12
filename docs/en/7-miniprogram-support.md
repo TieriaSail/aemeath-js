@@ -28,7 +28,7 @@ With the `miniprogram` field in `package.json`, DevTools copies the entire `dist
 ## 2. Slim API surface
 
 The miniprogram bundle exports **only APIs that make sense inside a miniprogram runtime**.
-The repository keeps the minified single-file artifact below a 160 KiB regression budget;
+The repository keeps the minified single-file artifact below a 256 KiB regression budget;
 that budget is deliberately far below WeChat's package limit and is not a platform limit.
 
 ### Available exports

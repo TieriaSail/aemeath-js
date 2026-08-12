@@ -21,9 +21,9 @@ import {
 import { PayloadSanitizePlugin } from '../plugins/PayloadSanitizePlugin';
 import {
   OfflinePersistencePlugin,
-  purgeOfflinePersistenceStorage,
   type OfflinePersistencePluginOptions,
 } from '../plugins/OfflinePersistencePlugin';
+import { purgeBrowserOfflinePersistenceStorage as purgeOfflinePersistenceStorage } from '../plugins/offline/BrowserOfflinePersistencePurge';
 import { SafeGuardPlugin, type SafeGuardMode } from '../plugins/SafeGuardPlugin';
 import {
   NetworkPlugin,

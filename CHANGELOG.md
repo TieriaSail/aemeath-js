@@ -1,5 +1,62 @@
 # Changelog
 
+## 2.6.0-beta.0
+
+Opt-in cross-tab reliable delivery for browser recovery.
+
+### Added
+
+- A standalone `CrossTabDeliveryPlugin`, imported from
+  `aemeath-js/plugins/CrossTabDeliveryPlugin`, provides an IndexedDB-backed single recovery
+  coordinator with renewable leader leases, monotonic epochs,
+  per-record leases and fencing tokens. BroadcastChannel and Web Locks reduce wake-up latency and
+  contention, while IndexedDB transactions remain the correctness authority.
+- `deliveryAttempt` increments before every real network call and is persisted for records claimed
+  by the optional cross-tab plugin. `requestId` remains unique per request and `logId` remains stable.
+- When the plugin is explicitly installed, it opens a physically separate v2 database instead of
+  upgrading the 2.5 store. Canonically identified v1 records are imported transactionally: an
+  existing v2 lease/fence is preserved and retry deadlines only move forward. A v1 source record is
+  removed only if it is still byte-for-byte equivalent to the snapshot, so a concurrent 2.5 update
+  cannot be deleted or overwrite the v2 state machine.
+- Durable split-progress proofs distinguish a corrupted incomplete group from valid residual chunks
+  left after an earlier leader delivered part of the group.
+- Fresh SDK split groups are published to persistent storage in one transaction. `replayBatchSize`
+  is a soft throughput target and never makes a larger indivisible group permanently ineligible.
+- With the plugin enabled, the v2 IndexedDB database is persistently bound to one delivery namespace
+  before any record can be read. Conflicting projects fail closed or safely fall back instead of
+  replaying another project's records. KV fallback stays on the unchanged 2.5 protocol.
+
+### Changed
+
+- When `CrossTabDeliveryPlugin` is explicitly installed before Upload and Offline, Upload cache
+  recovery is transactionally handed to OfflinePersistence before its first network call. The old
+  cache remains intact until every import has either committed or reached an explicit terminal
+  outcome. Without that opt-in, cache recovery retains the synchronous 2.5.2 start timing.
+- When the optional plugin is installed, all persistent recovery sources use the same coordinator
+  and receipt path. Retry-After, parking, terminal rejection and success are token-fenced
+  transitions; storage retries never issue an extra network request.
+- Cross-tab status and lifecycle events belong to `CrossTabDeliveryPlugin`; it is absent from the
+  runtime root exports and miniapp exports. The miniapp artifact contains no v2 database, leader,
+  lease or BroadcastChannel implementation. Without the plugin, OfflinePersistence keeps its
+  single-context replay behavior.
+- Without the plugin, the 2.5.2 IndexedDB v1/KV formats, Upload cache ownership, event sources and
+  ordinary upload payloads are preserved; `deliveryAttempt` is not added.
+- Strong coordination requires IndexedDB. KV fallback resumes single-context replay and reports the
+  optional plugin as unsupported instead of claiming best-effort cross-tab safety.
+- Plugin identity is an internal versioned capability rather than the public plugin-name string, so
+  an unrelated user plugin named `cross-tab-delivery` cannot alter Upload cache timing or persistence.
+- TTL cleanup is transactionally fenced against live record leases. Clean plugin shutdown releases
+  only receipts that have not started a request; in-flight attempts retain their lease until an
+  outcome or lease expiry, preventing a successor from overlapping the request.
+- Cross-tab uninstall/remount is serialized, so an older asynchronous detach cannot release or
+  overwrite the status of the newly mounted generation.
+
+### Required backend contract
+
+- Delivery is still at-least-once. Servers must deduplicate by `(projectId/tenantId, logId)` and
+  treat a duplicate as success. `requestId` is only an attempt correlation ID and must not be used
+  as the idempotency key.
+
 ## 2.5.2-beta.0
 
 Corrective reliable-delivery release for issues discovered after 2.5.1-beta.0.
