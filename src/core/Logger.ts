@@ -21,6 +21,7 @@ import type {
 } from '../types';
 import { LogLevel as LogLevelEnum, ErrorCategory } from '../types';
 import { RouteMatcher, type RouteMatchConfig } from '../utils/routeMatcher';
+import { runWithoutConsoleCapture } from '../utils/consoleCaptureGuard';
 import { generateId } from '../utils/generateId';
 import { getSdkSplitId } from '../utils/splitIdentity';
 import type { UploadQueueStatus } from '../plugins/UploadPlugin';
@@ -532,13 +533,15 @@ export class AemeathLogger implements AemeathInterface {
       [LogLevelEnum.ERROR]: console.error,
     } as Record<string, typeof console.log>)[entry.level] ?? console.log;
 
-    consoleMethod(prefix, entry.message);
-    if (entry.error) {
-      consoleMethod('Error:', entry.error);
-    }
-    if (entry.tags) {
-      consoleMethod('Tags:', entry.tags);
-    }
+    runWithoutConsoleCapture(() => {
+      consoleMethod(prefix, entry.message);
+      if (entry.error) {
+        consoleMethod('Error:', entry.error);
+      }
+      if (entry.tags) {
+        consoleMethod('Tags:', entry.tags);
+      }
+    });
   }
 
   // ==================== 公开 API ====================

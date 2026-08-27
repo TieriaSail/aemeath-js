@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.10.2 — 2026-08-27
+
+Unified singleton error-capture configuration.
+
+### Added
+
+- `initAemeath({ errorCapture })` now accepts every `ErrorCapturePluginOptions` field, including
+  `captureUnhandledRejection`, `captureResourceError`, `captureConsoleError`, `errorFilter`,
+  `routeMatch`, and `debug`. `enabled` remains the singleton-level installation switch.
+- The public `ErrorCaptureConfig` type is exported from both the root and singleton entries.
+
+### Changed
+
+- A nested `errorCapture.errorFilter` takes precedence over the legacy top-level `errorFilter`.
+- Resource errors now use the same route matching, error filtering, and five-second deduplication
+  pipeline as other automatically captured errors. Resource interception remains independently
+  configurable through `captureResourceError` and defaults to enabled.
+- Logger-owned console output is excluded from `captureConsoleError`, preventing a manual
+  `logger.error(..., { error })` from being captured a second time.
+- Uninstall restores `console.error` only when the plugin still owns the active patch, so a patch
+  installed later by the host is not overwritten.
+
 ## 1.10.1 — 2026-08-11
 
 Reliable-delivery backport for the 1.x browser architecture.

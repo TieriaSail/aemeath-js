@@ -403,6 +403,53 @@ describe('Singleton (initAemeath / getAemeath)', () => {
       expect(logger.hasPlugin('error-capture')).toBe(true);
       mod.resetAemeath();
     });
+
+    it('应完整透传 ErrorCapturePlugin 配置', async () => {
+      const mod = await import('../src/singleton/index');
+      const addSpy = vi.spyOn(window, 'addEventListener');
+      const originalConsoleError = console.error;
+      const logger = mod.initAemeath({
+        browserApiErrors: false,
+        safeGuard: { enabled: false },
+        network: { enabled: false },
+        errorCapture: {
+          captureUnhandledRejection: false,
+          captureResourceError: false,
+          captureConsoleError: true,
+          debug: true,
+        },
+      });
+
+      expect(console.error).not.toBe(originalConsoleError);
+      expect(addSpy.mock.calls.filter((call) => call[0] === 'unhandledrejection')).toHaveLength(0);
+      expect(addSpy.mock.calls.filter((call) => call[0] === 'error' && call[2] === true)).toHaveLength(0);
+      expect(logger.hasPlugin('error-capture')).toBe(true);
+      mod.resetAemeath();
+      expect(console.error).toBe(originalConsoleError);
+      addSpy.mockRestore();
+    });
+
+    it('对象内 errorFilter 应优先于顶层兼容配置', async () => {
+      const mod = await import('../src/singleton/index');
+      const topLevelFilter = vi.fn(() => false);
+      const nestedFilter = vi.fn(() => true);
+      const logger = mod.initAemeath({
+        enableConsole: false,
+        errorFilter: topLevelFilter,
+        errorCapture: { errorFilter: nestedFilter },
+      });
+      const logListener = vi.fn();
+      logger.on('log', logListener);
+      const error = new Error('nested filter');
+      error.stack = 'Error: nested filter\n    at UserApp.render (app.js:10:5)';
+
+      (window.onerror as Function)(error.message, 'app.js', 1, 1, error);
+
+      expect(nestedFilter).toHaveBeenCalledOnce();
+      expect(topLevelFilter).not.toHaveBeenCalled();
+      expect(logListener).toHaveBeenCalledOnce();
+      mod.resetAemeath();
+    });
   });
 
   // ==================== 全局 routeMatch ====================
@@ -436,4 +483,3 @@ describe('Singleton (initAemeath / getAemeath)', () => {
     });
   });
 });
-

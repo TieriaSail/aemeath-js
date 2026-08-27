@@ -98,16 +98,29 @@ initAemeath({
   errorCapture: true,
 });
 
-// Option 2: object with plugin-level routeMatch
+// Option 2: configure ErrorCapturePlugin
 initAemeath({
   errorCapture: {
     enabled: true,
+    captureUnhandledRejection: true,
+    captureResourceError: true,
+    captureConsoleError: true,
+    debug: false,
     routeMatch: {
       includeRoutes: ['/checkout', '/payment'],
     },
+    errorFilter: (error) => !error.message.includes('expected error'),
   },
 });
 ```
+
+The nested `errorCapture.errorFilter` takes precedence over the legacy top-level `errorFilter`.
+Resource-error interception is independently configurable through `captureResourceError`; when
+enabled, resource errors use the same route, filter, and deduplication rules.
+
+`captureConsoleError` captures only calls containing an `Error` argument. Console output produced
+by `logger.error()` itself is suppressed from automatic capture, although applications should still
+verify counts when both a host capture point and host-owned console output report the same error.
 
 ---
 
