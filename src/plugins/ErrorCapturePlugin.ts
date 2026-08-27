@@ -8,6 +8,7 @@ import type { PlatformAdapter } from '../platform/types';
 import { SYNTHETIC_STACK } from '../platform/constants';
 import { ErrorDeduplicator } from '../utils/errorDeduplicator';
 import { shouldIgnoreOnError } from '../utils/wrap';
+import { isConsoleCaptureSuppressed } from '../utils/consoleCaptureGuard';
 import {
   RouteMatcher,
   type RouteMatchConfig,
@@ -48,7 +49,7 @@ export interface ErrorCapturePluginOptions {
 
 export class ErrorCapturePlugin implements AemeathPlugin {
   readonly name = 'error-capture';
-  readonly version = '2.0.0';
+  readonly version = '2.0.1';
   readonly priority: number = PluginPriority.EARLY;
   readonly description = '自动错误捕获';
 
@@ -65,6 +66,7 @@ export class ErrorCapturePlugin implements AemeathPlugin {
   private readonly debugEnabled: boolean;
   private logger: AemeathInterface | null = null;
   private originalConsoleError: typeof console.error | null = null;
+  private consoleErrorHandler: typeof console.error | null = null;
   private platform!: PlatformAdapter;
   private unregisterGlobalError: (() => void) | null = null;
   private unregisterRejection: (() => void) | null = null;
@@ -163,9 +165,10 @@ export class ErrorCapturePlugin implements AemeathPlugin {
       this.unregisterResourceError = null;
     }
 
-    if (this.originalConsoleError) {
+    if (this.originalConsoleError && console.error === this.consoleErrorHandler) {
       console.error = this.originalConsoleError;
       this.originalConsoleError = null;
+      this.consoleErrorHandler = null;
     }
 
     this.deduplicator.stop();
@@ -291,7 +294,18 @@ export class ErrorCapturePlugin implements AemeathPlugin {
         error.src = src;
         error.outerHTML = target.outerHTML?.substring(0, 200);
 
-        this.logger?.error('Resource load error', { error });
+        if (this.shouldCaptureError(error)) {
+          const errorInfo = {
+            message: error.message,
+            stack: error.stack,
+            type: 'resource',
+            tagName,
+            src,
+          };
+          if (this.deduplicator.check(errorInfo)) {
+            this.logger?.error('Resource load error', { error });
+          }
+        }
       }
     });
   }
@@ -299,8 +313,12 @@ export class ErrorCapturePlugin implements AemeathPlugin {
   private captureConsoleError(): void {
     this.originalConsoleError = console.error;
 
-    console.error = (...args: unknown[]): void => {
-      this.originalConsoleError!.apply(console, args);
+    const handler = (...args: unknown[]): void => {
+      this.originalConsoleError?.apply(console, args);
+
+      if (!this.logger || isConsoleCaptureSuppressed()) {
+        return;
+      }
 
       const error = args.find((arg) => arg instanceof Error) as
         | Error
@@ -322,6 +340,8 @@ export class ErrorCapturePlugin implements AemeathPlugin {
         }
       }
     };
+    this.consoleErrorHandler = handler;
+    console.error = handler;
   }
 
   /**
@@ -365,7 +385,10 @@ export class ErrorCapturePlugin implements AemeathPlugin {
     }
 
     // 3. 检查错误堆栈中是否包含 aemeath-js 相关路径
-    if (error && error.stack) {
+    // Resource errors are represented by an Error created inside this plugin,
+    // so their synthetic stack necessarily points at aemeath-js. The resource
+    // URL and element metadata, rather than that stack, describe the host fault.
+    if ((error as ErrorWithExtras | null)?.type !== 'resource' && error?.stack) {
       const stack = error.stack.toString();
       const loggerPatterns = [
         'aemeath-js',

@@ -1,5 +1,24 @@
 # Changelog
 
+## 2.6.1-beta.0 — 2026-08-27
+
+Unified error-capture configuration across browser and mini-program singleton entry points.
+
+### Added
+
+- `errorCapture` now accepts every `ErrorCapturePluginOptions` field, including independently
+  configurable resource and console interception. `enabled` remains the singleton-level switch.
+- The standard singleton entry exports `ErrorCaptureConfig`; the mini-program entry exposes the
+  same configuration shape.
+
+### Changed
+
+- A nested `errorCapture.errorFilter` takes precedence over the legacy top-level `errorFilter`.
+- Resource errors now use the shared platform-aware route, filter, and deduplication pipeline.
+  Platforms without a resource-error adapter continue to treat the option as a safe no-op.
+- Logger-owned console output is excluded from console capture, and uninstall no longer overwrites
+  a `console.error` patch installed later by the host.
+
 ## 2.6.0-beta.0
 
 Opt-in cross-tab reliable delivery for browser recovery.

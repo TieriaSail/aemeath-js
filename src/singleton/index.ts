@@ -9,6 +9,7 @@
 
 import { AemeathLogger } from '../core/Logger';
 import { ErrorCapturePlugin } from '../plugins/ErrorCapturePlugin';
+import type { ErrorCapturePluginOptions } from '../plugins/ErrorCapturePlugin';
 import { BrowserApiErrorsPlugin, type BrowserApiErrorsPluginOptions } from '../plugins/BrowserApiErrorsPlugin';
 import { EarlyErrorCapturePlugin } from '../plugins/EarlyErrorCapturePlugin';
 import {
@@ -38,6 +39,10 @@ import { detectPlatform } from '../platform/detect';
 import type { RouteMatchConfig } from '../utils/routeMatcher';
 
 export type { RouteMatchConfig };
+
+export type ErrorCaptureConfig =
+  | boolean
+  | ({ enabled?: boolean } & ErrorCapturePluginOptions);
 
 /**
  * 全局 AemeathJs 实例
@@ -90,14 +95,11 @@ export interface AemeathInitOptions {
    *
    * - `true` / `undefined`：启用（默认）
    * - `false`：禁用
-   * - `{ enabled?, routeMatch? }`：启用并配置插件级路由规则
+   * - `{ enabled?, ... }`：启用并配置 ErrorCapturePlugin
    *
    * @default true
    */
-  errorCapture?: boolean | {
-    enabled?: boolean;
-    routeMatch?: RouteMatchConfig;
-  };
+  errorCapture?: ErrorCaptureConfig;
 
   /**
    * 浏览器 API 回调增强捕获
@@ -366,6 +368,8 @@ export interface AemeathInitOptions {
    *   return true;
    * }
    * ```
+   *
+   * @deprecated 推荐使用 `errorCapture.errorFilter`；此字段继续作为兼容兜底。
    */
   errorFilter?: (error: Error) => boolean;
 
@@ -682,11 +686,12 @@ export function initAemeath(options: AemeathInitOptions = {}): AemeathLogger {
   const ecOpt = options.errorCapture;
   const ecEnabled = ecOpt === undefined || ecOpt === true || (typeof ecOpt === 'object' && ecOpt.enabled !== false);
   if (ecEnabled) {
-    const ecRouteMatch = typeof ecOpt === 'object' ? ecOpt.routeMatch : undefined;
+    const { enabled: _enabled, ...pluginOptions } =
+      typeof ecOpt === 'object' ? ecOpt : {};
     logger.use(
       new ErrorCapturePlugin({
-        routeMatch: ecRouteMatch,
-        errorFilter: options.errorFilter,
+        ...pluginOptions,
+        errorFilter: pluginOptions.errorFilter ?? options.errorFilter,
       }),
     );
   }

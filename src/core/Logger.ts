@@ -24,6 +24,7 @@ import type { PlatformAdapter } from '../platform/types';
 import type { UploadQueueStatus } from '../plugins/UploadPlugin';
 import type { OfflinePersistenceStatus } from '../plugins/OfflinePersistencePlugin';
 import { getSdkSplitId } from '../utils/splitIdentity';
+import { runWithoutConsoleCapture } from '../utils/consoleCaptureGuard';
 
 /**
  * 一条日志经 afterLog 扇出后最多保留多少条
@@ -540,13 +541,15 @@ export class AemeathLogger implements AemeathInterface {
       [LogLevelEnum.ERROR]: console.error,
     } as Record<string, typeof console.log>)[entry.level] ?? console.log;
 
-    consoleMethod(prefix, entry.message);
-    if (entry.error) {
-      consoleMethod('Error:', entry.error);
-    }
-    if (entry.tags) {
-      consoleMethod('Tags:', entry.tags);
-    }
+    runWithoutConsoleCapture(() => {
+      consoleMethod(prefix, entry.message);
+      if (entry.error) {
+        consoleMethod('Error:', entry.error);
+      }
+      if (entry.tags) {
+        consoleMethod('Tags:', entry.tags);
+      }
+    });
   }
 
   // ==================== 公开 API ====================

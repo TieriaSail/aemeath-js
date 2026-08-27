@@ -98,16 +98,28 @@ initAemeath({
   errorCapture: true,
 });
 
-// 方式 2：object，启用并配置插件级 routeMatch
+// 方式 2：object，启用并配置 ErrorCapturePlugin
 initAemeath({
   errorCapture: {
     enabled: true,
+    captureUnhandledRejection: true,
+    captureResourceError: true,
+    captureConsoleError: true,
+    debug: false,
     routeMatch: {
       includeRoutes: ['/checkout', '/payment'],
     },
+    errorFilter: (error) => !error.message.includes('预期忽略的错误'),
   },
 });
 ```
+
+对象内的 `errorFilter` 优先于顶层兼容配置 `errorFilter`。`captureResourceError` 可独立
+控制资源加载错误拦截；启用后资源错误同样遵循路由匹配、过滤和自动去重规则。
+
+启用 `captureConsoleError` 时，只捕获 `console.error` 参数中携带的 `Error` 对象。SDK
+自身通过 `logger.error()` 输出到控制台的错误不会再次被捕获；宿主手动捕获点与控制台
+输出同一错误时，仍应按业务需要验证日志数量。
 
 ---
 

@@ -283,6 +283,32 @@ describe('src/miniprogram.ts 精简入口（源码）', () => {
     expect(logger.hasPlugin('network')).toBe(false);
   });
 
+  it('initAemeath 应向小程序 ErrorCapturePlugin 完整透传配置', async () => {
+    const mod = await import('../src/miniprogram');
+    const wx = createFakeWx();
+    const platform = mod.createMiniAppAdapter('wechat', wx);
+    const originalConsoleError = console.error;
+
+    const logger = mod.initAemeath({
+      platform,
+      errorCapture: {
+        captureUnhandledRejection: false,
+        captureResourceError: false,
+        captureConsoleError: true,
+        debug: true,
+      },
+      safeGuard: { enabled: false },
+      network: { enabled: false },
+    });
+
+    expect(wx.onError).toHaveBeenCalledOnce();
+    expect(wx.onUnhandledRejection).not.toHaveBeenCalled();
+    expect(console.error).not.toBe(originalConsoleError);
+    expect(logger.hasPlugin('error-capture')).toBe(true);
+    mod.resetAemeath();
+    expect(console.error).toBe(originalConsoleError);
+  });
+
   it('支持 alipay 适配器（raw my 对象应被自动 wrap）', async () => {
     const mod = await import('../src/miniprogram');
     const my = {

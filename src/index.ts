@@ -191,4 +191,4 @@ export {
   setUpload,
 } from './singleton';
 
-export type { AemeathInitOptions, RouteMatchConfig } from './singleton';
+export type { AemeathInitOptions, ErrorCaptureConfig, RouteMatchConfig } from './singleton';

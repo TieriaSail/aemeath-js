@@ -16,7 +16,7 @@
  */
 
 import { AemeathLogger } from './core/Logger';
-import { ErrorCapturePlugin } from './plugins/ErrorCapturePlugin';
+import { ErrorCapturePlugin, type ErrorCapturePluginOptions } from './plugins/ErrorCapturePlugin';
 import {
   UploadPlugin,
   parseRetryAfter,
@@ -153,6 +153,10 @@ let offlinePersistenceConfig: boolean | OfflinePersistencePluginOptions | undefi
 /** 关闭持久化时保留最近一次有效参数，后续传 true 可原配置恢复。 */
 let offlinePersistenceOptions: OfflinePersistencePluginOptions = {};
 
+export type ErrorCaptureConfig =
+  | boolean
+  | ({ enabled?: boolean } & ErrorCapturePluginOptions);
+
 /**
  * 小程序版 AemeathJs 初始化配置
  *
@@ -182,10 +186,7 @@ export interface AemeathInitOptions {
    *
    * @default true
    */
-  errorCapture?: boolean | {
-    enabled?: boolean;
-    routeMatch?: RouteMatchConfig;
-  };
+  errorCapture?: ErrorCaptureConfig;
 
   /**
    * 全局路由匹配配置
@@ -280,6 +281,8 @@ export interface AemeathInitOptions {
 
   /**
    * 错误过滤器
+   *
+   * @deprecated 推荐使用 `errorCapture.errorFilter`；此字段继续作为兼容兜底。
    */
   errorFilter?: (error: Error) => boolean;
 
@@ -494,11 +497,12 @@ export function initAemeath(options: AemeathInitOptions): AemeathLogger {
   const ecEnabled = ecOpt === undefined || ecOpt === true
     || (typeof ecOpt === 'object' && ecOpt.enabled !== false);
   if (ecEnabled) {
-    const ecRouteMatch = typeof ecOpt === 'object' ? ecOpt.routeMatch : undefined;
+    const { enabled: _enabled, ...pluginOptions } =
+      typeof ecOpt === 'object' ? ecOpt : {};
     logger.use(
       new ErrorCapturePlugin({
-        routeMatch: ecRouteMatch,
-        errorFilter: options.errorFilter,
+        ...pluginOptions,
+        errorFilter: pluginOptions.errorFilter ?? options.errorFilter,
       }),
     );
   }

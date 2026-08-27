@@ -41,6 +41,23 @@ describe('ErrorCapturePlugin', () => {
       logger.uninstall('error-capture');
       expect(logger.hasPlugin('error-capture')).toBe(false);
     });
+
+    it('卸载时不应覆盖后续安装的 console.error patch', () => {
+      const originalError = console.error;
+      const basePatch = vi.fn();
+      console.error = basePatch;
+      logger.use(new ErrorCapturePlugin({ captureConsoleError: true }));
+      const pluginPatch = console.error;
+      const laterPatch = vi.fn((...args: unknown[]) => pluginPatch(...args));
+      console.error = laterPatch;
+
+      logger.uninstall('error-capture');
+
+      expect(console.error).toBe(laterPatch);
+      expect(() => console.error('after uninstall')).not.toThrow();
+      expect(basePatch).toHaveBeenCalledWith('after uninstall');
+      console.error = originalError;
+    });
   });
 
   // ==================== 全局错误捕获 ====================
@@ -140,6 +157,43 @@ describe('ErrorCapturePlugin', () => {
       expect(errorCaptureCalls).toHaveLength(0);
       addSpy.mockRestore();
     });
+
+    it('资源错误应应用 errorFilter 并自动去重', () => {
+      const logListener = vi.fn();
+      logger.on('log', logListener);
+      logger.use(new ErrorCapturePlugin({
+        errorFilter: (error) => !error.message.includes('ignored.png'),
+      }));
+
+      const ignored = document.body.appendChild(document.createElement('img'));
+      ignored.src = '/ignored.png';
+      ignored.dispatchEvent(new Event('error'));
+
+      const captured = document.body.appendChild(document.createElement('img'));
+      captured.src = '/captured.png';
+      captured.dispatchEvent(new Event('error'));
+      captured.dispatchEvent(new Event('error'));
+
+      expect(logListener).toHaveBeenCalledTimes(1);
+      expect(logListener.mock.calls[0][0].message).toBe('Resource load error');
+      ignored.remove();
+      captured.remove();
+    });
+
+    it('资源错误应应用插件级 routeMatch', () => {
+      const logListener = vi.fn();
+      logger.on('log', logListener);
+      logger.use(new ErrorCapturePlugin({
+        routeMatch: { includeRoutes: ['/not-current'] },
+      }));
+
+      const image = document.body.appendChild(document.createElement('img'));
+      image.src = '/route-filtered.png';
+      image.dispatchEvent(new Event('error'));
+
+      expect(logListener).not.toHaveBeenCalled();
+      image.remove();
+    });
   });
 
   // ==================== console.error 捕获 ====================
@@ -163,6 +217,19 @@ describe('ErrorCapturePlugin', () => {
       logger.use(plugin);
 
       expect(console.error).toBe(originalError);
+    });
+
+    it('Logger 自身的 console 输出不应被二次捕获', () => {
+      logger.destroy();
+      logger = new AemeathLogger({ enableConsole: true });
+      const logListener = vi.fn();
+      logger.on('log', logListener);
+      logger.use(new ErrorCapturePlugin({ captureConsoleError: true }));
+
+      logger.error('manual error', { error: createExternalError('manual') });
+
+      expect(logListener).toHaveBeenCalledTimes(1);
+      expect(logListener.mock.calls[0][0].message).toBe('manual error');
     });
   });
 
