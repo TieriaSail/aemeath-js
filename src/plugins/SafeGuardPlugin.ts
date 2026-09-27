@@ -385,13 +385,15 @@ export class SafeGuardPlugin implements AemeathPlugin {
       const err = options.error;
       if (err instanceof Error) {
         parts.push(err.name, err.message);
-        if (err.stack) {
-          const firstFrame = this.extractFirstFrame(err.stack);
-          if (firstFrame) parts.push(firstFrame);
-        }
       } else {
         const info = err as ErrorInfo;
         parts.push(info.type ?? '', info.value ?? '');
+      }
+      // Capture plugins now pass ErrorInfo snapshots. Keep the location in
+      // the merge key for both shapes, without bypassing high-frequency limits.
+      if (typeof err.stack === 'string') {
+        const firstFrame = this.extractFirstFrame(err.stack);
+        if (firstFrame) parts.push(firstFrame);
       }
     }
 
@@ -402,7 +404,7 @@ export class SafeGuardPlugin implements AemeathPlugin {
     const lines = stack.split('\n');
     for (const line of lines) {
       const trimmed = line.trim();
-      if (trimmed.startsWith('at ')) {
+      if (trimmed.startsWith('at ') || /^(?:.*?@)?(?:https?:\/\/|file:\/\/|\/).+:\d+:\d+$/.test(trimmed)) {
         return trimmed;
       }
     }

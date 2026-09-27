@@ -448,3 +448,6 @@ async function inspectError(entry: LogEntry) {
 can still attempt mapping of the supplied stack; callers should verify it is original. Existing
 `parse(string)` remains available for raw stacks whose provenance is already known.
 Copyable example with parser reuse: [with-evidence.ts](https://github.com/TieriaSail/aemeath-js/blob/dev/examples/3-sourcemap-parser/with-evidence.ts).
+
+
+Browser stack line and column numbers start at 1. The parser converts the column for SourceMap lookup. In the result, `minified.column` retains the stack column and `original.column` uses the SourceMap column starting at 0.

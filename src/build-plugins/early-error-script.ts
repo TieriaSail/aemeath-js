@@ -167,6 +167,9 @@ export function getEarlyErrorCaptureScript(options?: EarlyErrorScriptOptions): s
       lineno: error.lineno,
       colno: error.colno,
       source: error.source,
+      // Legacy standalone/IIFE consumers read these resource fields from context.
+      tagName: error.tagName,
+      src: error.src,
       timestamp: Date.now(),
       device: deviceInfo
     });
@@ -179,10 +182,12 @@ export function getEarlyErrorCaptureScript(options?: EarlyErrorScriptOptions): s
     if (window.__LOGGER_INITIALIZED__) return;
     var target = event.target || event.srcElement;
 
-    if (target && target !== window && target.tagName && (target.tagName === 'SCRIPT' || target.tagName === 'LINK' || target.tagName === 'IMG')) {
+    if (target && target !== window && target.tagName) {
       addError({
         type: 'resource',
         message: 'Resource load failed',
+        tagName: target.tagName,
+        src: target.src || target.href || '',
         source: target.src || target.href,
         filename: target.src || target.href,
         stack: null

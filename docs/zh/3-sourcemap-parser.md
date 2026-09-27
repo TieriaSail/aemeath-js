@@ -446,3 +446,6 @@ async function inspectError(entry: LogEntry) {
 除 `mapped` 外，`success` 均为 `false`。历史 `ErrorInfo` 没有 evidence 时仍可尝试解析提供的
 stack；调用方需确认它确实是原始栈。已有 `parse(string)` 不变，适用于已确认来源的原始字符串栈。
 可复制并复用解析器的示例：[with-evidence.ts](https://github.com/TieriaSail/aemeath-js/blob/dev/examples/3-sourcemap-parser/with-evidence.ts)。
+
+
+浏览器错误栈中的行号、列号从 1 开始；解析器在查询 SourceMap 时转换列号。结果 `minified.column` 保留原始栈列号，`original.column` 沿用 SourceMap 的从 0 开始的列号。

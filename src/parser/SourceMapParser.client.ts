@@ -288,7 +288,8 @@ export class SourceMapParser {
       const original = this.resolvePosition(
         sourceMap,
         location.line,
-        location.column,
+        // Browser stack columns start at 1; SourceMapConsumer expects 0.
+        Math.max(0, location.column - 1),
       );
 
       if (!original) {

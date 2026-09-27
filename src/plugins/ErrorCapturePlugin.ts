@@ -254,21 +254,32 @@ export class ErrorCapturePlugin implements AemeathPlugin {
     buildOptions?: (error: ErrorInfo) => Pick<LogOptions, 'tags' | 'context'>): void {
     if (!this.logger) return;
     if (!this.routeMatcher.shouldCapture(this.platform.getCurrentPath())) return;
+    const originalError = this.config.errorFilter ? this.originalFilterError(original) : undefined;
+    if (originalError) {
+      // Filter the original identity before taking its only snapshot. A second
+      // snapshot can consume a lazy getter twice and lose its original stack.
+      try { if ((originalError as Error & { _isAemeathInternalError?: boolean })._isAemeathInternalError === true) return; }
+      catch { /* The normalizer records unreadable properties safely. */ }
+      try { if (!this.config.errorFilter!(originalError)) return; }
+      catch { /* Preserve the legacy fail-open behavior of a broken filter. */ }
+    }
     let error = buildError();
     if (error._isAemeathInternalError === true) return;
-    if (this.config.errorFilter) {
-      const originalError = this.originalFilterError(original);
-      const view = originalError || Object.assign(new Error(error.value), error);
-      if (!originalError) view.name = error.evidence?.originalName || 'Error';
+    if (this.config.errorFilter && !originalError) {
+      const view = Object.assign(new Error(error.value), error);
+      view.name = error.evidence?.originalName || 'Error';
       try { if (!this.config.errorFilter(view)) return; }
       catch { /* Preserve the legacy fail-open behavior of a broken filter. */ }
-      // User filters may explicitly redact an Error. Snapshot their accepted
-      // result rather than retaining secret values read before the callback.
-      if (originalError) error = buildError();
-      else {
-        error.value = view.message;
-        if (error.stack !== undefined) error.stack = view.stack;
+      // Snapshot all accepted fields, including deletions, without letting the
+      // pre-filter value or a filter-only synthetic stack override redaction.
+      const fields: Record<string, PropertyDescriptor> = Object.getOwnPropertyDescriptors(view);
+      for (const field of Object.values(fields)) {
+        if (field.get) field.get = field.get.bind(view);
       }
+      fields.value = fields.message || { value: '', enumerable: true };
+      delete fields.message;
+      if (error.stack === undefined) delete fields.stack;
+      error = normalizeCapturedError(Object.create(null, fields));
     }
     // Preserve occurrences; errorObjectId links channels without dropping them.
     this.logger?.error(message, { ...buildOptions?.(error), error });
