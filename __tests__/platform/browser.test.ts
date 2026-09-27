@@ -159,7 +159,10 @@ describe('createBrowserAdapter', () => {
       const fn = adapter.errorCapture.onResourceError;
       expect(fn).toBeDefined();
       const unregister = fn!(handler);
-      expect(addSpy).toHaveBeenCalledWith('error', handler, true);
+      expect(addSpy).toHaveBeenCalledWith('error', expect.any(Function), true);
+      const event = new Event('error');
+      window.dispatchEvent(event);
+      expect(handler).toHaveBeenCalledWith(event);
       unregister();
     });
   });

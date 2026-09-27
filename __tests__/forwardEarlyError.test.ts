@@ -184,7 +184,9 @@ describe('forwardEarlyError — 入口 parity（真实 install 路径）', () =>
       message: entry.message,
       tags: entry.tags,
       context: entry.context,
-      error: entry.error,
+      error: entry.error ? { ...entry.error, evidence: entry.error.evidence ? {
+        ...entry.error.evidence, occurrenceId: '<occurrence>', errorObjectId: '<object>',
+      } : undefined } : undefined,
       environment: entry.environment,
       release: entry.release,
     };

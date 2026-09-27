@@ -1,3 +1,4 @@
+import { normalizeCapturedError } from '../utils/errorEvidence';
 /**
  * Browser API Errors Plugin
  *
@@ -146,9 +147,7 @@ export class BrowserApiErrorsPlugin implements AemeathPlugin {
     const self = this;
     const errorHandler = (error: unknown): void => {
       if (!self.logger || self.disabled) return;
-      const err = error instanceof Error
-        ? error
-        : new Error(String(error));
+      const err = normalizeCapturedError(error, { channel: 'wrapped' });
       self.logger.error('Caught error in wrapped callback', { error: err });
     };
 

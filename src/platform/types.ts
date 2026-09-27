@@ -15,6 +15,8 @@ export type MiniAppVendor =
   | 'unknown';
 
 export interface EarlyError {
+  /** Normalized snapshot; optional for older injected scripts. */
+  error?: import('../types').ErrorInfo;
   type: 'error' | 'resource' | 'unhandledrejection' | 'compatibility';
   message: string;
   stack: string | null;
@@ -34,14 +36,14 @@ export interface EarlyError {
 
 /**
  * Handler called when a global error is captured.
- * Return value follows the same semantics as window.onerror.
+ * The adapter preserves the host window.onerror return value independently.
  */
 export interface GlobalErrorInfo {
   message: string | Event;
   source?: string;
   lineno?: number;
   colno?: number;
-  error?: Error;
+  error?: unknown;
 }
 
 /**
@@ -49,6 +51,8 @@ export interface GlobalErrorInfo {
  */
 export interface UnhandledRejectionInfo {
   reason: unknown;
+  /** Runtime identity only; never serialized. */
+  promise?: object;
 }
 
 /**

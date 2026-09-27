@@ -1,3 +1,4 @@
+import { errorEvidenceSource } from './error-evidence.generated';
 /**
  * 早期错误捕获脚本 - 共享模块
  *
@@ -115,6 +116,18 @@ export function getEarlyErrorCaptureScript(options?: EarlyErrorScriptOptions): s
   var __FALLBACK_TIMER__ = null;
 
   var MAX_ERRORS = ${maxErrors};
+  var captureActive = false;
+  var pendingFlushes = [];
+
+  function finishCapture() {
+    captureActive = false;
+    var callbacks = pendingFlushes;
+    pendingFlushes = [];
+    for (var i = 0; i < callbacks.length; i++) {
+      try { window.__flushEarlyErrors__(callbacks[i]); }
+      catch (ignored) { captureFailed(); }
+    }
+  }
 
   var deviceInfo = {
     ua: navigator.userAgent,
@@ -124,14 +137,32 @@ export function getEarlyErrorCaptureScript(options?: EarlyErrorScriptOptions): s
     time: Date.now()
   };
 
+  var normalizeEvidence = ${errorEvidenceSource};
+
+  function captureFailed() {
+    try {
+      window.__AEMEATH_EARLY_CAPTURE_FAILURES__ = Math.min(2147483647,
+        (window.__AEMEATH_EARLY_CAPTURE_FAILURES__ || 0) + 1);
+    } catch (ignored) {}
+  }
+
   function addError(error) {
     if (window.__LOGGER_INITIALIZED__) return;
     if (window.__EARLY_ERRORS__.length >= MAX_ERRORS) return;
 
+    var normalized = normalizeEvidence(error.reason, {
+      channel: error.type === 'error' ? 'global' : error.type,
+      phase: 'early', message: error.message,
+      source: error.filename || error.source, line: error.lineno, column: error.colno
+    });
+    // Getters may change lifecycle state or the public buffer while reading.
+    if (window.__LOGGER_INITIALIZED__) return;
+    if (window.__EARLY_ERRORS__.length >= MAX_ERRORS) return;
     window.__EARLY_ERRORS__.push({
       type: error.type,
-      message: error.message,
-      stack: error.stack || null,
+      message: normalized.value,
+      stack: normalized.stack || null,
+      error: normalized,
       filename: error.filename,
       lineno: error.lineno,
       colno: error.colno,
@@ -142,10 +173,13 @@ export function getEarlyErrorCaptureScript(options?: EarlyErrorScriptOptions): s
   }
 
   window.addEventListener('error', function(event) {
+    if (captureActive || window.__LOGGER_INITIALIZED__) return;
+    captureActive = true;
+    try {
     if (window.__LOGGER_INITIALIZED__) return;
     var target = event.target || event.srcElement;
 
-    if (target !== window && target.tagName && (target.tagName === 'SCRIPT' || target.tagName === 'LINK' || target.tagName === 'IMG')) {
+    if (target && target !== window && target.tagName && (target.tagName === 'SCRIPT' || target.tagName === 'LINK' || target.tagName === 'IMG')) {
       addError({
         type: 'resource',
         message: 'Resource load failed',
@@ -176,31 +210,21 @@ ${autoRefresh ? `
         filename: event.filename || '',
         lineno: event.lineno || 0,
         colno: event.colno || 0,
-        stack: event.error ? event.error.stack : null
+        reason: event.error
       });
     }
+    } catch (captureFailure) { captureFailed(); }
+    finally { finishCapture(); }
   }, true);
 
   window.addEventListener('unhandledrejection', function(event) {
+    if (captureActive || window.__LOGGER_INITIALIZED__) return;
+    captureActive = true;
+    try {
     if (window.__LOGGER_INITIALIZED__) return;
-    var reason = event.reason;
-    var message = 'Unhandled Promise Rejection';
-    var stack = null;
-
-    if (reason instanceof Error) {
-      message = reason.message;
-      stack = reason.stack;
-    } else if (typeof reason === 'string') {
-      message = reason;
-    } else if (reason) {
-      try { message = JSON.stringify(reason); } catch (e) { message = String(reason); }
-    }
-
-    addError({
-      type: 'unhandledrejection',
-      message: message,
-      stack: stack
-    });
+    addError({ type: 'unhandledrejection', reason: event.reason });
+    } catch (captureFailure) { captureFailed(); }
+    finally { finishCapture(); }
   });
 ${checkCompat ? `
   (function() {
@@ -225,6 +249,9 @@ ${checkCompat ? `
 
   window.__flushEarlyErrors__ = function(callback) {
     if (typeof callback !== 'function') return;
+    // A getter can initialize Logger synchronously. Finish the observation
+    // before transferring ownership so it is included exactly once.
+    if (captureActive) { pendingFlushes.push(callback); return; }
     window.__LOGGER_INITIALIZED__ = true;
     if (__FALLBACK_TIMER__ !== null) {
       clearTimeout(__FALLBACK_TIMER__);

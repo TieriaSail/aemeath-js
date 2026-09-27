@@ -1,3 +1,4 @@
+import { runCapture } from '../utils/captureGuard';
 /**
  * MiniApp platform adapter factory
  *
@@ -191,11 +192,10 @@ export function createMiniAppAdapter(
       ): () => void {
         if (!api.onError) return () => {};
         const cb = (message: string) => {
-          const err = new Error(message);
-          (err as any)[SYNTHETIC_STACK] = true;
-          handler({
-            message,
-            error: err,
+          runCapture('global', () => {
+            const err = new Error(message);
+            (err as any)[SYNTHETIC_STACK] = true;
+            handler({ message, error: err });
           });
         };
         api.onError(cb);
@@ -209,7 +209,7 @@ export function createMiniAppAdapter(
       ): () => void {
         if (!api.onUnhandledRejection) return () => {};
         const cb = (res: { reason: unknown; promise: Promise<unknown> }) => {
-          handler({ reason: res.reason });
+          runCapture('unhandledrejection', () => handler({ reason: res.reason, promise: res.promise }));
         };
         api.onUnhandledRejection(cb);
         return () => {

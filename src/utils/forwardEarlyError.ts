@@ -1,3 +1,4 @@
+import { normalizeCapturedError } from './errorEvidence';
 /**
  * 早期错误统一转发 helper
  *
@@ -61,17 +62,6 @@ import type { AemeathInterface } from '../types';
  * `device` 字段的形状与 EarlyError['device'] 严格对齐，避免后续 EarlyError
  * 增加字段时这里漏掉同步。
  */
-interface EarlyErrorExtended extends Error {
-  type?: EarlyError['type'];
-  filename?: string;
-  lineno?: number;
-  colno?: number;
-  source?: string;
-  earlyError?: boolean;
-  captureTimestamp?: number;
-  device?: EarlyError['device'];
-}
-
 /**
  * 把单条早期错误转发到主 Logger，产出标准 LogEntry。
  *
@@ -89,9 +79,13 @@ export function forwardEarlyError(
   logger: AemeathInterface,
   earlyError: EarlyError,
 ): void {
-  const err = new Error(earlyError.message || 'Early error') as EarlyErrorExtended;
-  // stack: 早期脚本可能拿不到 stack（旧浏览器、跨域脚本），保持 undefined 而非 'null'
-  err.stack = earlyError.stack ?? undefined;
+  const err = normalizeCapturedError(earlyError.error || {
+    message: earlyError.message || 'Early error', stack: earlyError.stack,
+  }, {
+    channel: earlyError.type === 'error' ? 'global' : earlyError.type,
+    phase: 'early', source: earlyError.filename || earlyError.source,
+    line: earlyError.lineno, column: earlyError.colno,
+  });
   err.type = earlyError.type;
   err.filename = earlyError.filename;
   err.lineno = earlyError.lineno;

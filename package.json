@@ -1,6 +1,6 @@
 {
   "name": "aemeath-js",
-  "version": "2.6.1-beta.0",
+  "version": "2.7.0-beta.0",
   "description": "A modular, type-safe logging system with plugin architecture",
   "keywords": [
     "logger",
@@ -163,7 +163,7 @@
   "files": [
     "dist",
     "dist-miniprogram",
-    "scripts",
+    "scripts/early-error.js",
     "README.md",
     "README.zh_CN.md",
     "QUICK_START.md",
@@ -173,16 +173,17 @@
   ],
   "homepage": "https://github.com/TieriaSail/aemeath-js#readme",
   "scripts": {
-    "build": "tsup",
+    "build": "npm run generate:error-capture && tsup",
     "dev": "tsup --watch",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.tests.json && tsc --noEmit -p tsconfig.examples.json",
-    "verify": "npm test && npm run typecheck && npm run build",
+    "verify": "node scripts/generate-error-capture.mjs --check && npm test && npm run typecheck && npm run build",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui",
-    "prepublishOnly": "npm run verify"
+    "prepublishOnly": "npm run verify",
+    "generate:error-capture": "node scripts/generate-error-capture.mjs"
   },
   "dependencies": {
     "source-map-js": "^1.2.0"

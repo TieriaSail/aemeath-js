@@ -2,8 +2,9 @@
  * 模块1：错误捕获 - WebView 增强捕获示例
  *
  * 在 iOS WKWebView / Android WebView 等跨域受限环境中，
- * window.onerror 只能获取到 "Script error."。
- * BrowserApiErrorsPlugin 通过包裹回调函数解决此问题。
+ * window.onerror 可能只能获取到 "Script error."。
+ * BrowserApiErrorsPlugin 在已包裹的回调入口捕获原始异常；无法恢复浏览器未暴露的信息。
+ * Supported hooks capture original exceptions before global redaction; coverage is not universal.
  */
 
 import { initAemeath, getAemeath, classifyHttpUploadResponse } from 'aemeath-js';
@@ -23,18 +24,18 @@ initAemeath({
 
 const logger = getAemeath();
 
-// ==================== 以下场景的错误现在都能获取完整堆栈 ====================
+// ==================== 已启用 hook 覆盖的回调场景 / Supported callback hooks ====================
 
 // 场景 1：事件监听器中的错误
 document.getElementById('btn')?.addEventListener('click', () => {
   // 在 WebView 中，这个错误以前只能看到 "Script error."
-  // 现在可以获取完整的错误信息和堆栈
+  // 已安装的 hook 可保留该 Error 提供的原始信息和堆栈
   throw new Error('Button click handler error');
 });
 
 // 场景 2：定时器中的错误
 setTimeout(() => {
-  JSON.parse('invalid json'); // TypeError 会被完整捕获
+  JSON.parse('invalid json'); // SyntaxError 的原始信息会被 hook 捕获
 }, 1000);
 
 // 场景 3：XHR 回调中的错误

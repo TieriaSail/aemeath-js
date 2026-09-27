@@ -3623,15 +3623,17 @@ export class UploadPlugin implements AemeathPlugin {
     const splitGroups = new Map<string, QueuedLog[]>();
 
     for (const item of this.queue) {
-      if (item.source) {
-        exempt.push(item);
-        continue;
-      }
+      // Evidence occurrences are independent observations, even when messages
+      // and stacks match. Object identity links them without losing counts.
       const splitId = getSdkSplitId(item.log);
       if (splitId !== undefined) {
         const bucket = splitGroups.get(splitId) || [];
         bucket.push(item);
         splitGroups.set(splitId, bucket);
+        continue;
+      }
+      if (item.source || item.log.error?.evidence?.schemaVersion === 1) {
+        exempt.push(item);
         continue;
       }
       const hash = this.generateLogHash(item.log);
@@ -3650,6 +3652,15 @@ export class UploadPlugin implements AemeathPlugin {
     let splitDuplicateCount = 0;
     const seenSplitSignatures = new Map<string, string>();
     for (const [splitId, bucket] of splitGroups) {
+      // Only one fragment carries error.evidence; its siblings must share the
+      // exemption, including replay fragments tracked by delivery identity.
+      if (bucket.some(item => item.source || item.log.error?.evidence?.schemaVersion === 1 ||
+        Number(item.log.tags?.splitTotal) !== bucket.length)) {
+        // A prior run may already have delivered the evidence-bearing fragment.
+        // Partial groups cannot be compared as if they were complete logs.
+        exempt.push(...bucket);
+        continue;
+      }
       const signature = bucket
         .map((it) => this.generateLogHash(it.log))
         .sort()

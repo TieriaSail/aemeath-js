@@ -127,7 +127,7 @@ describe('wrap()', () => {
       expect(shouldIgnoreOnError()).toBe(false);
     });
 
-    it('wrap catch should call ignoreNextOnError before re-throw', () => {
+    it('wrapped capture must not suppress unrelated global observations', () => {
       const fn = () => {
         throw new Error('test');
       };
@@ -139,7 +139,7 @@ describe('wrap()', () => {
         // expected
       }
 
-      expect(shouldIgnoreOnError()).toBe(true);
+      expect(shouldIgnoreOnError()).toBe(false);
       vi.runAllTimers();
       expect(shouldIgnoreOnError()).toBe(false);
     });

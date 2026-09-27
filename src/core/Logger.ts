@@ -1,3 +1,4 @@
+import { normalizeCapturedError } from '../utils/errorEvidence';
 /**
  * AemeathJs 核心（参考 Sentry 设计）
  */
@@ -424,40 +425,26 @@ export class AemeathLogger implements AemeathInterface {
    * 标准化错误对象为 ErrorInfo
    */
   private normalizeError(error: Error | ErrorInfo): ErrorInfo {
-    if (error == null || typeof error !== 'object') {
-      return { type: 'Error', value: String(error) };
-    }
-
-    if (!(error instanceof Error) && 'type' in error && 'value' in error) {
-      return error as ErrorInfo;
-    }
-
-    // 转换 Error 对象
-    const err = error as Error;
-    const errorInfo: ErrorInfo = {
-      type: err.name || 'Error',
-      value: err.message || String(err),
-    };
-
-    // 添加堆栈
-    if (err.stack) {
-      errorInfo.stack = err.stack;
-    }
-
-    const skip = new Set(['message', 'name', 'stack']);
-    for (const key of Object.getOwnPropertyNames(err)) {
-      if (!skip.has(key)) {
-        errorInfo[key] = (err as unknown as Record<string, unknown>)[key];
-      }
-    }
-
-    return errorInfo;
+    return normalizeCapturedError(error);
   }
 
   /**
    * 自动识别错误类别
    */
   private identifyErrorCategory(errorInfo: ErrorInfo): ErrorCategory {
+    // A generic object reason can come from synchronous hooks too. Prefer
+    // explicit capture provenance to legacy reason/location heuristics.
+    if (errorInfo.evidence?.schemaVersion === 1) {
+      if (errorInfo.evidence.capturePhase === 'early') return ErrorCategory.EARLY;
+      switch (errorInfo.evidence.captureChannel) {
+        case 'global': return ErrorCategory.GLOBAL;
+        case 'unhandledrejection': return ErrorCategory.PROMISE;
+        case 'resource': return ErrorCategory.RESOURCE;
+        case 'wrapped':
+        case 'console': return ErrorCategory.MANUAL;
+      }
+    }
+    // Manual/unknown channels and older shapes retain their existing rules.
     // 早期错误
     if (errorInfo.earlyError === true) {
       return ErrorCategory.EARLY;

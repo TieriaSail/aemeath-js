@@ -383,3 +383,14 @@ ameathEarlyErrorPlugin({
 - [Error Capture](./1-error-capture.md)
 - [Source Map Parser](./3-sourcemap-parser.md)
 - [Upload Plugin](./4-upload-plugin.md)
+
+
+## Early evidence parity
+
+Injected scripts and standalone `scripts/early-error.js` provide the same evidence metadata.
+Keep your existing capture configuration; no additional switch is required.
+The buffer retains legacy message/stack plus a normalized error snapshot. Fallback and handoff
+preserve occurrenceId and stack provenance. Older scripts remain compatible. Early listener
+failures increment `window.__AEMEATH_EARLY_CAPTURE_FAILURES__` without recursive logging or automatic upload.
+
+The early script blocks nested event capture while inspecting an error and rechecks capacity/lifecycle before enqueueing. If an application getter initializes Logger or requests a flush, handoff completes when the active capture exits, delivering that observation once. Ordinary flushes remain synchronous; maxErrors and existing fallback options are unchanged.

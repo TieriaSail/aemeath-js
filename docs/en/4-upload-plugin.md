@@ -667,3 +667,16 @@ See `examples/5-upload-plugin/` directory for complete examples:
 
 **Version:** 1.1.0  
 **Last Updated:** 2026-02-05
+
+
+## Evidence occurrences and content deduplication
+
+Logs with `error.evidence.schemaVersion = 1` preserve independent observations and bypass upload
+message/stack deduplication. `occurrenceId` identifies an observation; `errorObjectId` links a runtime
+object. Neither replaces the reliable delivery `logId`. Retries/replay retain the original logId
+and evidence. Other logs retain existing deduplication; SafeGuard and payload split/reject policies
+still apply. Redact new fields through beforeSend.
+
+Split logs are evaluated as a whole `splitId` group: if any fragment carries error evidence or a
+replay source, every sibling bypasses content deduplication. Partially delivered groups also bypass
+it, so remaining fragments cannot be dropped as duplicates after the evidence fragment succeeds.

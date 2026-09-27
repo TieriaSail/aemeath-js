@@ -1,3 +1,5 @@
+import type { ErrorEvidence } from './utils/errorEvidence';
+export type { ErrorEvidence, ErrorEvidenceOptions } from './utils/errorEvidence';
 /**
  * AemeathJs 模块化日志系统 - 类型定义（参考 Sentry）
  */
@@ -50,6 +52,8 @@ export interface StackFrame {
  * 错误信息（参考 Sentry 的 exception）
  */
 export interface ErrorInfo {
+  /** Serializable provenance; capture stacks never belong in stack. */
+  evidence?: ErrorEvidence;
   /** 错误类型（如 TypeError, BusinessError） */
   type: string;
   /** 错误消息 */

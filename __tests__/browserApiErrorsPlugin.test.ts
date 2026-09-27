@@ -447,7 +447,7 @@ describe('BrowserApiErrorsPlugin', () => {
   // ==================== Coordination with ErrorCapturePlugin ====================
 
   describe('coordination with ErrorCapturePlugin (dedup)', () => {
-    it('should set shouldIgnoreOnError flag when wrapped callback throws', () => {
+    it('wrapped capture must not suppress unrelated global observations', () => {
       vi.useRealTimers();
       const plugin = new BrowserApiErrorsPlugin();
       activePlugin = plugin;
@@ -464,7 +464,7 @@ describe('BrowserApiErrorsPlugin', () => {
         // expected
       }
 
-      expect(shouldIgnoreOnError()).toBe(true);
+      expect(shouldIgnoreOnError()).toBe(false);
     });
   });
 

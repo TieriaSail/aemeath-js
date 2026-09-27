@@ -1,3 +1,4 @@
+import type { ErrorInfo } from '../types';
 /**
  * SourceMap 客户端解析器
  *
@@ -52,6 +53,7 @@ export interface ParsedStackFrame {
 
   /** 是否成功解析 */
   resolved: boolean;
+  failure?: 'source-map-missing' | 'parse-failed';
 }
 
 /**
@@ -188,6 +190,22 @@ export class SourceMapParser {
    * @param stack 错误堆栈字符串
    * @returns 解析结果
    */
+  /** Evidence-aware entry point. The legacy parse(string) remains available. */
+  async parseError(error: ErrorInfo): Promise<ParseResult & {
+    status: 'unavailable' | 'source-map-missing' | 'parse-failed' | 'mapped';
+  }> {
+    if ((error.evidence && error.evidence.stackOrigin !== 'original') || typeof error.stack !== 'string' || !error.stack) {
+      return { message: error.value, stack: '', frames: [], success: false, status: 'unavailable' };
+    }
+    const result = await this.parse(error.stack);
+    const status = result.frames.some(frame => frame.resolved) ? 'mapped'
+      : result.frames.some(frame => frame.failure === 'parse-failed') ? 'parse-failed'
+      : result.frames.some(frame => frame.minified) ? 'source-map-missing' : 'parse-failed';
+    // Safari/Firefox stacks may start directly with a frame, without a message
+    // header. ErrorInfo already carries the authoritative captured message.
+    return { ...result, message: error.value, success: status === 'mapped', status };
+  }
+
   async parse(stack: string): Promise<ParseResult> {
     if (!stack) {
       return {
@@ -255,6 +273,9 @@ export class SourceMapParser {
       // 加载 SourceMap
       const sourceMap = await this.loadSourceMap(location.fileName);
 
+      if (sourceMap === 'parse-failed') {
+        return { raw: trimmed, minified: location, resolved: false, failure: 'parse-failed' };
+      }
       if (!sourceMap) {
         return {
           raw: trimmed,
@@ -274,7 +295,7 @@ export class SourceMapParser {
         return {
           raw: trimmed,
           minified: location,
-          resolved: false,
+          resolved: false, failure: 'parse-failed',
         };
       }
 
@@ -324,6 +345,12 @@ export class SourceMapParser {
       };
     }
 
+    // Firefox / Safari: function@https://host/file.js:line:column
+    const match3 = line.match(/^(?:(.*?)@)?((?:https?:\/\/|file:\/\/|\/).+?):(\d+):(\d+)$/);
+    if (match3) {
+      return { functionName: match3[1] || undefined, fileName: match3[2],
+        line: parseInt(match3[3], 10), column: parseInt(match3[4], 10) };
+    }
     return null;
   }
 
@@ -341,7 +368,7 @@ export class SourceMapParser {
   /**
    * 加载 SourceMap
    */
-  private async loadSourceMap(fileUrl: string): Promise<RawSourceMap | null> {
+  private async loadSourceMap(fileUrl: string): Promise<RawSourceMap | null | 'parse-failed'> {
     // 提取相对路径：.../static/js/index.xxx.js -> static/js/index.xxx.js
     const staticMatch = fileUrl.match(/\/static\/(js|css)\/([^?#]+)/);
     if (!staticMatch) {
@@ -384,7 +411,9 @@ export class SourceMapParser {
         return null;
       }
 
-      const sourceMap: RawSourceMap = await response.json();
+      let sourceMap: RawSourceMap;
+      try { sourceMap = await response.json(); } catch { return 'parse-failed'; }
+      if (!sourceMap || typeof sourceMap !== 'object') return 'parse-failed';
 
       // 调试：检查 SourceMap 结构
       this.debug.log('SourceMap 结构:', {
