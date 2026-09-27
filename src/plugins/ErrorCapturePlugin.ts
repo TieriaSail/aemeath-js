@@ -272,9 +272,15 @@ export class ErrorCapturePlugin implements AemeathPlugin {
       catch { /* Preserve the legacy fail-open behavior of a broken filter. */ }
       // Snapshot all accepted fields, including deletions, without letting the
       // pre-filter value or a filter-only synthetic stack override redaction.
-      const fields: Record<string, PropertyDescriptor> = Object.getOwnPropertyDescriptors(view);
-      for (const field of Object.values(fields)) {
+      const fields: Record<string, PropertyDescriptor> = Object.create(null);
+      for (const key of Object.getOwnPropertyNames(view)) {
+        // On older V8 versions even reading the stack descriptor realizes the
+        // lazy stack and calls message getters. Skip filter-only stacks first.
+        if (key === 'stack' && error.stack === undefined) continue;
+        const field = Object.getOwnPropertyDescriptor(view, key);
+        if (!field) continue;
         if (field.get) field.get = field.get.bind(view);
+        fields[key] = field;
       }
       fields.value = fields.message || { value: '', enumerable: true };
       delete fields.message;
