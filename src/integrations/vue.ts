@@ -150,8 +150,10 @@ export function createAemeathPlugin(options: VueAemeathPluginOptions = {}) {
         const componentName = getComponentName(instance as VueComponentInstance);
 
         // 增强错误信息
-        (error as Error & { vueInfo?: string; componentName?: string }).vueInfo = info;
-        (error as Error & { componentName?: string }).componentName = componentName;
+        try {
+          (error as Error & { vueInfo?: string; componentName?: string }).vueInfo = info;
+          (error as Error & { componentName?: string }).componentName = componentName;
+        } catch { /* Frozen errors still carry their metadata in context/tags. */ }
 
         logger.error('Vue component error', {
           error,

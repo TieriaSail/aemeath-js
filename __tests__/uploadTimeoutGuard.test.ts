@@ -19,6 +19,7 @@ describe('uploadTimeoutMs × ignoreNetworkCapture', () => {
   let logger: AemeathLogger;
 
   beforeEach(() => {
+    vi.useFakeTimers();
     _resetIgnoreNetworkCapture();
     logger = new AemeathLogger({ enableConsole: false });
     vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -27,6 +28,7 @@ describe('uploadTimeoutMs × ignoreNetworkCapture', () => {
   afterEach(() => {
     logger.destroy();
     _resetIgnoreNetworkCapture();
+    vi.useRealTimers();
     vi.restoreAllMocks();
   });
 
@@ -50,10 +52,11 @@ describe('uploadTimeoutMs × ignoreNetworkCapture', () => {
     });
 
     logger.error('slow');
-    await new Promise((r) => setTimeout(r, 20));
+    await vi.advanceTimersByTimeAsync(20);
     expect(shouldIgnoreNetworkCapture()).toBe(true);
 
     resolveUpload({ success: true });
+    await vi.advanceTimersByTimeAsync(100);
     await upload.flush();
     expect(drops).toEqual([]);
     expect(shouldIgnoreNetworkCapture()).toBe(false);
@@ -78,19 +81,19 @@ describe('uploadTimeoutMs × ignoreNetworkCapture', () => {
     logger.use(upload);
 
     logger.error('hanging');
-    await new Promise((r) => setTimeout(r, 10));
+    await vi.advanceTimersByTimeAsync(10);
     expect(shouldIgnoreNetworkCapture()).toBe(true);
 
     // 已超时，但宽限未到：仍应忽略（挡住迟到的上报 I/O）
-    await new Promise((r) => setTimeout(r, 40));
+    await vi.advanceTimersByTimeAsync(40);
     expect(shouldIgnoreNetworkCapture()).toBe(true);
 
     // 宽限结束（再一个 uploadTimeoutMs）后必须揭开，不能永久致盲
-    await new Promise((r) => setTimeout(r, 40));
+    await vi.advanceTimersByTimeAsync(40);
     expect(shouldIgnoreNetworkCapture()).toBe(false);
 
     resolveUpload({ success: true });
-    await new Promise((r) => setTimeout(r, 10));
+    await vi.advanceTimersByTimeAsync(10);
     expect(shouldIgnoreNetworkCapture()).toBe(false);
   });
 
@@ -113,11 +116,11 @@ describe('uploadTimeoutMs × ignoreNetworkCapture', () => {
     logger.use(upload);
 
     logger.error('late-ok');
-    await new Promise((r) => setTimeout(r, 50));
+    await vi.advanceTimersByTimeAsync(50);
     expect(shouldIgnoreNetworkCapture()).toBe(true);
 
     resolveUpload({ success: true });
-    await new Promise((r) => setTimeout(r, 10));
+    await vi.advanceTimersByTimeAsync(10);
     expect(shouldIgnoreNetworkCapture()).toBe(false);
   });
 
@@ -139,7 +142,7 @@ describe('uploadTimeoutMs × ignoreNetworkCapture', () => {
     });
     logger.use(plugin);
     logger.error('never settles');
-    await new Promise((r) => setTimeout(r, 80));
+    await vi.advanceTimersByTimeAsync(80);
     expect(dropped).toContain('max-retries');
     expect(shouldIgnoreNetworkCapture()).toBe(false);
   });

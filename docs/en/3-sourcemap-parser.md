@@ -398,3 +398,56 @@ result.frames.forEach((frame) => {
 - [Error Capture](./1-error-capture.md)
 - [Early Error Capture](./2-early-error-capture.md)
 - [Upload Plugin](./4-upload-plugin.md)
+
+
+## Evidence-aware parsing
+
+Prefer `await parser.parseError(entry.error)` for SDK ErrorInfo records. Known capture stacks or
+missing original stacks return `status: "unavailable"` without fetching maps. Other statuses are
+`source-map-missing`, `parse-failed`, and `mapped`. The legacy `parse(string)` API is unchanged;
+callers must select an appropriate original stack. Common Chromium and Firefox/Safari formats are
+supported. Applications still select the exact environment/release sourceMapBaseUrl and build-specific filenames.
+
+`parseError()` always returns `ErrorInfo.value` as its message, regardless of mapping status.
+Headerless Safari/Firefox stacks therefore keep the captured message instead of using the first frame.
+
+Use this helper in an error details view. The status distinguishes an unavailable original stack,
+a missing source map, a parsing failure and a successful mapping. Set sourceMapBaseUrl to the
+location for the actual environment and release.
+
+```typescript
+import { createParser } from 'aemeath-js/parser';
+import type { LogEntry } from 'aemeath-js';
+
+const parser = createParser({
+  sourceMapBaseUrl: 'https://cdn.example.com/sourcemaps/my-release',
+});
+
+async function inspectError(entry: LogEntry) {
+  if (!entry.error) return;
+  const result = await parser.parseError(entry.error);
+  return {
+    message: result.message,
+    status: result.status,
+    frames: result.frames,
+    evidence: entry.error.evidence,
+  };
+}
+```
+
+`parseError(error: ErrorInfo)` returns `Promise<ParseResult & { status: ... }>`:
+
+| status | Meaning and handling |
+| --- | --- |
+| `unavailable` | No original stack, or evidence identifies a capture stack. No maps are fetched; display the message and available location metadata. |
+| `mapped` | At least one frame mapped, so `success` is `true`. Check each frame's `resolved`; not all frames necessarily mapped. |
+| `source-map-missing` | An address was extracted but no mapping is available. Check resource matching, environment/release paths and access. |
+| `parse-failed` | No parseable frame was found, or mapping data/position resolution failed. Retain the message and available raw frames for investigation. |
+
+`success` is `false` for every status except `mapped`. Legacy `ErrorInfo` records without evidence
+can still attempt mapping of the supplied stack; callers should verify it is original. Existing
+`parse(string)` remains available for raw stacks whose provenance is already known.
+Copyable example with parser reuse: [with-evidence.ts](https://github.com/TieriaSail/aemeath-js/blob/main/examples/3-sourcemap-parser/with-evidence.ts).
+
+
+Browser stack line and column numbers start at 1. The parser converts the column for SourceMap lookup. In the result, `minified.column` retains the stack column and `original.column` uses the SourceMap column starting at 0.

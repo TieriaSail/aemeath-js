@@ -158,7 +158,7 @@ describe('ErrorCapturePlugin', () => {
       addSpy.mockRestore();
     });
 
-    it('资源错误应应用 errorFilter 并自动去重', () => {
+    it('资源错误应用 errorFilter 且保留独立发生', () => {
       const logListener = vi.fn();
       logger.on('log', logListener);
       logger.use(new ErrorCapturePlugin({
@@ -174,7 +174,7 @@ describe('ErrorCapturePlugin', () => {
       captured.dispatchEvent(new Event('error'));
       captured.dispatchEvent(new Event('error'));
 
-      expect(logListener).toHaveBeenCalledTimes(1);
+      expect(logListener).toHaveBeenCalledTimes(2);
       expect(logListener.mock.calls[0][0].message).toBe('Resource load error');
       ignored.remove();
       captured.remove();
@@ -259,7 +259,7 @@ describe('ErrorCapturePlugin', () => {
       expect(logListener).not.toHaveBeenCalled();
     });
 
-    it('包含 AemeathJs 内部前缀的错误不应被捕获', () => {
+    it('普通消息包含 SDK 前缀仍保留业务证据', () => {
       const logListener = vi.fn();
       logger.on('log', logListener);
 
@@ -280,7 +280,7 @@ describe('ErrorCapturePlugin', () => {
         );
       }
 
-      expect(logListener).not.toHaveBeenCalled();
+      expect(logListener).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -376,7 +376,7 @@ describe('ErrorCapturePlugin', () => {
   // ==================== 错误去重 ====================
 
   describe('错误去重', () => {
-    it('短时间内相同错误只应记录一次', () => {
+    it('同一对象再次发生仍保留次数与关联身份', () => {
       const logListener = vi.fn();
       logger.on('log', logListener);
 
@@ -390,7 +390,11 @@ describe('ErrorCapturePlugin', () => {
         (window.onerror as Function)(error.message, 'app.js', 1, 1, error);
       }
 
-      expect(logListener).toHaveBeenCalledTimes(1);
+      expect(logListener).toHaveBeenCalledTimes(2);
+      const first = logListener.mock.calls[0][0].error.evidence;
+      const second = logListener.mock.calls[1][0].error.evidence;
+      expect(first.errorObjectId).toBe(second.errorObjectId);
+      expect(first.occurrenceId).not.toBe(second.occurrenceId);
     });
   });
 });

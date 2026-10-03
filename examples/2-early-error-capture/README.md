@@ -65,6 +65,12 @@ logger.use(
 
 ---
 
+### 3. [with-csp.ts](./with-csp.ts) - CSP nonce 配置
+
+展示 Vite、Webpack、Rsbuild 的可选 nonce 配置。服务端须逐次响应生成 nonce，并同时替换 HTML 占位符和 CSP 响应头中的值。
+
+---
+
 ## 🔄 工作流程
 
 ```

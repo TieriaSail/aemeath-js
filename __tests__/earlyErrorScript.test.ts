@@ -259,7 +259,7 @@ describe('getEarlyErrorCaptureScript', () => {
         fallbackEndpoint: '/api/logs',
         fallbackTransport: 'xhr',
       });
-      expect(script).toContain("'Content-Type': 'application/json'");
+      expect(script).toContain("xhr.setRequestHeader('Content-Type', 'application/json')");
     });
   });
 

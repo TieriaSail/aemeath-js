@@ -1,3 +1,4 @@
+import { runCapture } from './captureGuard';
 /**
  * Function wrapping utility for enhanced error capture.
  *
@@ -7,7 +8,7 @@
  * Key features:
  * - Bidirectional references to prevent double-wrapping
  * - Recursive argument wrapping for nested callbacks
- * - Coordination with the global error handler to prevent duplicate reports
+ * - Independent wrapped/global observations, linked by error object identity
  */
 
 // ==================== Types ====================
@@ -26,9 +27,8 @@ let _ignoreOnError = 0;
 /**
  * Check whether the global error handler should skip the current error.
  *
- * When wrap()'s try-catch captures an error it calls ignoreNextOnError()
- * before re-throwing. The global handler checks this flag and skips the
- * error to avoid a duplicate report.
+ * Legacy flag retained for direct callers. ErrorCapturePlugin no longer uses
+ * this time-window flag: unrelated errors can occur before it resets.
  */
 export function shouldIgnoreOnError(): boolean {
   return _ignoreOnError > 0;
@@ -90,13 +90,7 @@ export function wrap<T>(fn: T, onError: ErrorHandler): T {
       const wrappedArgs = args.map((arg) => wrap(arg, onError));
       return original.apply(this, wrappedArgs);
     } catch (ex) {
-      ignoreNextOnError();
-
-      try {
-        onError(ex);
-      } catch {
-        // onError itself must never break the application
-      }
+      runCapture('wrapped', () => onError(ex));
 
       throw ex;
     }

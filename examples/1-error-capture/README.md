@@ -1,5 +1,16 @@
 # 模块1：错误捕获
 
+## 异常证据 / Error evidence
+
+[with-evidence.ts](./with-evidence.ts) 展示如何将 catch 中的 unknown 交给 `normalizeCapturedError`，
+以及读取 `getCaptureDiagnostics()`。自动捕获无需额外调用；文件仅导出函数，不会在导入时初始化 Logger。
+
+[with-evidence.ts](./with-evidence.ts) normalizes unknown caught values and reads capture health.
+Automatic capture needs no extra call. The file exports helpers without initializing Logger on import.
+
+[中文 API](../../docs/zh/1-error-capture.md) · [English API](../../docs/en/1-error-capture.md)
+
+
 ## 📋 示例列表
 
 ### 1. [basic.ts](./basic.ts) - 基础使用
@@ -23,7 +34,7 @@ logger.use(new ErrorCapturePlugin());
 
 ### 2. [with-webview-enhanced.ts](./with-webview-enhanced.ts) - WebView 增强捕获
 
-**解决 "Script error." 问题**
+**在已覆盖的回调入口捕获原始异常，不保证消除所有 "Script error."**
 
 ```typescript
 import { initAemeath } from 'aemeath-js';
@@ -76,4 +87,4 @@ import './utils/logger';
 ## 📖 更多文档
 
 - [完整 API 文档](../../README.md)
-- [错误捕获最佳实践](../../../docs/logger/日志策略最佳实践.md)
+- [错误捕获使用文档](../../docs/zh/1-error-capture.md)

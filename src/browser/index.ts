@@ -1,3 +1,6 @@
+import { normalizeEarlyError } from '../utils/forwardEarlyError';
+import { runCapture } from '../utils/captureGuard';
+import type { EarlyError } from '../plugins/EarlyErrorCapturePlugin';
 /**
  * 浏览器直接引入版本
  *
@@ -240,25 +243,20 @@ function flushEarlyErrors(logger: AemeathLogger): void {
 
   if (typeof win.__flushEarlyErrors__ === 'function') {
     win.__flushEarlyErrors__((errors) => {
-      errors.forEach((err) => {
-        const errorObj = err as Record<string, unknown>;
-        if (errorObj.type === 'error') {
-          logger.error(String(errorObj.message || 'Unknown error'), {
-            tags: { source: 'early-error' },
-            context: errorObj,
-          });
-        } else if (errorObj.type === 'unhandledrejection') {
-          logger.error('Unhandled Promise rejection', {
-            tags: { source: 'early-error' },
-            context: errorObj,
-          });
-        } else if (errorObj.type === 'resource') {
-          logger.warn('Resource loading failed', {
-            tags: { source: 'early-error' },
-            context: errorObj,
-          });
-        }
-      });
+      for (let index = 0; index < errors.length; index++) {
+        if (globalLogger !== logger) break;
+        runCapture('early', () => {
+          const err = errors[index];
+          const early = err as EarlyError;
+          const error = normalizeEarlyError(early);
+          const options = { error, tags: { source: 'early-error' }, context: err as Record<string, unknown> };
+          // Preserve v1 IIFE levels/messages/context; add the shared error schema.
+          if (early.type === 'error') logger.error(String(early.message || 'Unknown error'), options);
+          else if (early.type === 'unhandledrejection') logger.error('Unhandled Promise rejection', options);
+          else if (early.type === 'resource') logger.warn('Resource loading failed', options);
+          else if (early.type === 'compatibility') logger.error(String(early.message || 'Compatibility error'), options);
+        });
+      }
     });
   }
 }

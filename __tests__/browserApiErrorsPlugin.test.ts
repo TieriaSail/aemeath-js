@@ -131,6 +131,7 @@ describe('BrowserApiErrorsPlugin', () => {
 
       const div = document.createElement('div');
       expect(() => {
+        // 运行时传 null 合法；TS DOM 类型过严，用断言覆盖
         div.addEventListener('click', null as unknown as EventListener);
       }).not.toThrow();
     });
@@ -272,7 +273,7 @@ describe('BrowserApiErrorsPlugin', () => {
       // code path doesn't add its own error
       let threwFromPlugin = false;
       try {
-        setTimeout('void 0', 0);
+        setTimeout('void 0' as unknown as TimerHandler, 0);
       } catch (e: any) {
         // Node.js throws ERR_INVALID_ARG_TYPE — that's expected,
         // but it should NOT be a plugin-related error
@@ -446,7 +447,7 @@ describe('BrowserApiErrorsPlugin', () => {
   // ==================== Coordination with ErrorCapturePlugin ====================
 
   describe('coordination with ErrorCapturePlugin (dedup)', () => {
-    it('should set shouldIgnoreOnError flag when wrapped callback throws', () => {
+    it('wrapped capture must not suppress unrelated global observations', () => {
       vi.useRealTimers();
       const plugin = new BrowserApiErrorsPlugin();
       activePlugin = plugin;
@@ -463,7 +464,7 @@ describe('BrowserApiErrorsPlugin', () => {
         // expected
       }
 
-      expect(shouldIgnoreOnError()).toBe(true);
+      expect(shouldIgnoreOnError()).toBe(false);
     });
   });
 

@@ -328,7 +328,7 @@ export class PerformancePlugin implements AemeathPlugin {
       }
 
       this.clsSessionValue += entry.value;
-      this.clsSessionEntries.push(now);
+      if (this.clsSessionEntries.length < 100) this.clsSessionEntries.push(now);
       this.clsLastEntryTime = now;
     });
   }

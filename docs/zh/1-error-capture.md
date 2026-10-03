@@ -7,12 +7,12 @@
 `initAemeath()` 默认启用 `ErrorCapturePlugin`，无需额外配置：
 
 ```typescript
-import { initAemeath, getAemeath } from 'aemeath-js';
+import { initAemeath, getAemeath, classifyHttpUploadResponse } from 'aemeath-js';
 
 initAemeath({
   upload: async (log) => {
     const res = await fetch('/api/logs', { method: 'POST', body: JSON.stringify(log) });
-    return { success: res.ok };
+    return classifyHttpUploadResponse(res.status, res.headers.get('Retry-After'));
   },
 });
 
@@ -33,7 +33,7 @@ logger.use(new ErrorCapturePlugin());
 - 全局 JS 错误
 - Promise 未处理错误
 - 资源加载失败
-- **回调函数内的错误**（通过 `BrowserApiErrorsPlugin` 增强捕获，解决 WebView 中 "Script error." 问题）
+- 启用 `BrowserApiErrorsPlugin` 后，还可在其覆盖的回调入口取得原始异常；它不能恢复浏览器从未暴露的错误细节。
 
 ---
 
@@ -67,7 +67,6 @@ initAemeath({
 - 路由支持三种匹配模式：精确字符串、正则表达式、函数 `(path: string) => boolean`。
 - 如果只设置了 `excludeRoutes`，则排除的路由之外都会被监控。
 - 如果只设置了 `includeRoutes`，则只监控这些路由。
-- 小程序路由使用不同格式（例如 `pages/index/index` 而非 `/index`）。
 
 ### ErrorCapturePluginOptions
 
@@ -239,11 +238,11 @@ logger.use(new ErrorCapturePlugin());
 
 ### 去重机制
 
-当 try-catch 捕获到错误后，错误仍会被 re-throw（保持原始行为）。此时 `window.onerror` 也会收到同一个错误。插件内部通过协调机制自动去重，确保同一个错误只被上报一次。
+当 try-catch 捕获到错误后，错误仍会被 re-throw（保持原始行为）。此时 `window.onerror` 也会收到同一个错误。两条观测保留独立 occurrenceId；同一原始对象通过 errorObjectId 关联，不按一个时间窗口吞掉后续全局异常。
 
 ### 注意事项
 
-- 此插件仅在浏览器环境生效，小程序环境自动跳过
+- 此插件用于浏览器环境
 - 不影响 `fetch` 请求错误（fetch 错误通过 Promise rejection 捕获，已被 `ErrorCapturePlugin` 覆盖）
 - 卸载插件后所有 API 会恢复为原始实现
 
@@ -254,3 +253,103 @@ logger.use(new ErrorCapturePlugin());
 - [早期错误捕获](./2-early-error-capture.md)
 - [Source Map 解析](./3-sourcemap-parser.md)
 - [上传插件](./4-upload-plugin.md)
+
+
+## 异常证据协议
+
+沿用现有 `initAemeath` / `ErrorCapturePlugin` 配置即可，无需新增开关。自动捕获的日志会提供
+`entry.error.evidence`；排查时先查看原始消息 `entry.error.value`，再根据栈来源决定是否解析。
+具体用法见[按证据来源解析](./3-sourcemap-parser.md#按证据来源解析)。
+
+`error.evidence.schemaVersion = 1` 区分捕获渠道、早期/运行期阶段、原始名称、reason 类型和栈来源。
+`error.stack` 仅保存输入携带的原始栈；已知补造栈放在 `evidence.captureStack`，无栈错误不会自动补造 Error。
+`stackOrigin` 为 `original`、`capture-site` 或 `unavailable`。`Script error.` 加空位置时标记
+`missingStackReason: 'browser-redacted'`，这不是某个 CDN/CORS 配置出错的根因证明。
+原始栈也可能是异常创建位置，不保证就是最后一次 throw 的位置。
+
+兼容期间 `error.type`、日志消息、级别及 `tags.errorCategory` 保持既有捕获分类；真实名称查看
+`evidence.originalName`。SDK 不向原始 Error 写入 `type/source` 等属性。`errorFilter` 收到原始
+Error（包括跨 realm Error），保留旧配置的引用、`instanceof` 和自定义异常方法判断；过滤器显式
+修改/脱敏后的内容用于构建最终快照。非 Error 输入仍提供兼容的 Error 参数；仅为过滤器创建的
+栈不会成为上报的原始栈。过滤器抛错时沿用旧版继续采集的行为。
+
+每次观测保留独立 `occurrenceId`；同一运行时对象通过 `errorObjectId` 关联。包含此协议的错误绕过
+捕获和上传的按内容去重，因此重复次数由实际记录体现。对象身份不是根因身份，也不表示业务恢复。
+相比旧版，错误事件量可能增加；限流仍由 SafeGuard 和用户策略决定。不要用 captureStack 聚合业务事故。
+
+跨 realm Error 和普通拒绝对象、DOMException、冻结对象、primitive rejection 和有界 cause/errors 均可规范化。
+主 message、原始 stack 和结构化原始 `stacktrace.frames` 的全部帧保留，由已有 PayloadSanitize 拆分或拒绝。
+定位、分类、采集时间和设备元数据也独立于诊断大小/数量预算；快照仍防御读取异常、循环和过深嵌套。
+console 捕获保留 `tags.source = 'console'` 和 `context.consoleArgs` 全部参数，其中被选中的 Error
+使用捕获快照；其他上下文沿用现有载荷清洗规则。诊断图和扩展字段共享 8 KiB 字符串
+UTF-8 预算、128 节点、4 层、数组 8 项、对象 32 项限制（根扩展最多 40 项）。预算不是最终 JSON
+载荷大小，额外结构开销仍由 PayloadSanitize 处理。截断、循环和读取失败写入
+`evidence.normalization.issues`，不调用任意 toJSON/toString，不遍历 DOM/Bridge 实例字段。
+脱敏仍需通过 beforeSend 设置，并覆盖新增 evidence/cause/errors 字段。
+
+`[circular]`、`[truncated]`、`[unreadable]` 是结构性诊断标记，不占采集字符串内容预算，
+重复规范化时保持完整。键名只能完整保留或整项省略并标记，不能裁短；SDK 元数据不占根扩展名额。
+明确的早期/global/rejection/resource 来源优先决定类别；wrapped 和 console 观测使用 `manual`。
+manual/未知渠道为兼容保留旧分类规则，业务显式设置的 `tags.errorCategory` 仍优先。
+
+缺少字符串 message/value 的对象拒绝原因统一从 `error.reason` 读取，`error.value` 由这份快照生成；
+其诊断字段不再重复复制到 error 根层，避免同一输入被遍历和计费两次。SDK 元数据仍单独保留。
+Error 实例（包括其他 realm 的 Error 子类）的自有扩展字段继续保留在 error 根层。
+
+`getCaptureDiagnostics()` 返回当前模块实例的采集失败累计数和最后失败渠道；不递归写 logger 或 console。
+这是进程内诊断，不会自动上传。已有显式 `_isAemeathInternalError` 标记仍可排除内部事件，普通消息
+包含 SDK 前缀或栈经过 aemeath 不再被自动丢弃。
+
+后台升级时先兼容 evidence 和无 stack 的合法错误，再接入新版 SDK。已有缓存可继续上报；缺少证据的
+历史记录不自动认定为原始栈。Promise 的后续处理保持浏览器原行为；本版本没有自动业务恢复推断，
+也没有 beginOperation 或 rejectionhandled 状态上报 API。
+
+### 手动处理 unknown：normalizeCapturedError
+
+自动捕获以及 `logger.error(..., { error: new Error(...) })` 已执行规范化，无需再调用。
+当自己的 `catch` 收到 `unknown`，或自定义采集器需要安全的 `ErrorInfo` 时，使用
+`normalizeCapturedError(input, options?)`。它只创建快照，不主动上报，也不修改输入。
+返回的 `ErrorInfo` 可直接交给 `logger.error`；字符串或普通对象没有原始栈时，不会补造业务栈。
+
+```typescript
+import { normalizeCapturedError, type AemeathInterface } from 'aemeath-js';
+
+export function reportCaughtError(logger: AemeathInterface, reason: unknown) {
+  const error = normalizeCapturedError(reason, { channel: 'manual' });
+  logger.error('Operation failed', { error });
+  return error;
+}
+```
+
+`ErrorEvidenceOptions` 与 `ErrorEvidence` 类型均可从 `aemeath-js` 导入：
+
+| 选项 | 用法 |
+| --- | --- |
+| `channel` | 捕获来源，如 `manual`、`global`、`unhandledrejection`、`wrapped`、`console`、`resource`；原始输入默认 `manual`。 |
+| `phase` | `runtime` 或 `early`；原始输入默认 `runtime`。 |
+| `message` | 没有字符串 `value`/`message` 时的兜底消息，不覆盖已有消息。 |
+| `synthetic` | 仅当调用方知道输入栈是人为补造的采集栈时设为 `true`；该栈进入 `evidence.captureStack`，不作为 `error.stack`。 |
+| `source` / `line` / `column` | 保存浏览器报告的位置；不能代替原始堆栈，也不会生成可映射的栈帧。 |
+
+已有规范化快照再次传入时，默认沿用来源/阶段和 `occurrenceId`；显式选项可以覆盖来源/阶段。
+同一个原始对象重新捕获会共享 `errorObjectId`，但各次观测有独立 `occurrenceId`。
+对象原因的业务字段从 `error.reason` 读取；`error.value` 是便于展示的摘要。
+
+### 读取采集状态：getCaptureDiagnostics
+
+```typescript
+import { getCaptureDiagnostics } from 'aemeath-js';
+
+export function readCaptureHealth() {
+  const { failures, lastChannel } = getCaptureDiagnostics();
+  return { failures, lastChannel };
+}
+```
+
+返回 `Readonly<{ failures: number; lastChannel?: string }>`。`failures` 是当前加载的 SDK
+模块内、被采集隔离层拦住的异常累计数，**不是业务报错次数**；还没有失败时为 0，
+`lastChannel` 为 `undefined`。读取不会清零，也不会发送网络请求；不同 SDK 副本的计数不合并。
+单个字段读取失败可能只写入 `error.evidence.normalization.issues`，不一定增加此计数。
+初始化前的脚本诊断单独查看 `window.__AEMEATH_EARLY_CAPTURE_FAILURES__`。
+
+可复制示例：[with-evidence.ts](https://github.com/TieriaSail/aemeath-js/blob/main/examples/1-error-capture/with-evidence.ts)。

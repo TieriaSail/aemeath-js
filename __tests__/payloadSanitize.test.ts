@@ -407,10 +407,8 @@ describe('恶意与畸形输入', () => {
     expect(() => JSON.stringify(result.entries)).not.toThrow();
   });
 
-  it('清洗器只额外读一次 getter', () => {
-    // 2 = 遍历读 1 次 + 末尾算体积时 JSON.stringify 读 1 次。后者无法避免。
-    // 盯住这个数是为了防止遍历里再冒出"读一次比较、再读一次赋值"的写法：
-    // 带副作用或惰性计算的 getter（典型如 DOM 测量）会因此被多跑几遍。
+  it('清洗器将 getter 快照化，体积检查不重复读取', () => {
+    // 遍历只读一次；后续体积检查和上传使用普通数据属性快照。
     let reads = 0;
     const ctx: Record<string, unknown> = {};
     Object.defineProperty(ctx, 'lazy', {
@@ -424,7 +422,7 @@ describe('恶意与畸形输入', () => {
       { logId: 'L', level: 'info', message: 'm', timestamp: Date.now(), context: ctx } as never,
       {},
     );
-    expect(reads).toBe(2);
+    expect(reads).toBe(1);
   });
 
   it('拆分不能丢掉骨架白名单之外的顶层字段', () => {

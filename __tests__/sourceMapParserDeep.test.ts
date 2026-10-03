@@ -237,11 +237,12 @@ describe('SourceMapParser Deep - 混淆代码解析', () => {
         sourceMapBaseUrl: 'https://cdn.example.com/sourcemaps/dist/1.0.0',
       });
 
+      // 浏览器栈列号从 1 开始；上述 SourceMap generated.column 从 0 开始。
       // 模拟混淆后的错误堆栈
       const stack = [
         'Error: Cart total must be positive',
-        '    at n (https://cdn.example.com/static/js/app.min.abc.js:1:200)',
-        '    at t (https://cdn.example.com/static/js/app.min.abc.js:1:120)',
+        '    at n (https://cdn.example.com/static/js/app.min.abc.js:1:201)',
+        '    at t (https://cdn.example.com/static/js/app.min.abc.js:1:121)',
       ].join('\n');
 
       const result = await parser.parse(stack);
@@ -278,7 +279,7 @@ describe('SourceMapParser Deep - 混淆代码解析', () => {
 
       const stack =
         'Error: test\n' +
-        '    at n (https://cdn.example.com/static/js/app.min.abc.js:1:200)';
+        '    at n (https://cdn.example.com/static/js/app.min.abc.js:1:201)';
 
       const result = await parser.parse(stack);
       const frame = result.frames[1]!;
@@ -311,9 +312,9 @@ describe('SourceMapParser Deep - 混淆代码解析', () => {
       // 堆栈包含两个不同源文件的错误
       const stack = [
         'Error: User 123 not found',
-        '    at e (https://cdn.example.com/static/js/bundle.min.abc.js:1:350)',
-        '    at r (https://cdn.example.com/static/js/bundle.min.abc.js:1:200)',
-        '    at t (https://cdn.example.com/static/js/bundle.min.abc.js:1:80)',
+        '    at e (https://cdn.example.com/static/js/bundle.min.abc.js:1:351)',
+        '    at r (https://cdn.example.com/static/js/bundle.min.abc.js:1:201)',
+        '    at t (https://cdn.example.com/static/js/bundle.min.abc.js:1:81)',
       ].join('\n');
 
       const result = await parser.parse(stack);
@@ -355,9 +356,9 @@ describe('SourceMapParser Deep - 混淆代码解析', () => {
 
       const stack = [
         'Error: Network request failed',
-        '    at a.c (https://cdn.example.com/static/js/app.min.abc.js:1:150)',
-        '    at a (https://cdn.example.com/static/js/app.min.abc.js:1:100)',
-        '    at new a (https://cdn.example.com/static/js/app.min.abc.js:1:30)',
+        '    at a.c (https://cdn.example.com/static/js/app.min.abc.js:1:151)',
+        '    at a (https://cdn.example.com/static/js/app.min.abc.js:1:101)',
+        '    at new a (https://cdn.example.com/static/js/app.min.abc.js:1:31)',
       ].join('\n');
 
       const result = await parser.parse(stack);
@@ -401,9 +402,9 @@ describe('SourceMapParser Deep - 混淆代码解析', () => {
       const stack = [
         'Error: Something went wrong',
         // 本域资源 → 应解析
-        '    at n (https://cdn.example.com/static/js/app.min.abc.js:1:0)',
+        '    at n (https://cdn.example.com/static/js/app.min.abc.js:1:1)',
         // 第三方 CDN → 不应解析
-        '    at Object.dispatch (https://unpkg.com/react-dom@18/umd/react-dom.production.min.js:1:5000)',
+        '    at Object.dispatch (https://unpkg.com/react-dom@18/umd/react-dom.production.min.js:1:5001)',
         // Chrome 扩展 → 不应解析
         '    at chrome-extension://abc123/content.js:5:10',
       ].join('\n');
@@ -435,7 +436,7 @@ describe('SourceMapParser Deep - 混淆代码解析', () => {
 
       const stack =
         'Error: test\n' +
-        '    at fn (https://cdn.example.com/static/js/app.abc.js:1:100)';
+        '    at fn (https://cdn.example.com/static/js/app.abc.js:1:101)';
 
       const result = await parser.parse(stack);
 
@@ -457,7 +458,7 @@ describe('SourceMapParser Deep - 混淆代码解析', () => {
 
       const stack =
         'Error: test\n' +
-        '    at fn (https://cdn.example.com/static/js/app.abc.js:1:100)';
+        '    at fn (https://cdn.example.com/static/js/app.abc.js:1:101)';
 
       const result = await parser.parse(stack);
 
@@ -486,10 +487,10 @@ describe('SourceMapParser Deep - 混淆代码解析', () => {
       // 多个帧引用同一个文件
       const stack = [
         'Error: test',
-        '    at a (https://cdn.example.com/static/js/app.min.abc.js:1:0)',
-        '    at b (https://cdn.example.com/static/js/app.min.abc.js:1:50)',
-        '    at c (https://cdn.example.com/static/js/app.min.abc.js:1:120)',
-        '    at d (https://cdn.example.com/static/js/app.min.abc.js:1:200)',
+        '    at a (https://cdn.example.com/static/js/app.min.abc.js:1:1)',
+        '    at b (https://cdn.example.com/static/js/app.min.abc.js:1:51)',
+        '    at c (https://cdn.example.com/static/js/app.min.abc.js:1:121)',
+        '    at d (https://cdn.example.com/static/js/app.min.abc.js:1:201)',
       ].join('\n');
 
       await parser.parse(stack);
@@ -517,7 +518,7 @@ describe('SourceMapParser Deep - 混淆代码解析', () => {
       // 指向第 14 行（throw new Error）
       const stack =
         'Error: test\n' +
-        '    at n (https://cdn.example.com/static/js/app.min.abc.js:1:200)';
+        '    at n (https://cdn.example.com/static/js/app.min.abc.js:1:201)';
 
       const result = await parser.parse(stack);
       const frame = result.frames[1]!;
@@ -558,7 +559,7 @@ describe('SourceMapParser Deep - 混淆代码解析', () => {
 
       const stack =
         'Error: test\n' +
-        '    at n (https://cdn.example.com/static/js/app.min.abc.js:1:0)';
+        '    at n (https://cdn.example.com/static/js/app.min.abc.js:1:1)';
 
       const result = await parser.parse(stack);
       const frame = result.frames[1]!;

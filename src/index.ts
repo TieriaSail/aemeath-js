@@ -144,3 +144,7 @@ export {
 } from './singleton';
 
 export type { AemeathInitOptions, ErrorCaptureConfig, RouteMatchConfig } from './singleton';
+
+export { getCaptureDiagnostics } from './utils/captureGuard';
+export { normalizeCapturedError } from './utils/errorEvidence';
+export type { ErrorEvidence, ErrorEvidenceOptions } from './utils/errorEvidence';

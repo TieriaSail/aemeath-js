@@ -378,3 +378,35 @@ ameathEarlyErrorPlugin({
 - [Error Capture](./1-error-capture.md)
 - [Source Map Parser](./3-sourcemap-parser.md)
 - [Upload Plugin](./4-upload-plugin.md)
+
+
+## Early evidence parity
+
+Injected scripts and standalone `scripts/early-error.js` provide the same evidence metadata.
+Keep your existing capture configuration; no additional switch is required.
+The buffer retains legacy message/stack plus a normalized error snapshot. Fallback and handoff
+preserve occurrenceId and stack provenance. Older scripts remain compatible. Early listener
+failures increment `window.__AEMEATH_EARLY_CAPTURE_FAILURES__` without recursive logging or automatic upload.
+
+The early script blocks nested event capture while inspecting an error and rechecks capacity/lifecycle before enqueueing. If an application getter initializes Logger or requests a flush, handoff completes when the active capture exits, delivering that observation once. Ordinary flushes remain synchronous; maxErrors and existing fallback options are unchanged.
+
+### 1.x browser entry compatibility
+
+IIFE early records keep their existing `message`, `level`, and `context`: resource errors remain warn;
+runtime and Promise errors remain error. Standard `error` and `evidence` are added, `tags.source` is
+retained, and `tags.errorCategory` is early. Compatibility records are also forwarded at error level.
+The npm plugin keeps its `Early ${type} error` message. Consumers can read evidence from `entry.error`
+without replacing existing context queries. An absent original stack is valid.
+
+### CSP nonce
+
+The Vite, Webpack and Rsbuild early-script build plugins accept an optional `nonce`:
+
+```typescript
+import { ameathEarlyErrorPlugin } from 'aemeath-js/build-plugins/vite';
+export const earlyCapture = ameathEarlyErrorPlugin({ nonce: 'SERVER_NONCE_PLACEHOLDER' });
+```
+
+The example is a placeholder. Generate a nonce per response on the server and replace both the
+script attribute and matching CSP response header. Omitted or empty values add no nonce. In Webpack
+standalone file mode, set the nonce on the script tag that loads the generated file yourself.

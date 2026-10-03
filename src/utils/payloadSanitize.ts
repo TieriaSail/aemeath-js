@@ -292,6 +292,22 @@ function safeRead(source: Record<string, unknown>, key: string): { ok: boolean; 
   }
 }
 
+/** Accessors must become data properties before sizing or deferred upload. */
+function isStableDataProperty(source: object, key: string, value: unknown): boolean {
+  try {
+    let owner: object | null = source;
+    while (owner) {
+      const descriptor = Object.getOwnPropertyDescriptor(owner, key);
+      if (descriptor) return 'value' in descriptor && Object.is(descriptor.value, value);
+      owner = Object.getPrototypeOf(owner);
+    }
+    return value === undefined;
+  } catch {
+    // A descriptor/prototype trap must not bypass the already-read snapshot.
+    return false;
+  }
+}
+
 function safeKeys(source: object): string[] {
   try {
     return Object.keys(source);
@@ -321,6 +337,9 @@ function sanitizeValue(
   depth: number,
   state: WalkState,
   seen: Set<object>,
+  jsonKey: string = path,
+  serializationResult = false,
+  ownToJSON?: { value: unknown },
 ): unknown {
   if (typeof value === 'string') {
     if (isDataUrl(value)) {
@@ -371,22 +390,60 @@ function sanitizeValue(
     return placeholder(['circular']);
   }
 
-  // Date 等自带 toJSON 的对象保持原样，交给 JSON.stringify
-  try {
-    if (typeof (value as { toJSON?: unknown }).toJSON === 'function') {
-      return value;
+  // JSON.stringify invokes toJSON once at each property, not again on the
+  // returned value. Still sanitize that value and its normally serialized children.
+  let snapshotRequired = serializationResult;
+  if (!serializationResult) {
+    let toJSON: unknown;
+    try { toJSON = (value as { toJSON?: unknown }).toJSON; }
+    catch {
+      recordStrip(state, { path, kind: 'unserializable', bytes: 0 });
+      return placeholder(['unserializable']);
     }
-  } catch {
-    recordStrip(state, { path, kind: 'unserializable', bytes: 0 });
-    return placeholder(['unserializable']);
+    snapshotRequired = !isStableDataProperty(value, 'toJSON', toJSON);
+    ownToJSON = { value: toJSON };
+    if (typeof toJSON === 'function') {
+      let json: unknown;
+      try { json = toJSON.call(value, jsonKey); }
+      catch {
+        recordStrip(state, { path, kind: 'unserializable', bytes: 0 });
+        return placeholder(['unserializable']);
+      }
+      return sanitizeValue(json, path, depth, state, seen, jsonKey, true,
+        json === value ? { value: toJSON } : undefined);
+    }
   }
-
+  if (serializationResult) {
+    // JSON unboxes primitive wrappers after toJSON. Use native slot checks so
+    // foreign-realm wrappers work and Symbol.toStringTag cannot spoof a box.
+    const unboxers = [
+      () => Number.prototype.valueOf.call(value),
+      () => String.prototype.valueOf.call(value),
+      () => Boolean.prototype.valueOf.call(value),
+      () => BigInt.prototype.valueOf.call(value),
+    ];
+    for (let i = 0; i < unboxers.length; i++) {
+      let primitive: unknown;
+      try { primitive = unboxers[i]!(); } catch { continue; }
+      try {
+        // Number/String wrappers use their ordinary primitive conversion;
+        // Boolean/BigInt use the internal value, matching JSON.stringify.
+        if (i === 0) primitive = Number(value);
+        if (i === 1) primitive = String(value);
+        return sanitizeValue(primitive, path, depth, state, seen, jsonKey, true);
+      } catch {
+        recordStrip(state, { path, kind: 'unserializable', bytes: 0 });
+        return placeholder(['unserializable']);
+      }
+    }
+  }
   seen.add(value);
   try {
     if (Array.isArray(value)) {
-      let changed = false;
-      const next: unknown[] = new Array(value.length);
-      for (let i = 0; i < value.length; i++) {
+      let changed = snapshotRequired;
+      const length = value.length;
+      const next: unknown[] = new Array(length);
+      for (let i = 0; i < length; i++) {
         const read = safeRead(value as unknown as Record<string, unknown>, String(i));
         if (!read.ok) {
           recordStrip(state, { path: `${path}[${i}]`, kind: 'unserializable', bytes: 0 });
@@ -394,31 +451,31 @@ function sanitizeValue(
           changed = true;
           continue;
         }
-        const sanitized = sanitizeValue(read.value, `${path}[${i}]`, depth + 1, state, seen);
+        const sanitized = sanitizeValue(read.value, `${path}[${i}]`, depth + 1, state, seen, String(i));
         next[i] = sanitized;
-        if (sanitized !== read.value) changed = true;
+        if (sanitized !== read.value || !isStableDataProperty(value, String(i), read.value)) changed = true;
       }
       return changed ? next : value;
     }
 
     const source = value as Record<string, unknown>;
-    let changed = false;
+    let changed = snapshotRequired;
     const next: Record<string, unknown> = {};
     for (const key of safeKeys(source)) {
       const childPath = path ? `${path}.${key}` : key;
-      // 只读一次：重复读会让带副作用 / 惰性计算的 getter 多跑几遍，
-      // 也会让每次返回新对象的 getter（`get items() { return [...] }`）
-      // 恒等比较永远为假，白白退化掉 copy-on-write
-      const read = safeRead(source, key);
+      // Cache toJSON too: it may be an enumerable accessor already read above.
+      const read = key === 'toJSON' && ownToJSON ? { ok: true, value: ownToJSON.value } : safeRead(source, key);
+      // A callable toJSON on the returned object must not run during upload.
+      if (serializationResult && key === 'toJSON' && read.ok && typeof read.value === 'function') continue;
       if (!read.ok) {
         recordStrip(state, { path: childPath, kind: 'unserializable', bytes: 0 });
         setSafe(next, key, placeholder(['unserializable']));
         changed = true;
         continue;
       }
-      const sanitized = sanitizeValue(read.value, childPath, depth + 1, state, seen);
+      const sanitized = sanitizeValue(read.value, childPath, depth + 1, state, seen, key);
       setSafe(next, key, sanitized);
-      if (sanitized !== read.value) changed = true;
+      if (sanitized !== read.value || !isStableDataProperty(source, key, read.value)) changed = true;
     }
     return changed ? next : value;
   } finally {
@@ -769,27 +826,37 @@ export function sanitizeLogEntry(
   const state: WalkState = { strips: [], budget: WALK_NODE_BUDGET };
   const seen = new Set<object>();
 
-  let sanitized = entry;
-  const nextMessage = sanitizeValue(entry.message, 'message', 1, state, seen);
-  const nextError = entry.error
-    ? sanitizeValue(entry.error, 'error', 1, state, seen)
-    : entry.error;
-  const nextTags = entry.tags ? sanitizeValue(entry.tags, 'tags', 1, state, seen) : entry.tags;
-  const nextContext = entry.context
-    ? sanitizeValue(entry.context, 'context', 1, state, seen)
-    : entry.context;
+  // Capture top-level accessors once as well. Spread/conditional field reads
+  // would otherwise re-enter them before the nested sanitizer even runs.
+  const fields: Record<string, unknown> = {};
+  let changed = false;
+  for (const key of safeKeys(entry)) {
+    const read = safeRead(entry as unknown as Record<string, unknown>, key);
+    setSafe(fields, key, read.ok ? read.value : placeholder(['unserializable']));
+    if (!read.ok) recordStrip(state, { path: key, kind: 'unserializable', bytes: 0 });
+    if (!read.ok || !isStableDataProperty(entry, key, read.value)) changed = true;
+  }
+  const snapshot = fields as unknown as LogEntry;
+  let sanitized = changed ? snapshot : entry;
+  const nextMessage = sanitizeValue(snapshot.message, 'message', 1, state, seen);
+  const nextError = sanitizeValue(snapshot.error, 'error', 1, state, seen);
+  const nextTags = sanitizeValue(snapshot.tags, 'tags', 1, state, seen);
+  const nextContext = sanitizeValue(snapshot.context, 'context', 1, state, seen);
 
   if (
-    nextMessage !== entry.message ||
-    nextError !== entry.error ||
-    nextTags !== entry.tags ||
-    nextContext !== entry.context
+    nextMessage !== snapshot.message ||
+    nextError !== snapshot.error ||
+    nextTags !== snapshot.tags ||
+    nextContext !== snapshot.context
   ) {
-    sanitized = { ...entry };
+    sanitized = snapshot;
     sanitized.message = typeof nextMessage === 'string' ? nextMessage : String(nextMessage);
-    if (nextError !== undefined) sanitized.error = nextError as LogEntry['error'];
-    if (nextTags !== undefined) sanitized.tags = nextTags as LogTags;
-    if (nextContext !== undefined) sanitized.context = nextContext as LogEntry['context'];
+    if (nextError === undefined) delete sanitized.error;
+    else sanitized.error = nextError as LogEntry['error'];
+    if (nextTags === undefined) delete sanitized.tags;
+    else sanitized.tags = nextTags as LogTags;
+    if (nextContext === undefined) delete sanitized.context;
+    else sanitized.context = nextContext as LogEntry['context'];
   }
 
   let totalBytes = jsonBytes(sanitized);

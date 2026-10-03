@@ -1,3 +1,5 @@
+import { ignoreAsyncResult } from '../utils/ignoreAsyncResult';
+import { normalizeCapturedError } from '../utils/errorEvidence';
 /**
  * AemeathJs 核心（参考 Sentry 设计）
  */
@@ -142,14 +144,14 @@ export class AemeathLogger implements AemeathInterface {
   /** 内部调试日志 */
   private debugLog(...args: unknown[]): void {
     if (this.debugEnabled) {
-      console.log('[Aemeath]', ...args);
+      this.withConsoleOutput(console => console.log('[Aemeath]', ...args));
     }
   }
 
   /** 内部警告日志 */
   private debugWarn(...args: unknown[]): void {
     if (this.debugEnabled) {
-      console.warn('[Aemeath]', ...args);
+      this.withConsoleOutput(console => console.warn('[Aemeath]', ...args));
     }
   }
 
@@ -184,10 +186,17 @@ export class AemeathLogger implements AemeathInterface {
         if (result === false) {
           return;
         }
-        if (result && typeof result === 'object' && 'level' in result) {
-          currentLevel = result.level;
-          currentMessage = result.message;
-          currentOptions = result.options;
+        if (result && typeof result === 'object') {
+          // Read once and commit atomically: getters may throw or change values.
+          const nextLevel = result.level;
+          const nextMessage = result.message;
+          const nextOptions = result.options;
+          if (Object.values(LogLevelEnum).includes(nextLevel) && typeof nextMessage === 'string' &&
+              nextOptions !== null && typeof nextOptions === 'object') {
+            currentLevel = nextLevel;
+            currentMessage = nextMessage;
+            currentOptions = nextOptions;
+          }
         }
       } catch (err) {
         this.debugWarn(`Plugin "${plugin.name}" beforeLog error:`, err);
@@ -223,55 +232,61 @@ export class AemeathLogger implements AemeathInterface {
       // 本轮被拦掉的分片所属的分组
       let suppressedSplitIds: Set<string> | null = null;
       for (const current of entries) {
-        let result: AfterLogResult;
+        // A callback result is not committed until its fields/iterator finish reading.
+        // Roll back only this input if inspection fails after producing partial output.
+        const nextStart = next.length;
+        let explicitlyFiltered = false;
         try {
-          result = plugin.afterLog(current);
-        } catch (err) {
-          this.debugWarn(`Plugin "${plugin.name}" afterLog error:`, err);
-          next.push(current);
-          continue;
-        }
-
-        if (result === false) {
-          // 拦掉的是某个分片 → 记下分组，稍后把同组其余分片一起拦掉。
-          //
-          // 用户写 beforeSend 时想的是"这条日志不要发"，可拆分之后钩子是按分片
-          // 逐个调用的：只拦住带敏感字段的那一片，另外两片照发不误，
-          // 既漏了数据又在后端留下拼不回来的碎片。
-          const splitId = getSdkSplitId(current);
-          if (splitId !== undefined) {
-            (suppressedSplitIds ??= new Set()).add(splitId);
+          const result: AfterLogResult = plugin.afterLog(current);
+          if (result === false || (Array.isArray(result) && result.length === 0)) {
+            explicitlyFiltered = true;
+            // false 和空数组都表示拦截；若为分片，整组一起拦截。
+            //
+            // 用户写 beforeSend 时想的是"这条日志不要发"，可拆分之后钩子是按分片
+            // 逐个调用的：只拦住带敏感字段的那一片，另外两片照发不误，
+            // 既漏了数据又在后端留下拼不回来的碎片。
+            const splitId = getSdkSplitId(current);
+            if (splitId !== undefined) {
+              (suppressedSplitIds ??= new Set()).add(splitId);
+            }
+            continue;
           }
-          continue;
-        }
 
-        if (Array.isArray(result)) {
-          let kept = 0;
-          for (const item of result) {
-            if (this.isValidEntry(item)) {
-              next.push(item);
-              kept++;
+          if (Array.isArray(result)) {
+            let kept = 0;
+            for (const item of result) {
+              if (this.isValidEntry(item)) {
+                next.push(item);
+                kept++;
+              } else {
+                this.warnInvalidAfterLog(plugin.name);
+              }
+            }
+            // 插件想拆分却拆出了一堆坏数据：保住原件，别让日志凭空消失。
+            // （返回空数组是明确的"丢弃"意图，不在此列。）
+            if (kept === 0 && result.length > 0) next.push(current);
+            continue;
+          }
+
+          if (result && typeof result === 'object') {
+            if (this.isValidEntry(result)) {
+              next.push(result);
             } else {
               this.warnInvalidAfterLog(plugin.name);
+              next.push(current);
             }
+            continue;
           }
-          // 插件想拆分却拆出了一堆坏数据：保住原件，别让日志凭空消失。
-          // （返回空数组是明确的"丢弃"意图，不在此列。）
-          if (kept === 0 && result.length > 0) next.push(current);
-          continue;
-        }
 
-        if (result && typeof result === 'object') {
-          if (this.isValidEntry(result)) {
-            next.push(result);
-          } else {
-            this.warnInvalidAfterLog(plugin.name);
-            next.push(current);
-          }
-          continue;
+          next.push(current);
+        } catch (err) {
+          this.debugWarn(`Plugin "${plugin.name}" afterLog error:`, err);
+          // Filtering has already been requested. If its group cannot be identified,
+          // stop this log rather than restoring it or emitting an uncertain partial group.
+          if (explicitlyFiltered) return;
+          next.length = nextStart;
+          next.push(current);
         }
-
-        next.push(current);
       }
 
       entries = next;
@@ -337,23 +352,23 @@ export class AemeathLogger implements AemeathInterface {
   private warnFanoutCapped(pluginName: string, produced: number, kept: number): void {
     if (this.fanoutWarned) return;
     this.fanoutWarned = true;
-    if (typeof console !== 'undefined' && console.warn) {
+    this.withConsoleOutput(console => {
       console.warn(
         `[Aemeath] afterLog fan-out from plugin "${pluginName}" produced ${produced} entries `
           + `for a single log; kept ${kept} (cap ${MAX_FANOUT_ENTRIES}, split groups kept intact). `
           + 'This usually means a payload is far above the size budget. (This warning is shown once.)',
       );
-    }
+    });
   }
 
   private warnInvalidAfterLog(pluginName: string): void {
     // 与 beforeSend 非法返回值一致：始终 warn，避免生产环境静默坏数据
-    if (typeof console !== 'undefined' && console.warn) {
+    this.withConsoleOutput(console => {
       console.warn(
         `[Aemeath] Plugin "${pluginName}" afterLog returned an object without valid logId & level; `
           + 'ignored. Return false to drop the log, void/undefined to keep the previous entry.',
       );
-    }
+    });
   }
 
   /**
@@ -412,44 +427,26 @@ export class AemeathLogger implements AemeathInterface {
    * 标准化错误对象为 ErrorInfo
    */
   private normalizeError(error: Error | ErrorInfo): ErrorInfo {
-    // 如果已经是 ErrorInfo 格式（有 type+value 且非原生 Error），直接返回
-    if (!(error instanceof Error) && 'type' in error && 'value' in error) {
-      return error as ErrorInfo;
-    }
-
-    // 转换 Error 对象
-    const err = error as Error;
-    const errorInfo: ErrorInfo = {
-      type: err.name || 'Error',
-      value: err.message || String(err),
-    };
-
-    // 添加堆栈
-    if (err.stack) {
-      errorInfo.stack = err.stack;
-    }
-
-    // 复制所有自定义属性
-    Object.keys(err).forEach((key) => {
-      if (!['message', 'name', 'stack'].includes(key)) {
-        errorInfo[key] = (err as any)[key];
-      }
-    });
-
-    // 复制不可枚举属性
-    Object.getOwnPropertyNames(err).forEach((key) => {
-      if (!['message', 'name', 'stack'].includes(key) && !(key in errorInfo)) {
-        errorInfo[key] = (err as any)[key];
-      }
-    });
-
-    return errorInfo;
+    return normalizeCapturedError(error);
   }
 
   /**
    * 自动识别错误类别
    */
   private identifyErrorCategory(errorInfo: ErrorInfo): ErrorCategory {
+    // A generic object reason can come from synchronous hooks too. Prefer
+    // explicit capture provenance to legacy reason/location heuristics.
+    if (errorInfo.evidence?.schemaVersion === 1) {
+      if (errorInfo.evidence.capturePhase === 'early') return ErrorCategory.EARLY;
+      switch (errorInfo.evidence.captureChannel) {
+        case 'global': return ErrorCategory.GLOBAL;
+        case 'unhandledrejection': return ErrorCategory.PROMISE;
+        case 'resource': return ErrorCategory.RESOURCE;
+        case 'wrapped':
+        case 'console': return ErrorCategory.MANUAL;
+      }
+    }
+    // Manual/unknown channels and older shapes retain their existing rules.
     // 早期错误
     if (errorInfo.earlyError === true) {
       return ErrorCategory.EARLY;
@@ -494,16 +491,14 @@ export class AemeathLogger implements AemeathInterface {
           const result = updater(context, partialEntry);
           if (result && typeof result === 'object') {
             // 拒绝异步 updater：thenable 会作为对象被 spread 进去，污染 context
-            const maybeThenable = result as { then?: unknown };
-            if (typeof maybeThenable.then === 'function') {
-              if (!this.asyncContextWarned.has(key)
-                  && typeof console !== 'undefined' && console.warn) {
+            if (ignoreAsyncResult(result)) {
+              if (!this.asyncContextWarned.has(key)) {
                 this.asyncContextWarned.add(key);
-                console.warn(
+                this.withConsoleOutput(console => console.warn(
                   `[Aemeath] Dynamic context updater "${key}" returned a Promise / thenable; `
                     + 'updaters must be synchronous. The async result was ignored. '
                     + '(This warning is shown once per key.)',
-                );
+                ));
               }
             } else {
               context = { ...context, ...result };
@@ -518,28 +513,36 @@ export class AemeathLogger implements AemeathInterface {
     return context;
   }
 
-  /**
-   * 输出到控制台
-   */
-  private outputToConsole(entry: LogEntry): void {
-    const timestamp = new Date(entry.timestamp).toISOString();
-    const prefix = `[${timestamp}] [${entry.level.toUpperCase()}]`;
-
-    const consoleMethod = ({
-      [LogLevelEnum.DEBUG]: console.debug,
-      [LogLevelEnum.INFO]: console.info,
-      [LogLevelEnum.TRACK]: console.info,
-      [LogLevelEnum.WARN]: console.warn,
-      [LogLevelEnum.ERROR]: console.error,
-    } as Record<string, typeof console.log>)[entry.level] ?? console.log;
-
+  /** Console output is best-effort; host bridges must never interrupt delivery or cleanup. */
+  private withConsoleOutput(output: (host: Console) => void): void {
     runWithoutConsoleCapture(() => {
-      consoleMethod(prefix, entry.message);
+      try {
+        if (typeof console !== 'undefined') output(console);
+      } catch {
+        // Do not report a console failure through that same console.
+      }
+    });
+  }
+
+  private outputToConsole(entry: LogEntry): void {
+    this.withConsoleOutput(console => {
+      const timestamp = new Date(entry.timestamp).toISOString();
+      const prefix = `[${timestamp}] [${entry.level.toUpperCase()}]`;
+      const method = ({
+        [LogLevelEnum.DEBUG]: 'debug',
+        [LogLevelEnum.INFO]: 'info',
+        [LogLevelEnum.TRACK]: 'info',
+        [LogLevelEnum.WARN]: 'warn',
+        [LogLevelEnum.ERROR]: 'error',
+      } as const)[entry.level];
+      // Read only the selected method: an unrelated host getter can itself throw.
+      const consoleMethod = console[method] ?? console.log;
+      consoleMethod.call(console, prefix, entry.message);
       if (entry.error) {
-        consoleMethod('Error:', entry.error);
+        consoleMethod.call(console, 'Error:', entry.error);
       }
       if (entry.tags) {
-        consoleMethod('Tags:', entry.tags);
+        consoleMethod.call(console, 'Tags:', entry.tags);
       }
     });
   }
@@ -617,6 +620,8 @@ export class AemeathLogger implements AemeathInterface {
   // ==================== 插件系统 ====================
 
   public use(plugin: AemeathPlugin, options?: unknown): this {
+    // Destroy is terminal: teardown callbacks cannot create untracked resources.
+    if (this.destroyed) return this;
     if (this.plugins.has(plugin.name)) {
       this.debugWarn(`Plugin "${plugin.name}" is already installed`);
       return this;
@@ -630,8 +635,10 @@ export class AemeathLogger implements AemeathInterface {
       }
     }
 
+    let registered = false;
     try {
       plugin.install(this, options);
+      if (this.destroyed) return this;
       const priority = plugin.priority ?? 0;
       let insertAt = this.pluginInstances.length;
       for (let i = this.pluginInstances.length - 1; i >= 0; i--) {
@@ -642,15 +649,19 @@ export class AemeathLogger implements AemeathInterface {
         }
         insertAt = i;
       }
-      this.pluginInstances.splice(insertAt, 0, plugin);
-      this.plugins.set(plugin.name, {
+      // Finish external property reads before committing either registry.
+      const metadata: PluginMetadata = {
         name: plugin.name,
         version: plugin.version,
         priority,
         enabled: true,
         installedAt: Date.now(),
         options,
-      });
+      };
+      if (this.destroyed) return this;
+      this.pluginInstances.splice(insertAt, 0, plugin);
+      this.plugins.set(metadata.name, metadata);
+      registered = true;
       this.debugLog(`Plugin "${plugin.name}" installed (priority=${priority})`);
       // 与 plugin:uninstall 对称：OfflinePersistence 靠它在 Upload 被单独 remount
       // 后重新唤醒盘上补传（upload:resumed 不会在 install 时发出）。
@@ -661,6 +672,16 @@ export class AemeathLogger implements AemeathInterface {
     } catch (err) {
       this.debugWarn(`Failed to install plugin "${plugin.name}":`, err);
       return this;
+    } finally {
+      // destroy() cannot see an installation that has not been registered yet.
+      // Clean its resources even when install throws after destroying the host.
+      if (this.destroyed && !registered) {
+        try {
+          plugin.uninstall?.(this);
+        } catch (err) {
+          this.debugWarn(`Failed to clean interrupted plugin "${plugin.name}":`, err);
+        }
+      }
     }
 
     return this;
@@ -801,18 +822,20 @@ export class AemeathLogger implements AemeathInterface {
     }
 
     const idx = this.pluginInstances.findIndex((p) => p.name === name);
-    if (idx !== -1) {
-      const plugin = this.pluginInstances[idx]!;
+    const plugin = idx === -1 ? undefined : this.pluginInstances[idx];
+    // Commit registry removal before invoking host code. Nested uninstall must
+    // not remove a neighbour, and a replacement owns its own registration.
+    if (idx !== -1) this.pluginInstances.splice(idx, 1);
+    this.plugins.delete(name);
+    if (plugin) {
       try {
         plugin.uninstall?.(this);
       } catch (err) {
         this.debugWarn(`Plugin "${name}" uninstall error:`, err);
       }
-      this.pluginInstances.splice(idx, 1);
     }
 
     this.emit('plugin:uninstall', name);
-    this.plugins.delete(name);
     this.debugLog(`Plugin "${name}" uninstalled`);
     if (name === 'upload' || name === 'offline-persistence') {
       this.notifyDeliveryStatus();

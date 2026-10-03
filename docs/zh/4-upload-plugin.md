@@ -421,3 +421,14 @@ logger.getDeliveryStatus(); // 统一查看 queued/in-flight/parked/persisted
 
 **版本**：1.10.1
 **最后更新**：2026-08-11
+
+
+## 异常发生记录与内容去重
+
+`error.evidence.schemaVersion = 1` 的日志按独立发生保留，不参与上传队列的消息/栈内容去重。
+`occurrenceId` 关联一次观测，`errorObjectId` 关联运行时对象；都不替代 `logId` 的可靠投递身份。
+重试/补传沿用原 `logId` 和原 evidence。其余日志仍使用原有去重策略，SafeGuard 限流和
+payload 拆分/拒绝策略保持生效。业务脱敏应在 beforeSend 中覆盖新增字段。
+
+拆分日志按整个 `splitId` 分组判断：任一分片携带错误证据或补传来源，整组都豁免内容去重。
+已经部分投递的分组也豁免，避免携带错误证据的分片先成功后，剩余分片在后续重试时被误删。

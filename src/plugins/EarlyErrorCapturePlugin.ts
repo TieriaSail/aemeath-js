@@ -1,3 +1,5 @@
+import { forwardEarlyError } from '../utils/forwardEarlyError';
+import { runCapture } from '../utils/captureGuard';
 /**
  * 早期错误捕获插件
  *
@@ -16,6 +18,7 @@ export type { RouteMatchConfig } from '../utils/routeMatcher';
 export type { EarlyErrorScriptOptions } from '../build-plugins/early-error-script';
 
 export interface EarlyError {
+  error?: import('../types').ErrorInfo;
   type: 'error' | 'resource' | 'unhandledrejection' | 'compatibility';
   message: string;
   stack: string | null;
@@ -93,6 +96,7 @@ export class EarlyErrorCapturePlugin implements AemeathPlugin {
   private routeMatcher!: RouteMatcher;
   private readonly pluginRouteMatch: RouteMatchConfig | undefined;
   private logger: AemeathInterface | null = null;
+  private lifecycleEpoch = 0;
 
   constructor(options: EarlyErrorCaptureOptions = {}) {
     this.options = {
@@ -116,6 +120,7 @@ export class EarlyErrorCapturePlugin implements AemeathPlugin {
     }
 
     this.logger = logger;
+    this.lifecycleEpoch++;
     this.routeMatcher = RouteMatcher.compose(
       logger.routeMatcher,
       this.pluginRouteMatch,
@@ -125,19 +130,25 @@ export class EarlyErrorCapturePlugin implements AemeathPlugin {
   }
 
   public uninstall(): void {
+    this.lifecycleEpoch++;
     this.logger = null;
   }
 
   private flushEarlyErrors(): void {
+    const logger = this.logger;
+    const epoch = this.lifecycleEpoch;
+    if (!logger) return;
     if (typeof window === 'undefined') {
       return;
     }
 
     if (!this.routeMatcher.shouldCapture()) {
-      console.debug(
-        '[EarlyErrorCapture] 当前路由不在监控范围内，跳过早期错误上报:',
-        window.location.pathname,
-      );
+      try {
+        console.debug(
+          '[EarlyErrorCapture] 当前路由不在监控范围内，跳过早期错误上报:',
+          window.location.pathname,
+        );
+      } catch { /* Diagnostics must not prevent handoff or fallback cancellation. */ }
       const flushFn = (window as any).__flushEarlyErrors__;
       if (typeof flushFn === 'function') {
         flushFn(() => {});
@@ -154,33 +165,29 @@ export class EarlyErrorCapturePlugin implements AemeathPlugin {
     ).__flushEarlyErrors__;
 
     if (typeof flushFn !== 'function') {
-      console.warn(
-        '[EarlyErrorCapture] Early error capture script not found. Make sure to use the build plugin.',
-      );
+      try {
+        console.warn(
+          '[EarlyErrorCapture] Early error capture script not found. Make sure to use the build plugin.',
+        );
+      } catch { /* Host console may be unavailable. */ }
       return;
     }
 
     flushFn((errors: EarlyError[]) => {
-      if (!this.logger || errors.length === 0) {
+      if (this.logger !== logger || this.lifecycleEpoch !== epoch || errors.length === 0) {
         return;
       }
 
-      console.debug(`[EarlyErrorCapture] Flushed ${errors.length} early errors`);
+      try {
+        console.debug(`[EarlyErrorCapture] Flushed ${errors.length} early errors`);
+      } catch { /* Diagnostics must not consume the batch. */ }
 
-      errors.forEach((earlyError) => {
-        const err = new Error(earlyError.message || 'Early error');
-        (err as any).type = earlyError.type;
-        (err as any).stack = earlyError.stack;
-        (err as any).filename = earlyError.filename;
-        (err as any).lineno = earlyError.lineno;
-        (err as any).colno = earlyError.colno;
-        (err as any).source = earlyError.source;
-        (err as any).earlyError = true;
-        (err as any).captureTimestamp = earlyError.timestamp;
-        (err as any).device = earlyError.device;
-
-        this.logger!.error(`Early ${earlyError.type} error`, { error: err });
-      });
+      for (let index = 0; index < errors.length; index++) {
+        if (this.logger !== logger || this.lifecycleEpoch !== epoch) break;
+        // Read the item inside the boundary too: a poisoned array slot must not
+        // abort the remaining records after the early script has cleared its buffer.
+        runCapture('early', () => forwardEarlyError(logger, errors[index]!));
+      }
     });
   }
 

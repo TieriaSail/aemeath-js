@@ -17,6 +17,8 @@ import type {
 } from '../types';
 import { PluginPriority } from '../types';
 import { generateId } from '../utils/generateId';
+import { errorIdentity } from '../utils/errorIdentity';
+import { readUploadField, snapshotUploadResult, uploadErrorText } from '../utils/uploadCallback';
 import { getSdkSplitId } from '../utils/splitIdentity';
 import {
   beginIgnoreNetworkCapture,
@@ -506,11 +508,7 @@ const MAX_TIMER_DELAY_MS = 2_147_483_647;
 const UPLOAD_TIMEOUT_TAG = '__aemeathUploadTimeout';
 
 function isUploadTimeoutError(err: unknown): boolean {
-  return (
-    err != null &&
-    typeof err === 'object' &&
-    (err as Record<string, unknown>)[UPLOAD_TIMEOUT_TAG] === true
-  );
+  return readUploadField(err, UPLOAD_TIMEOUT_TAG) === true;
 }
 
 /** processQueue 自身崩溃后的最小重排间隔，防止热循环 */
@@ -556,19 +554,15 @@ function markInternalError(err: unknown): void {
  *
  * 想要确定性而不是启发式，在 `onUpload` 里显式返回 `retryReason`。
  */
-function isNetworkError(err: unknown): boolean {
+function isNetworkError(err: unknown, response: unknown, name: string, message: string): boolean {
   if (err == null) return false;
-  const e = err as { name?: unknown; message?: unknown; code?: unknown; response?: unknown };
+  // Reuse the response/name/message already read for HTTP classification.
+  if (response != null) return false;
 
-  // 异常上挂着 response/status → 服务端答复过了，链路是通的
-  if (e.response != null) return false;
-
-  const name = String(e.name ?? '');
   // fetch 的网络失败是 TypeError，但用户回调自身的编程错误同样通常是 TypeError。
   // 仅凭 name 会把 `Cannot read properties of undefined` 之类的 bug 当成断网，
   // 达到阈值后冻结整条队列。这里再要求常见 fetch 网络失败文案；无法确认时按
   // callback-error 有界重试，比无期限暂停更安全。
-  const message = String(e.message ?? '');
   if (
     name === 'TypeError' &&
     /(?:failed to fetch|fetch failed|networkerror when attempting to fetch resource|load failed|network request failed)/i.test(message)
@@ -579,7 +573,7 @@ function isNetworkError(err: unknown): boolean {
   if (name === 'TimeoutError') return true;
 
   // axios / node 风格的错误码
-  const code = String(e.code ?? '');
+  const code = uploadErrorText(readUploadField(err, 'code'), '');
   if (/^(ERR_NETWORK|ECONNABORTED|ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EAI_AGAIN)$/.test(code)) {
     return true;
   }
@@ -587,19 +581,15 @@ function isNetworkError(err: unknown): boolean {
   return isUploadTimeoutError(err);
 }
 
-function getHttpStatus(err: unknown): number | undefined {
-  if (err == null || typeof err !== 'object') return undefined;
-  const response = (err as { response?: unknown }).response;
+function getHttpStatus(response: unknown): number | undefined {
   if (response == null || typeof response !== 'object') return undefined;
-  const value = (response as { status?: unknown }).status;
+  const value = readUploadField(response, 'status');
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }
 
-function getHttpRetryAfter(err: unknown): string | undefined {
-  if (err == null || typeof err !== 'object') return undefined;
-  const response = (err as { response?: unknown }).response;
+function getHttpRetryAfter(response: unknown): string | undefined {
   if (response == null || typeof response !== 'object') return undefined;
-  const headers = (response as { headers?: unknown }).headers;
+  const headers = readUploadField(response, 'headers');
   if (headers == null || typeof headers !== 'object') return undefined;
   try {
     const getter = (headers as { get?: unknown }).get;
@@ -1014,14 +1004,14 @@ export class UploadPlugin implements AemeathPlugin {
   /** 调试日志（仅在 debug 模式输出） */
   private log(...args: unknown[]): void {
     if (this.debugEnabled) {
-      console.log('[UploadPlugin]', ...args);
+      try { console.log('[UploadPlugin]', ...args); } catch { /* diagnostic only */ }
     }
   }
 
   /** 警告日志（仅在 debug 模式输出） */
   private warn(...args: unknown[]): void {
     if (this.debugEnabled) {
-      console.warn('[UploadPlugin]', ...args);
+      try { console.warn('[UploadPlugin]', ...args); } catch { /* diagnostic only */ }
     }
   }
 
@@ -1075,6 +1065,9 @@ export class UploadPlugin implements AemeathPlugin {
     // 全都在入口早退 —— 一个不报错的哑巴。HMR 和框架的 teardown/remount
     // 正好会走这条路。
     this.lifecycleEpoch++;
+    // Explicit flush ownership belongs to one installation, like processQueue.
+    this.forceRunDepth = 0;
+    this.forceRun = false;
     this.destroyed = false;
     // 旧 processQueue 可能仍卡在 await attemptUpload：放开闸让新一轮能跑，
     // 旧循环靠 epoch 自检退出，避免永久 isProcessing 死锁。
@@ -1137,6 +1130,7 @@ export class UploadPlugin implements AemeathPlugin {
   }
 
   uninstall(logger?: AemeathInterface): void {
+    const host = logger ?? this.logger;
     // 存盘必须在打墓碑标记之前：saveToCache 会对 destroyed 早退
     // （那道早退是为了防止已卸载实例覆盖接任实例的缓存）
     //
@@ -1164,8 +1158,6 @@ export class UploadPlugin implements AemeathPlugin {
       this.deduplicationTimer = null;
     }
 
-    this.clearPendingSplitAdmissions(true);
-
     this.clearProbeTimer();
     if (this.wakeTimer) {
       clearTimeout(this.wakeTimer);
@@ -1187,7 +1179,6 @@ export class UploadPlugin implements AemeathPlugin {
     // 连同它引用的整个 logger（及其全部插件）永远不会被回收。
     // 反注册走的是宿主 API（小程序的 offAppHide、浏览器的 removeEventListener），
     // 抛不抛不由我们说了算。
-    const host = logger ?? this.logger;
     if (host && this.boundHandleLog) {
       try {
         host.off('log', this.boundHandleLog as (...args: unknown[]) => void);
@@ -1220,6 +1211,10 @@ export class UploadPlugin implements AemeathPlugin {
     if (this.inFlight.size === 0) {
       this.emitTarget = null;
     }
+
+    // Drop listeners may install this instance again. Finish the old resource
+    // cleanup first so the remaining teardown cannot detach the new installation.
+    this.clearPendingSplitAdmissions(true, host);
   }
 
   private holdIgnoreNetworkCapture(): void {
@@ -1354,8 +1349,8 @@ export class UploadPlugin implements AemeathPlugin {
   private emit<K extends keyof UploadPluginEventMap>(
     event: K,
     payload: UploadPluginEventMap[K],
+    host: AemeathInterface | null = this.logger ?? this.emitTarget,
   ): void {
-    const host = this.logger ?? this.emitTarget;
     if (!host) return;
     try {
       host.emit(event, payload);
@@ -1368,12 +1363,16 @@ export class UploadPlugin implements AemeathPlugin {
    * 处理日志
    */
   private handleLog(entry: LogEntry): void {
+    if (this.destroyed) return;
+    const epoch = this.lifecycleEpoch;
     let priority: number;
     try {
       priority = this.config.getPriority(entry);
     } catch {
       priority = 0;
     }
+
+    if (this.destroyed || this.lifecycleEpoch !== epoch) return;
 
     // 添加到队列（不做去重，让所有日志都进入队列）
     this.enqueueFreshItem(
@@ -1387,6 +1386,7 @@ export class UploadPlugin implements AemeathPlugin {
     );
 
     // 使用延迟处理，让短时间内的重复日志都进入队列后统一去重
+    if (this.destroyed || this.lifecycleEpoch !== epoch) return;
     this.scheduleProcessQueue(priority >= 80);
   }
 
@@ -1431,8 +1431,10 @@ export class UploadPlugin implements AemeathPlugin {
     options: { source?: string; priority?: number } = {},
   ): void {
     if (this.destroyed) return;
+    const epoch = this.lifecycleEpoch;
     const logs = Array.isArray(log) ? log : [log];
     for (const entry of logs) {
+      if (this.destroyed || this.lifecycleEpoch !== epoch) return;
       if (!entry || typeof entry !== 'object') continue;
       let priority = options.priority;
       if (priority == null) {
@@ -1442,6 +1444,8 @@ export class UploadPlugin implements AemeathPlugin {
           priority = 0;
         }
       }
+      // Host priority callbacks can synchronously uninstall or reinstall.
+      if (this.destroyed || this.lifecycleEpoch !== epoch) return;
       this.enqueueFreshItem(
         {
           log: entry,
@@ -1453,13 +1457,18 @@ export class UploadPlugin implements AemeathPlugin {
         { announce: true },
       );
     }
+    if (this.destroyed || this.lifecycleEpoch !== epoch) return;
     this.scheduleProcessQueue(true);
   }
 
   /**
    * 添加到队列（按优先级排序）
    */
-  private clearPendingSplitAdmissions(report: boolean): void {
+  private clearPendingSplitAdmissions(
+    report: boolean,
+    host: AemeathInterface | null = this.logger ?? this.emitTarget,
+  ): void {
+    // Already committed members must notify the same host across reentrant callbacks.
     const pending = [...this.pendingSplitAdmissions.entries()];
     this.pendingSplitAdmissions.clear();
     for (const [splitId, admission] of pending) {
@@ -1470,7 +1479,7 @@ export class UploadPlugin implements AemeathPlugin {
             reason: 'storage-rejected',
             retryCount: item.retryCount,
             error: `incomplete split group: ${splitId}`,
-          });
+          }, host);
         }
       }
     }
@@ -1483,6 +1492,8 @@ export class UploadPlugin implements AemeathPlugin {
     error: string,
     reason: UploadDropReason = 'storage-rejected',
   ): void {
+    // Already committed members must notify the same host across reentrant callbacks.
+    const host = this.logger ?? this.emitTarget;
     clearTimeout(admission.timer);
     this.pendingSplitAdmissions.delete(splitId);
     this.rememberRejectedSplit(splitId, reason);
@@ -1493,7 +1504,7 @@ export class UploadPlugin implements AemeathPlugin {
         reason,
         retryCount: item.retryCount,
         error,
-      });
+      }, host);
     }
   }
 
@@ -1677,6 +1688,8 @@ export class UploadPlugin implements AemeathPlugin {
     commit: () => void,
     excludedAdmissionSplitId?: string,
   ): boolean {
+    // Already committed members must notify the same host across reentrant callbacks.
+    const host = this.logger ?? this.emitTarget;
     const resident = [...this.queue, ...this.parked.values()];
     const admissions = Array.from(this.pendingSplitAdmissions.entries())
       .filter(([splitId]) => splitId !== excludedAdmissionSplitId);
@@ -1790,7 +1803,7 @@ export class UploadPlugin implements AemeathPlugin {
         reason: 'queue-overflow',
         retryCount: victim.retryCount,
         error: 'capacity unit evicted',
-      });
+      }, host);
     }
     return true;
   }
@@ -1800,6 +1813,8 @@ export class UploadPlugin implements AemeathPlugin {
     items: readonly QueuedLog[],
     opts: { announce?: boolean } = {},
   ): void {
+    // Already committed members must notify the same host across reentrant callbacks.
+    const host = this.logger ?? this.emitTarget;
     this.queue.push(...items);
     this.queue.sort((a, b) => b.priority - a.priority);
     if (opts.announce) {
@@ -1809,7 +1824,7 @@ export class UploadPlugin implements AemeathPlugin {
           priority: item.priority,
           source: item.source,
           paused: this.isHeld(),
-        });
+        }, host);
       }
     }
     if (this.config.cache.enabled) this.scheduleCacheSave();
@@ -1969,6 +1984,7 @@ export class UploadPlugin implements AemeathPlugin {
 
   private unparkDue(forceAll = false, limit = Number.POSITIVE_INFINITY): number {
     if (this.destroyed || this.parked.size === 0) return 0;
+    const epoch = this.lifecycleEpoch;
     const now = Date.now();
     const due = Array.from(this.parked.values())
       .filter((item) =>
@@ -1976,7 +1992,12 @@ export class UploadPlugin implements AemeathPlugin {
         && (forceAll || (item.parkedUntil ?? 0) <= now))
       .sort((a, b) => (a.parkedUntil ?? 0) - (b.parkedUntil ?? 0))
       .slice(0, limit);
+    let moved = 0;
     for (const item of due) {
+      if (this.destroyed || this.lifecycleEpoch !== epoch) return moved;
+      // A previous unpark event can synchronously flush the remaining records.
+      // Only the current parked owner may be transferred into the queue.
+      if (this.parked.get(item.log.logId) !== item) continue;
       this.parked.delete(item.log.logId);
       const reason = item.lastRetryReason ?? 'unknown';
       item.retryCount = 0;
@@ -1985,14 +2006,16 @@ export class UploadPlugin implements AemeathPlugin {
       item.parkedUntil = undefined;
       item.serverNotBefore = undefined;
       this.queue.push(item);
+      moved++;
       this.emit('upload:unparked', { log: item.log, source: item.source, reason });
     }
-    if (due.length > 0) {
+    if (this.destroyed || this.lifecycleEpoch !== epoch) return moved;
+    if (moved > 0) {
       this.queue.sort((a, b) => b.priority - a.priority);
       this.scheduleCacheSave();
     }
     this.scheduleParkWake();
-    return due.length;
+    return moved;
   }
 
   private scheduleParkWake(): void {
@@ -2047,7 +2070,11 @@ export class UploadPlugin implements AemeathPlugin {
    *
    * 所有放弃日志的路径都必须走这里，否则宿主又会回到"日志静默消失"的状态。
    */
-  private reportDrop(item: QueuedLog, info: Omit<UploadDropInfo, 'source'> & { source?: string }): void {
+  private reportDrop(
+    item: QueuedLog,
+    info: Omit<UploadDropInfo, 'source'> & { source?: string },
+    host: AemeathInterface | null = this.logger ?? this.emitTarget,
+  ): void {
     const payload: UploadDropInfo = { ...info, source: info.source ?? item.source };
     this.dropStats.total++;
     this.dropStats.byReason[payload.reason] = (this.dropStats.byReason[payload.reason] ?? 0) + 1;
@@ -2058,10 +2085,11 @@ export class UploadPlugin implements AemeathPlugin {
     // 卸载之后仍经 emitTarget 扇出 drop：OfflinePersistence 要靠晚到终态完成对账 /
     // 清盘。但不再调宿主 onDrop、也不再写 cache——宿主上下文可能已拆掉。
     if (this.destroyed) {
-      this.emit('upload:drop', { log: item.log, ...payload });
+      this.emit('upload:drop', { log: item.log, ...payload }, host);
       return;
     }
 
+    // Preserve the terminal recipient across a callback that tears down the plugin.
     if (this.config.onDrop) {
       try {
         this.config.onDrop(item.log, payload);
@@ -2069,7 +2097,7 @@ export class UploadPlugin implements AemeathPlugin {
         this.warn('onDrop callback threw:', err);
       }
     }
-    this.emit('upload:drop', { log: item.log, ...payload });
+    this.emit('upload:drop', { log: item.log, ...payload }, host);
 
     // 丢弃是终态，缓存必须跟着更新。否则一条被服务端明确拒收（no-retry）的日志
     // 仍留在缓存里，下次打开页面又被恢复、又被发一遍。
@@ -2082,10 +2110,11 @@ export class UploadPlugin implements AemeathPlugin {
   private dropWithSplitCascade(
     item: QueuedLog,
     info: Omit<UploadDropInfo, 'source'> & { source?: string },
+    host: AemeathInterface | null = this.logger ?? this.emitTarget,
   ): void {
     const splitId = getSdkSplitId(item.log);
     if (splitId === undefined) {
-      this.reportDrop(item, info);
+      this.reportDrop(item, info, host);
       return;
     }
     const sid = splitId;
@@ -2097,12 +2126,12 @@ export class UploadPlugin implements AemeathPlugin {
     }
     this.scheduleParkWake();
     // 先让整组失去内部所有权，再发任何回调；同步重入只能看到提交后的状态。
-    this.reportDrop(item, info);
+    this.reportDrop(item, info, host);
     for (const sibling of siblings) {
       this.reportDrop(sibling, {
         ...info,
         error: info.error ?? 'split-sibling-dropped',
-      });
+      }, host);
     }
   }
 
@@ -2111,15 +2140,18 @@ export class UploadPlugin implements AemeathPlugin {
     result: UploadResult | undefined,
     thrown: unknown,
   ): NormalizedUploadFailure {
+    const rawMessage = readUploadField(thrown, 'message');
+    const message = uploadErrorText(rawMessage ?? '', '');
     const error = thrown !== undefined
-      ? String((thrown as { message?: unknown })?.message ?? thrown)
+      ? (rawMessage == null ? uploadErrorText(thrown) : message)
       : result?.error || 'Unknown error';
 
     if (thrown !== undefined) {
-      const name = String((thrown as { name?: unknown })?.name ?? '');
-      const status = getHttpStatus(thrown);
+      const name = uploadErrorText(readUploadField(thrown, 'name'), '');
+      const response = readUploadField(thrown, 'response');
+      const status = getHttpStatus(response);
       if (status !== undefined) {
-        const retryAfter = getHttpRetryAfter(thrown);
+        const retryAfter = getHttpRetryAfter(response);
         const classified = classifyHttpUploadResponse(status, retryAfter);
         // 带 2xx response 却仍抛错，说明失败发生在回调自己的后处理阶段；不能把
         // 一个异常当成成功，但其它状态必须与“正常返回 HTTP 结果”走同一张策略表。
@@ -2134,7 +2166,7 @@ export class UploadPlugin implements AemeathPlugin {
           retryAfterMs: parseRetryAfter(retryAfter),
         };
       }
-      if (isNetworkError(thrown)) return { terminal: false, reason: 'network', error };
+      if (isNetworkError(thrown, response, name, message)) return { terminal: false, reason: 'network', error };
       if (name === 'AbortError') return { terminal: false, reason: 'cancelled', error };
       return { terminal: false, reason: 'callback-error', error };
     }
@@ -2227,29 +2259,45 @@ export class UploadPlugin implements AemeathPlugin {
           }
         }
 
-        // 半开探测严格只发一条；常规状态按配置组成一个并发批次。所有条目先出队
-        // 并登记 attempted，再启动请求，避免同一轮的失败重入被立即重复拿走。
+        // 半开探测严格只发一条；常规状态按配置组成一个并发批次。
         const batchSize = probeOnlyRun
           ? 1
           : this.config.queue.concurrency;
-        const batch: QueuedLog[] = [];
+        const batch: Array<Promise<'done' | 'paused'>> = [];
         // 分片组共享一条逻辑日志的终态与 Retry-After。不同逻辑日志可以并发，
         // 但同一 splitId 一批只能取一片；否则第一片永久拒收时，兄弟请求已经发出，
         // drop cascade 再完整也只能清内存，无法撤回网络请求。
         const batchSplitIds = new Set<string>();
-        while (batch.length < batchSize) {
-          const item = this.takeNextDueItem(attemptedInThisRun, batchSplitIds);
-          if (!item) break;
-          attemptedInThisRun.add(item.log.logId);
-          const splitId = getSdkSplitId(item.log);
-          if (splitId !== undefined) {
-            batchSplitIds.add(splitId);
+        let outcomes: Array<'done' | 'paused'>;
+        try {
+          while (batch.length < batchSize) {
+            // attempt 事件和 onUpload 都可能同步暂停、卸载或重装插件。
+            // 逐条检查再出队启动，让尚未启动的记录保留在队列及卸载快照中。
+            if (this.destroyed || this.lifecycleEpoch !== epoch || this.callbackPaused) break;
+            if (!this.forceRun) {
+              if (this.paused) break;
+              if (this.isDefinitelyOffline()) {
+                this.pause('offline');
+                break;
+              }
+            }
+            const item = this.takeNextDueItem(attemptedInThisRun, batchSplitIds);
+            if (!item) break;
+            attemptedInThisRun.add(item.log.logId);
+            const splitId = getSdkSplitId(item.log);
+            if (splitId !== undefined) {
+              batchSplitIds.add(splitId);
+            }
+            // 登记后立即启动，但等整批一起完成，保留真实并发及每轮一次尝试。
+            batch.push(this.attemptUpload(item));
           }
-          batch.push(item);
+        } finally {
+          // Even if selecting a later record fails, retain ownership of the
+          // already started requests until they settle before releasing flush().
+          attempts += batch.length;
+          outcomes = await Promise.all(batch);
         }
         if (batch.length === 0) break;
-        attempts += batch.length;
-        const outcomes = await Promise.all(batch.map((item) => this.attemptUpload(item)));
         if (this.lifecycleEpoch !== epoch) break;
         if (outcomes.includes('paused')) break;
         if (probeOnlyRun) break;
@@ -2359,7 +2407,10 @@ export class UploadPlugin implements AemeathPlugin {
     // - 同步 throw：Promise.resolve(fn()) 会先执行 fn，异常若在 begin 之后、
     //   内层 finally 之外，会永久泄漏全局忽略计数并让本条既不重试也不 onDrop；
     // - uninstall：见 releaseIgnoreNetworkCapture 与 ignoreHolds。
-    this.holdIgnoreNetworkCapture();
+    // upload:attempt listeners may uninstall/remount before the request callback.
+    // A stale attempt must not reacquire a hold that teardown already released.
+    const ownsIgnoreWindow = !this.destroyed && this.lifecycleEpoch === epoch;
+    if (ownsIgnoreWindow) this.holdIgnoreNetworkCapture();
     // 超时后若立刻揭开忽略窗口，迟到的上报 I/O（token 刷新后再 POST）会被
     // NetworkPlugin 记成业务流量；若一直等到 onUpload settle，挂死的回调又会
     // 把整页抓包永久致盲。折中：超时后继续忽略，但最多再宽限 uploadTimeoutMs。
@@ -2373,7 +2424,6 @@ export class UploadPlugin implements AemeathPlugin {
       }
     };
     try {
-      const logWithRequestId = this.decorateForUpload(item.log);
       const timeoutMs = this.config.queue.uploadTimeoutMs;
 
       let timeoutId: ReturnType<typeof setTimeout> | undefined;
@@ -2381,6 +2431,9 @@ export class UploadPlugin implements AemeathPlugin {
       try {
         // 同步抛错必须落成 rejected Promise，不能冒泡出 attemptUpload
         try {
+          // Preparing the request copy can invoke host getters too. Keep failures
+          // in the same ownership/retry path as a throwing upload callback.
+          const logWithRequestId = this.decorateForUpload(item.log);
           uploadPromise = Promise.resolve(this.config.onUpload(logWithRequestId));
         } catch (syncError) {
           uploadPromise = Promise.reject(syncError);
@@ -2400,19 +2453,21 @@ export class UploadPlugin implements AemeathPlugin {
         } else {
           result = await uploadPromise;
         }
+        result = snapshotUploadResult(result);
       } catch (error) {
         // 🛡️ 标记为日志系统内部错误，避免被 ErrorCapturePlugin 捕获。
         // 不加 instanceof Error 前置判断：跨 realm 时它会返回 false，
         // 而那正是最需要这层保护的场景
         markInternalError(error);
-        thrown = error;
+        result = undefined;
+        thrown = error === undefined ? new Error('Upload callback rejected without a reason') : error;
         this.warn('Upload callback threw error:', error);
       } finally {
         if (timeoutId !== undefined) clearTimeout(timeoutId);
         // 超时只结束等待，不会取消已发出的请求；吞掉晚到的 settle，
         // 避免 unhandledrejection，也不要把晚到的成功再走一遍成功路径
         // （队列已按失败处理，可能已经重试/丢弃）。
-        if (isUploadTimeoutError(thrown) && uploadPromise) {
+        if (ownsIgnoreWindow && isUploadTimeoutError(thrown) && uploadPromise) {
           deferIgnoreRelease = true;
           // 宽限与本次超时同量级：挡住紧随超时的迟到 I/O，又不会把抓包致盲拖太久
           const graceMs = timeoutMs;
@@ -2432,7 +2487,7 @@ export class UploadPlugin implements AemeathPlugin {
       }
     } finally {
       if (this.lifecycleEpoch === epoch) {
-        if (!deferIgnoreRelease) {
+        if (ownsIgnoreWindow && !deferIgnoreRelease) {
           this.releaseIgnoreNetworkCapture();
         }
         this.inFlight.delete(item.log.logId);
@@ -2470,12 +2525,13 @@ export class UploadPlugin implements AemeathPlugin {
         // 不在这里收尾的话 halfOpen 一直挂着、探测定时器已自我清空，队列就永久
         // 停在 paused：既不再上传，也永远不发 upload:resumed，
         // 于是 OfflinePersistencePlugin 的补传也再不会被触发。
+        const host = this.logger ?? this.emitTarget;
         this.completeReachableProbe();
         this.dropWithSplitCascade(item, {
           reason: 'no-retry',
           retryCount: item.retryCount,
           error: failure.error,
-        });
+        }, host);
         return 'done';
       }
 
@@ -2625,8 +2681,32 @@ export class UploadPlugin implements AemeathPlugin {
 
     // cache=off 时，旧 attempt 的可重试失败也必须回到新生命周期。
     if (!this.destroyed && !this.isPending(item.log.logId)) {
-      item.nextAttemptAt = undefined;
+      // Remount resets local scheduling, not a deadline supplied by the server.
+      // Record late Retry-After evidence before announcing/releasing this log, so
+      // explicit flush, split siblings and persistent replay all honor it.
+      if (failure.retryAfterMs !== undefined) {
+        item.serverNotBefore = Math.max(
+          item.serverNotBefore ?? 0,
+          deadlineAfter(failure.retryAfterMs, Date.now()),
+        );
+      }
+      item.nextAttemptAt = item.serverNotBefore;
+      if (item.serverNotBefore !== undefined) {
+        item.lastRetryReason = failure.reason as RetryableUploadReason;
+        this.deferQueuedSplitSiblings(item, item.serverNotBefore, item.serverNotBefore);
+      }
       this.addToQueue(item, { announce: true });
+      if (item.serverNotBefore !== undefined) {
+        this.emit('upload:retry-scheduled', {
+          log: item.log,
+          priority: item.priority,
+          source: item.source,
+          reason: failure.reason,
+          retryCount: item.retryCount,
+          nextAttemptAt: item.nextAttemptAt!,
+          serverNotBefore: item.serverNotBefore,
+        });
+      }
       this.scheduleProcessQueue(true);
     }
     return 'done';
@@ -2644,6 +2724,7 @@ export class UploadPlugin implements AemeathPlugin {
 
   /** 上传成功后的收尾：清零失败计数、退出暂停、刷新缓存 */
   private onUploadSucceeded(item: QueuedLog): void {
+    const host = this.logger ?? this.emitTarget;
     const wasDegraded = this.halfOpen || this.paused || this.consecutiveFailures > 0;
     this.consecutiveFailures = 0;
     this.probeDelay = 0;
@@ -2659,7 +2740,7 @@ export class UploadPlugin implements AemeathPlugin {
       this.clearProbeTimer();
     }
 
-    this.emit('upload:success', { log: item.log, source: item.source });
+    this.emit('upload:success', { log: item.log, source: item.source }, host);
 
     // 上传成功，更新缓存
     if (this.config.cache.enabled && !this.destroyed) {
@@ -2754,6 +2835,8 @@ export class UploadPlugin implements AemeathPlugin {
    * 2. 保留 stack 最长的那条
    */
   private deduplicateQueue(): void {
+    // Already committed members must notify the same host across reentrant callbacks.
+    const host = this.logger ?? this.emitTarget;
     if (this.queue.length <= 1) {
       return;
     }
@@ -2767,15 +2850,15 @@ export class UploadPlugin implements AemeathPlugin {
     const splitGroups = new Map<string, QueuedLog[]>();
 
     for (const item of this.queue) {
-      if (item.source) {
-        exempt.push(item);
-        continue;
-      }
       const splitId = getSdkSplitId(item.log);
       if (splitId !== undefined) {
         const bucket = splitGroups.get(splitId) || [];
         bucket.push(item);
         splitGroups.set(splitId, bucket);
+        continue;
+      }
+      if (item.source || item.log.error?.evidence?.schemaVersion === 1) {
+        exempt.push(item);
         continue;
       }
       const hash = this.generateLogHash(item.log);
@@ -2794,6 +2877,12 @@ export class UploadPlugin implements AemeathPlugin {
     let splitDuplicateCount = 0;
     const seenSplitSignatures = new Map<string, string>();
     for (const [splitId, bucket] of splitGroups) {
+      // Observations and partial/replayed split groups must remain independent.
+      if (bucket.some(item => item.source || item.log.error?.evidence?.schemaVersion === 1 ||
+        Number(item.log.tags?.splitTotal) !== bucket.length)) {
+        exempt.push(...bucket);
+        continue;
+      }
       const signature = bucket
         .map((it) => this.generateLogHash(it.log))
         .sort()
@@ -2843,14 +2932,14 @@ export class UploadPlugin implements AemeathPlugin {
       this.reportDrop(duplicate, {
         reason: 'deduplicated',
         retryCount: duplicate.retryCount,
-      });
+      }, host);
     }
   }
 
   /**
    * 生成无碰撞的结构键（用于去重）
    *
-   * 使用 message + 第一个 stack 帧 进行 hash
+   * 使用日志消息、错误类型/内容和原始位置构造结构键
    */
   private generateLogHash(log: LogEntry): string {
     const parts: string[] = [];
@@ -2870,41 +2959,15 @@ export class UploadPlugin implements AemeathPlugin {
     // 2. 消息
     parts.push(log.message || '');
 
-    // 3. 如果有 error，提取第一个 stack 帧
+    // Legacy/manual entries still participate in queue deduplication. A shared
+    // call site alone does not identify the error; retain its type and message,
+    // and use browser/resource location when no original stack frame exists.
     const error = log.error;
-    if (error) {
-      // 缓存与 requeue() 都是外部可写的入口，stack 不一定是字符串。
-      // 不校验的话下面的 split 会抛，而这个抛发生在没人 catch 的 processQueue 里
-      if (typeof error.stack === 'string') {
-        const firstFrame = this.extractFirstStackFrame(error.stack);
-        if (firstFrame) {
-          parts.push(firstFrame);
-        }
-      } else {
-        parts.push(error.value);
-      }
-    }
+    if (error) parts.push(...errorIdentity(error));
 
     // 可靠投递不能用 32-bit 摘要决定“永久丢弃”。队列上限很小，直接保留结构化
     // 字符串键的内存成本可控，并消除了哈希碰撞与分隔符歧义造成的误去重。
     return JSON.stringify(parts);
-  }
-
-  /**
-   * 提取 stack 的第一个调用帧
-   */
-  private extractFirstStackFrame(stack: string): string | null {
-    if (!stack) return null;
-
-    const lines = stack.split('\n');
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (trimmed.startsWith('at ')) {
-        return trimmed;
-      }
-    }
-
-    return lines[0]?.trim() || null;
   }
 
   /**
@@ -2949,7 +3012,8 @@ export class UploadPlugin implements AemeathPlugin {
    * `Retry-After`。本地调度可以由调用方加速，对端流控契约不可以。
    */
   async flush(): Promise<void> {
-    if (this.callbackPaused) return;
+    if (this.destroyed || this.callbackPaused) return;
+    const epoch = this.lifecycleEpoch;
     // 用计数而不是布尔量。
     //
     // 布尔量下，并发的第二次 flush() 会在 isProcessing 处立刻返回，然后它的
@@ -2962,14 +3026,19 @@ export class UploadPlugin implements AemeathPlugin {
     try {
       this.interAttemptWake?.();
       this.unparkDue(true);
+      if (this.destroyed || this.lifecycleEpoch !== epoch) return;
       await this.whenNotProcessing();
+      if (this.destroyed || this.lifecycleEpoch !== epoch) return;
       await this.processQueue();
+      if (this.destroyed || this.lifecycleEpoch !== epoch) return;
       await this.whenNotProcessing();
     } finally {
-      this.forceRunDepth--;
-      if (this.forceRunDepth <= 0) {
-        this.forceRunDepth = 0;
-        this.forceRun = false;
+      if (this.lifecycleEpoch === epoch) {
+        this.forceRunDepth--;
+        if (this.forceRunDepth <= 0) {
+          this.forceRunDepth = 0;
+          this.forceRun = false;
+        }
       }
     }
   }

@@ -8,13 +8,29 @@
     "sourceMap": false,
     "baseUrl": ".",
     "paths": {
-      "aemeath-js": ["./src/index.ts"]
+      "aemeath-js": [
+        "./src/index.ts"
+      ],
+      "aemeath-js/parser": [
+        "./src/parser/index.ts"
+      ],
+      "aemeath-js/build-plugins/*": [
+        "./src/build-plugins/*"
+      ]
     }
   },
   "include": [
     "src/**/*.ts",
     "src/**/*.tsx",
-    "examples/9-before-send/*.ts"
+    "examples/9-before-send/*.ts",
+    "examples/1-error-capture/with-evidence.ts",
+    "examples/1-error-capture/with-webview-enhanced.ts",
+    "examples/2-early-error-capture/with-csp.ts",
+    "examples/3-sourcemap-parser/with-evidence.ts",
+    "examples/3-sourcemap-parser/basic.ts"
   ],
-  "exclude": ["node_modules", "dist"]
+  "exclude": [
+    "node_modules",
+    "dist"
+  ]
 }

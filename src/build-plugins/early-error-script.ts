@@ -1,3 +1,4 @@
+import { errorEvidenceSource } from './error-evidence.generated';
 /**
  * 早期错误捕获脚本 - 共享模块
  *
@@ -96,7 +97,7 @@ export function getEarlyErrorCaptureScript(options?: EarlyErrorScriptOptions): s
   'use strict';
   try {
 
-  // 幂等 guard（v1.5.2+ Bug F 防御）：
+  // 幂等 guard（v2.4.0+ Bug F 防御）：
   // micro-frontend 场景下，主应用 + 多个子应用都可能在 build 时注入本脚本。
   // 如果不防御，第二次注入会：
   //   1. 重置 __EARLY_ERRORS__ = [] → 丢失第一份脚本已收集的所有错误
@@ -106,6 +107,10 @@ export function getEarlyErrorCaptureScript(options?: EarlyErrorScriptOptions): s
   if (window.__EARLY_ERROR_CAPTURE_LOADED__) {
     return;
   }
+  // A previous owner may remain after a host clears only the public flags.
+  if (typeof window.__stopEarlyErrorCapture__ === 'function') {
+    try { window.__stopEarlyErrorCapture__(); } catch (ignored) {}
+  }
   window.__EARLY_ERROR_CAPTURE_LOADED__ = true;
 
   window.__EARLY_ERRORS__ = window.__EARLY_ERRORS__ || [];
@@ -113,8 +118,40 @@ export function getEarlyErrorCaptureScript(options?: EarlyErrorScriptOptions): s
     window.__LOGGER_INITIALIZED__ = false;
   }
   var __FALLBACK_TIMER__ = null;
+  var __CHUNK_RELOAD_TIMER__ = null;
 
   var MAX_ERRORS = ${maxErrors};
+  var captureActive = false;
+  var pendingFlushes = [];
+  var captureStopped = false;
+
+  var stopCapture = function(keepReload) {
+    captureStopped = true;
+    pendingFlushes = [];
+    if (__FALLBACK_TIMER__ !== null) {
+      clearTimeout(__FALLBACK_TIMER__);
+      __FALLBACK_TIMER__ = null;
+    }
+    if (!keepReload && __CHUNK_RELOAD_TIMER__ !== null) {
+      clearTimeout(__CHUNK_RELOAD_TIMER__);
+      __CHUNK_RELOAD_TIMER__ = null;
+    }
+    try { window.removeEventListener('error', onEarlyError, true); } catch (ignored) {}
+    try { window.removeEventListener('unhandledrejection', onEarlyRejection); } catch (ignored) {}
+  };
+  window.__stopEarlyErrorCapture__ = stopCapture;
+
+  function finishCapture() {
+    captureActive = false;
+    if (captureStopped) return;
+    var callbacks = pendingFlushes;
+    pendingFlushes = [];
+    for (var i = 0; i < callbacks.length; i++) {
+      if (window.__stopEarlyErrorCapture__ !== stopCapture) break;
+      try { flushEarlyErrors(callbacks[i]); }
+      catch (ignored) { captureFailed(); }
+    }
+  }
 
   var deviceInfo = {
     ua: navigator.userAgent,
@@ -124,31 +161,57 @@ export function getEarlyErrorCaptureScript(options?: EarlyErrorScriptOptions): s
     time: Date.now()
   };
 
+  var normalizeEvidence = ${errorEvidenceSource};
+
+  function captureFailed() {
+    try {
+      window.__AEMEATH_EARLY_CAPTURE_FAILURES__ = Math.min(2147483647,
+        (window.__AEMEATH_EARLY_CAPTURE_FAILURES__ || 0) + 1);
+    } catch (ignored) {}
+  }
+
   function addError(error) {
-    if (window.__LOGGER_INITIALIZED__) return;
+    if (captureStopped || window.__LOGGER_INITIALIZED__) return;
     if (window.__EARLY_ERRORS__.length >= MAX_ERRORS) return;
 
+    var normalized = normalizeEvidence(error.reason, {
+      channel: error.type === 'error' ? 'global' : error.type,
+      phase: 'early', message: error.message,
+      source: error.filename || error.source, line: error.lineno, column: error.colno
+    });
+    // Getters may change lifecycle state or the public buffer while reading.
+    if (captureStopped || window.__LOGGER_INITIALIZED__) return;
+    if (window.__EARLY_ERRORS__.length >= MAX_ERRORS) return;
     window.__EARLY_ERRORS__.push({
       type: error.type,
-      message: error.message,
-      stack: error.stack || null,
+      message: normalized.value,
+      stack: normalized.stack || null,
+      error: normalized,
       filename: error.filename,
       lineno: error.lineno,
       colno: error.colno,
       source: error.source,
+      // Legacy standalone/IIFE consumers read these resource fields from context.
+      tagName: error.tagName,
+      src: error.src,
       timestamp: Date.now(),
       device: deviceInfo
     });
   }
 
-  window.addEventListener('error', function(event) {
-    if (window.__LOGGER_INITIALIZED__) return;
+  function onEarlyError(event) {
+    if (captureStopped || captureActive || window.__LOGGER_INITIALIZED__) return;
+    captureActive = true;
+    try {
+    if (captureStopped || window.__LOGGER_INITIALIZED__) return;
     var target = event.target || event.srcElement;
 
-    if (target !== window && target.tagName && (target.tagName === 'SCRIPT' || target.tagName === 'LINK' || target.tagName === 'IMG')) {
+    if (target && target !== window && target.tagName) {
       addError({
         type: 'resource',
         message: 'Resource load failed',
+        tagName: target.tagName,
+        src: target.src || target.href || '',
         source: target.src || target.href,
         filename: target.src || target.href,
         stack: null
@@ -165,7 +228,12 @@ ${autoRefresh ? `
             // doFallback 走 sendBeacon 路径不阻塞 reload；走 xhr 路径浏览器
             // 也会等待请求至少注册到 network stack 后才执行 reload。
             try { if (typeof doFallback === 'function') doFallback(); } catch (e) {}
-            setTimeout(function() { location.reload(); }, 100);
+            if (window.__stopEarlyErrorCapture__ === stopCapture) {
+              __CHUNK_RELOAD_TIMER__ = setTimeout(function() {
+                __CHUNK_RELOAD_TIMER__ = null;
+                if (window.__stopEarlyErrorCapture__ === stopCapture) location.reload();
+              }, 100);
+            }
           }
         } catch (e) {}
       }` : ''}
@@ -176,32 +244,24 @@ ${autoRefresh ? `
         filename: event.filename || '',
         lineno: event.lineno || 0,
         colno: event.colno || 0,
-        stack: event.error ? event.error.stack : null
+        reason: event.error
       });
     }
-  }, true);
+    } catch (captureFailure) { captureFailed(); }
+    finally { finishCapture(); }
+  }
+  window.addEventListener('error', onEarlyError, true);
 
-  window.addEventListener('unhandledrejection', function(event) {
-    if (window.__LOGGER_INITIALIZED__) return;
-    var reason = event.reason;
-    var message = 'Unhandled Promise Rejection';
-    var stack = null;
-
-    if (reason instanceof Error) {
-      message = reason.message;
-      stack = reason.stack;
-    } else if (typeof reason === 'string') {
-      message = reason;
-    } else if (reason) {
-      try { message = JSON.stringify(reason); } catch (e) { message = String(reason); }
-    }
-
-    addError({
-      type: 'unhandledrejection',
-      message: message,
-      stack: stack
-    });
-  });
+  function onEarlyRejection(event) {
+    if (captureStopped || captureActive || window.__LOGGER_INITIALIZED__) return;
+    captureActive = true;
+    try {
+    if (captureStopped || window.__LOGGER_INITIALIZED__) return;
+    addError({ type: 'unhandledrejection', reason: event.reason });
+    } catch (captureFailure) { captureFailed(); }
+    finally { finishCapture(); }
+  }
+  window.addEventListener('unhandledrejection', onEarlyRejection);
 ${checkCompat ? `
   (function() {
     try {
@@ -223,26 +283,36 @@ ${checkCompat ? `
     } catch (e) {}
   })();` : ''}
 
-  window.__flushEarlyErrors__ = function(callback) {
+  var flushEarlyErrors = function(callback) {
+    if (window.__stopEarlyErrorCapture__ !== stopCapture) return;
     if (typeof callback !== 'function') return;
+    // A getter can initialize Logger synchronously. Finish the observation
+    // before transferring ownership so it is included exactly once.
+    if (captureActive) { pendingFlushes.push(callback); return; }
     window.__LOGGER_INITIALIZED__ = true;
-    if (__FALLBACK_TIMER__ !== null) {
-      clearTimeout(__FALLBACK_TIMER__);
-      __FALLBACK_TIMER__ = null;
-    }
+    stopCapture();
     var errors = window.__EARLY_ERRORS__.slice();
     window.__EARLY_ERRORS__ = [];
     try {
       callback(errors);
     } catch (e) {
-      console.error('[EarlyErrorCapture] Error in flush callback:', e);
+      try { console.error('[EarlyErrorCapture] Error in flush callback:', e); } catch (ignored) {}
     }
   };
+  window.__flushEarlyErrors__ = flushEarlyErrors;
 ${fallbackEndpoint ? generateFallbackBlock(fallbackEndpoint, fallbackTimeout, effectiveTransport, headers, formatPayload) : ''}
   // __EARLY_ERROR_CAPTURE_LOADED__ 已在脚本顶部 set，无需在末尾重复。
   // 如果走到这里，说明 listeners 都已注册成功，整个脚本初始化通过。
 
   } catch (__earlyErr__) {
+    try {
+      if (window.__stopEarlyErrorCapture__ === stopCapture) {
+        stopCapture();
+        delete window.__stopEarlyErrorCapture__;
+        delete window.__EARLY_ERROR_CAPTURE_LOADED__;
+        if (window.__flushEarlyErrors__ === flushEarlyErrors) delete window.__flushEarlyErrors__;
+      }
+    } catch (ignored) {}
     try { console.error('[EarlyErrorCapture] Script init error:', __earlyErr__); } catch (e) {}
   }
 })();`.trim();
@@ -274,8 +344,15 @@ function generateFallbackBlock(
   // 即使 formatPayload 返回多条 batch 共享同一份 errors，每条 send 失败都用相同的
   // 上界报告。这样既不会少报（误导用户），也明确写明 "up to N" 是上界保守估计。
   function sendPayload(data, maxLostCount) {
-    var payloadStr = JSON.stringify(data);
     var safeCount = typeof maxLostCount === 'number' && maxLostCount > 0 ? maxLostCount : 0;
+    var payloadStr;
+    try {
+      payloadStr = JSON.stringify(data);
+      if (typeof payloadStr !== 'string') throw new Error('Empty JSON payload');
+    } catch (e) {
+      try { console.warn('[EarlyErrorCapture] Fallback payload cannot be serialized; up to ' + safeCount + ' early errors may be lost.'); } catch (ignored) {}
+      return false;
+    }
 
     // R13.4：FALLBACK_TRANSPORT === 'beacon' 强制模式也必须先 detect。
     // 旧实现仅在 'auto' 模式下 detect，'beacon' 强制下直接调用，在不支持 sendBeacon
@@ -294,6 +371,7 @@ function generateFallbackBlock(
         return false;
       }
     } else if (FALLBACK_TRANSPORT === 'beacon') {
+      // beacon 强制但环境不支持：明确告警，return false（不会 fall through 到 xhr）
       try { console.warn('[EarlyErrorCapture] Fallback beacon unavailable in this environment; up to ' + safeCount + ' early errors may be lost.'); } catch (e) {}
       return false;
     }
@@ -302,19 +380,16 @@ function generateFallbackBlock(
       try {
         var xhr = new XMLHttpRequest();
         xhr.open('POST', FALLBACK_ENDPOINT, true);
-        var finalHeaders = { 'Content-Type': 'application/json' };
+        var hasContentType = false;
         if (FALLBACK_HEADERS) {
           for (var key in FALLBACK_HEADERS) {
-            if (FALLBACK_HEADERS.hasOwnProperty(key)) {
-              finalHeaders[key] = FALLBACK_HEADERS[key];
+            if (Object.prototype.hasOwnProperty.call(FALLBACK_HEADERS, key)) {
+              if (key.toLowerCase() === 'content-type') hasContentType = true;
+              xhr.setRequestHeader(key, FALLBACK_HEADERS[key]);
             }
           }
         }
-        for (var h in finalHeaders) {
-          if (finalHeaders.hasOwnProperty(h)) {
-            xhr.setRequestHeader(h, finalHeaders[h]);
-          }
-        }
+        if (!hasContentType) xhr.setRequestHeader('Content-Type', 'application/json');
         xhr.onerror = function() {
           // 不再把 errors 重新写回 __EARLY_ERRORS__：__LOGGER_INITIALIZED__ 已为 true，
           // 早期脚本的 listener 全部 early-return，写回去也没人取，只是制造"重传幻觉"。
@@ -331,16 +406,16 @@ function generateFallbackBlock(
   }
 
   function doFallback() {
-    // 卫生：本函数被 setTimeout 触发后，__FALLBACK_TIMER__ 保存的 timer id 已失效，
-    // 立刻置 null。否则后续 __flushEarlyErrors__ 内的 timer 非空检查会进入
-    // 无意义的 clearTimeout（虽然无害）。
+    // Also invoked directly before a chunk reload; cancel the pending timeout.
+    if (__FALLBACK_TIMER__ !== null) clearTimeout(__FALLBACK_TIMER__);
     __FALLBACK_TIMER__ = null;
 
-    if (window.__LOGGER_INITIALIZED__) return;
+    if (captureStopped || window.__LOGGER_INITIALIZED__) return;
     if (window.__EARLY_ERRORS__.length === 0) return;
 
     window.__LOGGER_INITIALIZED__ = true;
-    console.warn('[EarlyErrorCapture] Logger not initialized after ' + FALLBACK_TIMEOUT + 'ms, using fallback endpoint');
+    stopCapture(true);
+    try { console.warn('[EarlyErrorCapture] Logger not initialized after ' + FALLBACK_TIMEOUT + 'ms, using fallback endpoint'); } catch (ignored) {}
 
     var errors = window.__EARLY_ERRORS__.slice();
     var maxLost = errors.length;
@@ -352,7 +427,7 @@ function generateFallbackBlock(
         try {
           result = formatPayload(errors, deviceInfo);
         } catch (e) {
-          console.error('[EarlyErrorCapture] formatPayload error, using default format:', e);
+          try { console.error('[EarlyErrorCapture] formatPayload error, using default format:', e); } catch (ignored) {}
           result = null;
         }
       }

@@ -1,5 +1,19 @@
 # 模块3：Source Map 解析
 
+## 按证据解析 / Evidence-aware parsing
+
+处理 SDK 的 `LogEntry` 时优先复制 [with-evidence.ts](./with-evidence.ts)：调用
+`createErrorInspector(sourceMapBaseUrl)`，再把日志交给返回的函数；无 error 的日志返回 undefined。
+按 status 展示结果，逐帧检查 resolved。下面的 basic.ts / parse(string) 示例继续用于原始字符串栈。
+
+For SDK `LogEntry` records, start with [with-evidence.ts](./with-evidence.ts). Call
+`createErrorInspector(sourceMapBaseUrl)`, then pass entries to the returned function. Entries without
+an error return undefined. Display status and check each frame's resolved flag. The basic.ts /
+parse(string) examples below remain useful for original raw stack strings.
+
+[中文 API](../../docs/zh/3-sourcemap-parser.md) · [English API](../../docs/en/3-sourcemap-parser.md)
+
+
 ## 💡 核心理念
 
 **将混淆的错误堆栈还原成可读的源代码位置**

@@ -1,6 +1,6 @@
 {
   "name": "aemeath-js",
-  "version": "1.10.2",
+  "version": "1.10.3",
   "description": "A modular, type-safe logging system with plugin architecture",
   "keywords": [
     "logger",
@@ -111,7 +111,7 @@
   },
   "files": [
     "dist",
-    "scripts",
+    "scripts/early-error.js",
     "README.md",
     "README.zh_CN.md",
     "QUICK_START.md",
@@ -122,14 +122,16 @@
   ],
   "homepage": "https://github.com/TieriaSail/aemeath-js#readme",
   "scripts": {
-    "build": "tsup",
+    "build": "npm run generate:error-capture && tsup",
     "dev": "tsup --watch",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.tests.json && tsc --noEmit -p tsconfig.examples.json",
-    "verify": "npm test && npm run typecheck && npm run build",
+    "verify": "node scripts/generate-error-capture.mjs --check && npm test && npm run typecheck && npm run build",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
-    "prepublishOnly": "npm run verify"
+    "prepublishOnly": "npm run verify",
+    "generate:error-capture": "node scripts/generate-error-capture.mjs",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "source-map-js": "^1.2.0"
@@ -184,7 +186,8 @@
     "vite": "5.4.21",
     "vitest": "4.0.18",
     "vue": "3.5.29",
-    "webpack": "5.105.3"
+    "webpack": "5.105.3",
+    "@playwright/test": "^1.62.1"
   },
   "engines": {
     "node": ">=16.0.0"

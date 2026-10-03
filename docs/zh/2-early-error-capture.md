@@ -377,3 +377,33 @@ ameathEarlyErrorPlugin({
 - [错误捕获](./1-error-capture.md)
 - [Source Map 解析](./3-sourcemap-parser.md)
 - [上传插件](./4-upload-plugin.md)
+
+
+## 早期证据一致性
+
+构建插件注入脚本与独立 `scripts/early-error.js` 均提供相同的异常证据，无需修改现有捕获配置。
+早期缓冲同时保留兼容的
+message/stack 和规范化 error 快照；fallback 与正式交接保留相同 occurrenceId 和栈来源。
+旧脚本仍可交接。早期监听器采集失败累计在 `window.__AEMEATH_EARLY_CAPTURE_FAILURES__`，
+不回流 logger；该计数不自动上报。
+
+早期脚本在读取异常期间阻止嵌套事件重入，并在入队前复核容量和交接状态。若业务 getter 同步触发 Logger 初始化/flush，会在当前采集退出时交接，当前记录仅交付一次；普通 flush 仍同步执行，maxErrors 和已有 fallback 配置保持不变。
+
+### 1.x 浏览器入口兼容
+
+IIFE 的早期错误继续保留原有 `message`、`level` 和 `context`：资源错误仍为 warn，普通错误和 Promise 错误仍为 error。
+在此基础上增加标准 `error` 与 `evidence`，并保留 `tags.source`；`tags.errorCategory` 为 early。
+compatibility 记录也会转发为 error。npm 插件入口仍使用 `Early ${type} error` 消息。
+消费端可统一从 `entry.error` 读取证据，无需重写原有 context 查询。缺少原始栈是合法状态。
+
+### CSP nonce
+
+Vite、Webpack、Rsbuild 的早期脚本构建插件均支持可选 `nonce`：
+
+```typescript
+import { ameathEarlyErrorPlugin } from 'aemeath-js/build-plugins/vite';
+export const earlyCapture = ameathEarlyErrorPlugin({ nonce: 'SERVER_NONCE_PLACEHOLDER' });
+```
+
+示例是占位符；服务端须按响应生成 nonce，并同时替换脚本标签和对应 CSP 响应头。
+不传或传空字符串时不附加 nonce。Webpack 的独立 file 模式需在引用脚本的标签上自行设置 nonce。

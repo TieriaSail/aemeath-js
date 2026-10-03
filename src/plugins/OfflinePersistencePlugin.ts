@@ -753,15 +753,20 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
 
   /** 清空所有持久副本 */
   async clear(): Promise<void> {
+    const epoch = this.epoch;
     await this.ready;
+    if (!this.isEpoch(epoch)) return;
     await this.enqueueOp(async () => {
       try {
-        await this.clearConfiguredBackends();
+        await this.clearConfiguredBackends(epoch);
       } catch (error) {
         // 跨后端清理可能部分完成；此时原索引已不再是可信事实，禁止继续写/播。
-        this.storageOperational = false;
+        if (this.isEpoch(epoch)) this.storageOperational = false;
         throw error;
       }
+      // Completion belongs to the installation that initiated the clear.
+      // Never reset a newer index, retry buffer, or coordination controller.
+      if (!this.isEpoch(epoch)) return;
       clearPendingDeletesForResources(this.claimedResources);
       this.storageOperational = this.store?.backend !== undefined
         && this.store.backend !== 'noop';
@@ -777,13 +782,15 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
   }
 
   /** `clear()` 的语义覆盖当前后端和可能休眠的 fallback，不能只清半边后宣称修复。 */
-  private async clearConfiguredBackends(): Promise<void> {
+  private async clearConfiguredBackends(epoch: number): Promise<void> {
     const active = this.store;
     if (active && active.backend !== 'noop') await active.clear();
+    if (!this.isEpoch(epoch)) return;
     if (this.options.storage === 'localstorage') return;
 
     const targets: Array<'indexeddb' | 'localstorage'> = ['indexeddb', 'localstorage'];
     for (const preference of targets) {
+      if (!this.isEpoch(epoch)) return;
       if (active?.backend === preference) continue;
       // 宿主根本不提供 API 时不存在当前可访问的资源；API 存在但打开/清理失败则
       // 必须 reject，尤其是 reconciliation 降级后，不能把“只清了主库”说成成功。
@@ -803,6 +810,7 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
         allowFallback: false,
       });
       try {
+        if (!this.isEpoch(epoch)) return;
         if (dormant.backend === preference) await dormant.clear();
       } finally {
         dormant.close();
@@ -918,6 +926,7 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
     try {
       await this.reconcileFallbackStore(this.store, epoch);
     } catch (err) {
+      if (!this.isEpoch(epoch)) return;
       // 两个后端无法形成可信并集时保留主 store 供精确终态删除，但禁止写入/补传。
       // 把 store 换成 noop 会让随后按 logId 到达的 success 永远删不掉真实记录。
       this.debug('fallback reconciliation failed:', err);
@@ -927,6 +936,7 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
         if (!this.isEpoch(epoch)) return;
         await this.safeDelete(logId);
       }
+      if (!this.isEpoch(epoch)) return;
       this.warnStorageUnavailable();
       try {
         logger.emit('upload:offline-unavailable', { reason: 'reconciliation-failed' });
@@ -971,6 +981,7 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
         try {
           metas = await this.store!.loadMeta();
         } catch (err) {
+          if (!this.isEpoch(epoch)) return;
           this.debug('loadMeta failed:', err);
           loadFailed = true;
         }
@@ -984,6 +995,7 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
           }
           // 索引是容量、去重和 replay 的唯一事实来源。扫描失败后把它当空库继续
           // 写，只会突破配额并制造无法对账的正文；本生命周期降级为只删不写。
+          if (!this.isEpoch(epoch)) return;
           this.storageOperational = false;
           this.pendingPersists = [];
           this.warnStorageUnavailable();
@@ -1047,12 +1059,14 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
             && (typeof meta.splitId !== 'string' || this.store!.backend === 'localstorage')
           ) {
             const legacyRecord = await this.safeGet(meta.logId);
+            if (!this.isEpoch(epoch)) return;
             const canonicalSplitId = legacyRecord ? (getSplitId(legacyRecord.log) ?? null) : null;
             if (legacyRecord && legacyRecord.splitId !== canonicalSplitId) {
               // 旧 KV 索引曾把裸业务 splitId 写进分组字段；在 hydrate 边界一次性
               // 规范化正文和索引，后续生命周期就不会再把普通日志误绑成原子组。
               await this.store!.put({ ...legacyRecord, splitId: canonicalSplitId });
             }
+            if (!this.isEpoch(epoch)) return;
             meta.splitId = canonicalSplitId;
           }
           meta.notBefore = Number.isFinite(meta.notBefore) ? meta.notBefore : undefined;
@@ -1063,11 +1077,13 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
           this.index.set(meta.logId, meta);
           this.totalBytes += meta.bytes;
         }
+        if (!this.isEpoch(epoch)) return;
         this.debug(
           `hydrated ${this.index.size} pending logs from ${this.store!.backend} (${this.totalBytes} bytes)`,
         );
         this.storageOperational = true;
       } catch (err) {
+        if (!this.isEpoch(epoch)) return;
         // loadMeta 之外的正文读取同样属于 hydrate 事务（典型是旧索引补读
         // splitId）。任何一步无法确认，部分索引就不再是可信快照：统一清空并
         // fail-closed，绝不能让 enqueueOp 的通用兜底把它吞成一个“半成功”。
@@ -1120,7 +1136,7 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
       // KV 根本不可用表示没有当前可访问的 fallback 需要迁移，不影响 IDB 主后端。
       return;
     }
-    if (fallback.backend !== 'localstorage') {
+    if (!this.isEpoch(epoch) || fallback.backend !== 'localstorage') {
       fallback.close();
       return;
     }
@@ -1138,6 +1154,7 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
       for (const meta of metas) {
         if (!this.isEpoch(epoch)) return;
         const secondaryRecord = await fallback.get(meta.logId);
+        if (!this.isEpoch(epoch)) return;
         if (!secondaryRecord) {
           await fallback.delete(meta.logId);
           continue;
@@ -1147,6 +1164,7 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
           splitId: getSplitId(secondaryRecord.log) ?? null,
         };
         const currentRecord = await primary.get(meta.logId);
+        if (!this.isEpoch(epoch)) return;
         const current: OfflineRecord | null = currentRecord
           ? { ...currentRecord, splitId: getSplitId(currentRecord.log) ?? null }
           : null;
@@ -1155,7 +1173,9 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
           || hasPendingRecordDelete(resources, meta.logId);
         if (terminal) {
           await primary.delete(meta.logId);
+          if (!this.isEpoch(epoch)) return;
           await fallback.delete(meta.logId);
+          if (!this.isEpoch(epoch)) return;
           clearPendingRecordDelete(resources, meta.logId);
           continue;
         }
@@ -1187,6 +1207,7 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
         }
         // 先等待 IDB 事务真正提交，再删除 KV。任一步失败时，至少有一份完整副本。
         await primary.put(migrated);
+        if (!this.isEpoch(epoch)) return;
         await fallback.delete(meta.logId);
       }
     } finally {
@@ -1229,13 +1250,12 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
         this.armOverflowReplayWake();
         return;
       }
-      if (TERMINAL_UPLOAD_DROP_REASONS.has(reason)) {
-        this.inFlight.delete(log.logId);
-        this.enqueueOp(() => this.safeDelete(log.logId));
+      if (!TERMINAL_UPLOAD_DROP_REASONS.has(reason)) {
+        this.enqueueOp(() => this.registerReplayFailure(log));
         return;
       }
-      this.enqueueOp(() => this.registerReplayFailure(log));
-      return;
+      // Terminal replay drops must also cancel buffered writes and synchronously
+      // mark deletion, using the same cleanup path as terminal live uploads.
     }
 
     if (!PERSISTABLE_DROP_REASONS.has(reason)) {
@@ -1406,6 +1426,12 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
     });
   }
 
+  private hasTerminalIntent(logId: string): boolean {
+    return this.deliveredTombstones.has(logId)
+      || this.preHydrationDeletes.has(logId)
+      || hasPendingRecordDelete(this.claimedResources, logId);
+  }
+
   /**
    * 暂存尚未提交的写意图，并按 logId 合并。
    *
@@ -1418,6 +1444,9 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
     priority?: number,
     state?: PersistStateUpdate,
   ): void {
+    // Delivery can become terminal while an earlier storage operation awaits.
+    // Its late failure must not recreate a write intent after terminal cleanup.
+    if (this.hasTerminalIntent(log.logId)) return;
     const splitId = getSplitId(log);
     const rejectedReason = splitId === undefined
       ? undefined
@@ -1515,13 +1544,7 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
       return;
     }
     // 已送达的绝不能再进缓冲 / 再写盘
-    if (
-      this.deliveredTombstones.has(log.logId) ||
-      this.preHydrationDeletes.has(log.logId) ||
-      hasPendingRecordDelete(this.claimedResources, log.logId)
-    ) {
-      return;
-    }
+    if (this.hasTerminalIntent(log.logId)) return;
     if (!this.store) return;
     if (this.store.backend === 'noop') return;
     if (this.index.has(log.logId)) {
@@ -1530,9 +1553,13 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
       try {
         existing = await this.safeGet(log.logId);
       } catch (error) {
+        if (!this.isEpoch(epoch)) return;
         this.deferPersistAfterStorageError(log, priority, state, error);
         return;
       }
+      // A read started before uninstall must not write through the new store
+      // or merge its stale deadline into the next installation's index.
+      if (!this.isEpoch(epoch)) return;
       if (!existing || existing.terminal) return;
       const merged = mergePersistStateUpdate({
         notBefore: existing.notBefore,
@@ -1552,6 +1579,7 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
       existing.lastRetryReason = merged.lastRetryReason;
       try {
         await this.store.put(existing);
+        if (!this.isEpoch(epoch)) return;
         const meta = this.index.get(log.logId);
         if (meta) {
           meta.notBefore = existing.notBefore;
@@ -1561,6 +1589,7 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
           meta.lastRetryReason = existing.lastRetryReason;
         }
       } catch (err) {
+        if (!this.isEpoch(epoch)) return;
         // 旧副本仍是最后一次已提交状态；保留更新意图并退避，不能静默丢掉
         // Retry-After，否则刷新页面后可能提前请求服务端。
         this.deferPersistAfterStorageError(log, priority, state, err);
@@ -1606,9 +1635,11 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
     try {
       hasRoom = await this.makeRoomFor(bytes, epoch, splitId);
     } catch (error) {
+      if (!this.isEpoch(epoch)) return;
       this.deferPersistAfterStorageError(log, priority, state, error);
       return;
     }
+    if (!this.isEpoch(epoch) || this.hasTerminalIntent(log.logId)) return;
     if (!hasRoom) {
       await this.rejectPersistRecord(log, 'storage-quota', epoch);
       return;
@@ -1618,7 +1649,9 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
     try {
       await this.store.put(record);
     } catch (err) {
-      if (!this.isEpoch(epoch)) return;
+      // An upload can finish while this write is pending. Its late storage
+      // error must not evict other records or report another terminal result.
+      if (!this.isEpoch(epoch) || this.hasTerminalIntent(log.logId)) return;
       if (!isQuotaError(err)) {
         if (isPermanentRecordError(err)) {
           // 只有 DataClone/结构本身无效才是记录终态；UnknownError、事务中止等
@@ -1632,11 +1665,21 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
       }
       // 确实是配额：再淘汰一批后重试一次，仍失败就明确丢弃
       this.debug('quota hit, evicting and retrying:', err);
-      const evicted = await this.evictOldest(
-        Math.max(1, Math.ceil(this.index.size * 0.2)),
-        epoch,
-        splitId,
-      );
+      let evicted: number;
+      try {
+        evicted = await this.evictOldest(
+          Math.max(1, Math.ceil(this.index.size * 0.2)),
+          epoch,
+          splitId,
+        );
+      } catch (recoveryError) {
+        if (!this.isEpoch(epoch)) return;
+        // Quota recovery may itself hit a transient read failure. Keep the
+        // incoming write intent, including its retry deadline, for backoff.
+        this.deferPersistAfterStorageError(log, priority, state, recoveryError);
+        return;
+      }
+      if (!this.isEpoch(epoch) || this.hasTerminalIntent(log.logId)) return;
       if (splitId !== undefined && evicted === 0) {
         await this.rejectPersistRecord(log, 'storage-quota', epoch);
         return;
@@ -1645,7 +1688,7 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
       try {
         await this.store.put(record);
       } catch (retryErr) {
-        if (!this.isEpoch(epoch)) return;
+        if (!this.isEpoch(epoch) || this.hasTerminalIntent(log.logId)) return;
         if (isQuotaError(retryErr)) {
           this.debug('put failed after eviction, dropping:', retryErr);
           await this.rejectPersistRecord(log, 'storage-quota', epoch);
@@ -1722,6 +1765,7 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
     for (const meta of Array.from(this.index.values()).sort((a, b) => a.storedAt - b.storedAt)) {
       if (protectedSplitId !== undefined) {
         const record = await this.safeGet(meta.logId);
+        if (!this.isEpoch(epoch)) return 0;
         if (record && getSplitId(record.log) === protectedSplitId) continue;
       }
       candidates.push(meta);
@@ -1732,6 +1776,7 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
       if (!this.isEpoch(epoch)) return evicted;
       if (!this.index.has(meta.logId)) continue;
       const removed = await this.deleteSplitGroup(meta.logId, 'storage-quota');
+      if (!this.isEpoch(epoch)) return evicted;
       this.stats.quotaDrops += Math.max(1, removed);
       evicted += Math.max(1, removed);
     }
@@ -1744,6 +1789,7 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
     reason: 'storage-quota' | 'storage-rejected',
     epoch: number,
   ): Promise<void> {
+    if (!this.isEpoch(epoch)) return;
     const splitId = getSplitId(log);
     if (splitId === undefined) {
       if (reason === 'storage-quota') this.stats.quotaDrops++;
@@ -1762,14 +1808,20 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
       if (!this.isEpoch(epoch)) return;
       try {
         const record = await this.safeGet(logId);
+        if (!this.isEpoch(epoch)) return;
         if (record) siblingRecords.push(record);
       } catch (error) {
+        if (!this.isEpoch(epoch)) return;
         this.debug('split rejection could not read sibling body; deleting by indexed id:', error);
       }
       await this.safeDelete(logId);
     }
-    for (const record of siblingRecords) this.reportDrop(record.log, reason);
+    for (const record of siblingRecords) {
+      if (!this.isEpoch(epoch)) return;
+      this.reportDrop(record.log, reason);
+    }
     const removed = siblingIds.length;
+    if (!this.isEpoch(epoch)) return;
     if (reason === 'storage-quota') this.stats.quotaDrops += removed + 1;
     if (this.isEpoch(epoch)) this.reportDrop(log, reason);
   }
@@ -1779,8 +1831,13 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
     logId: string,
     reason: UploadDropReason,
   ): Promise<number> {
+    const epoch = this.epoch;
+    if (!this.isEpoch(epoch)) return 0;
     const indexedMeta = this.index.get(logId);
     const primary = await this.safeGet(logId);
+    // Reads only prepare a deletion. Reinstall invalidates that decision before
+    // it can mark terminal records or delete from the new installation's store.
+    if (!this.isEpoch(epoch)) return 0;
     const splitId = indexedMeta
       ? (indexedMeta.splitId ?? undefined)
       : (primary ? getSplitId(primary.log) : undefined);
@@ -1797,6 +1854,7 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
     const records: OfflineRecord[] = [];
     for (const id of memberIds) {
       const record = id === logId ? primary : await this.safeGet(id);
+      if (!this.isEpoch(epoch)) return 0;
       if (record) records.push(record);
     }
     for (const id of memberIds) await this.safeDelete(id);
@@ -1827,8 +1885,11 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
     this.enqueueOp(async () => {
       try {
         await this.flushPendingRecordDeletes();
+        if (!this.isEpoch(epoch)) return;
         await this.drainPendingPersists(epoch);
+        if (!this.isEpoch(epoch)) return;
         if (this.pendingPersists.length === 0) await this.replay();
+        if (!this.isEpoch(epoch)) return;
         if (
           this.pendingPersists.length === 0
           && !hasPendingRecordDeletes(this.deletionResourceKeys())
@@ -1836,7 +1897,7 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
           this.clearStorageRetryTimer(true);
         }
       } catch (error) {
-        this.armStorageRetryWake();
+        if (this.isEpoch(epoch)) this.armStorageRetryWake();
         throw error;
       }
     });
@@ -1845,9 +1906,11 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
   private scheduleReplay(): void {
     if (this.destroyed) return;
     if (this.index.size === 0) return;
+    const epoch = this.epoch;
     this.enqueueOp(async () => {
       try {
         await this.replay();
+        if (!this.isEpoch(epoch)) return;
         if (
           this.pendingPersists.length === 0
           && !hasPendingRecordDeletes(this.deletionResourceKeys())
@@ -1855,7 +1918,7 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
           this.clearStorageRetryTimer(true);
         }
       } catch (error) {
-        this.armStorageRetryWake();
+        if (this.isEpoch(epoch)) this.armStorageRetryWake();
         throw error;
       }
     });
@@ -2034,6 +2097,9 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
       }
       if (members.length > 0) groups.set(groupKey, members);
     }
+    // Async reads may outlive the uploader they were selected for. Its install
+    // event schedules a fresh scan; do not reserve records for a stale instance.
+    if (!this.isEpoch(epoch) || this.getUploadPlugin() !== upload) return;
     if (earliestDeferred !== Number.POSITIVE_INFINITY) {
       this.armDeferredReplayWake(earliestDeferred);
     }
@@ -2056,6 +2122,15 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
     let hasFeasibleGroup = false;
     for (const group of groups.values()) {
       if (candidates.length >= this.options.replayBatchSize) break;
+      // Success/drop events can arrive during any group's read. Recheck the
+      // whole group after all awaits, so no stale record or partial split enters.
+      if (group.some(({ meta }) =>
+        !this.index.has(meta.logId)
+        || this.deliveredTombstones.has(meta.logId)
+        || hasPendingRecordDelete(this.claimedResources, meta.logId)
+        || this.inFlight.has(meta.logId)
+        || upload.isPending(meta.logId)
+      )) continue;
       if (group.length > latestStatus.maxSize) {
         this.debug(
           `replay deferred: split group of ${group.length} exceeds queue maxSize ${latestStatus.maxSize}`,
@@ -2078,7 +2153,7 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
     if (deferredForCapacity) this.armOverflowReplayWake();
 
     for (const { meta, record } of candidates) {
-      if (!this.isEpoch(epoch)) return;
+      if (!this.isEpoch(epoch) || this.getUploadPlugin() !== upload) return;
       this.inFlight.set(meta.logId, now);
       upload.requeue(this.markAsReplay(record.log), {
         source: OFFLINE_REPLAY_SOURCE,
@@ -2100,8 +2175,8 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
 
   private async registerReplayFailure(log: LogEntry): Promise<void> {
     const epoch = this.epoch;
-    if (!this.isEpoch(epoch)) return;
     const logId = log.logId;
+    if (!this.isEpoch(epoch) || this.hasTerminalIntent(logId)) return;
     this.inFlight.delete(logId);
     const meta = this.index.get(logId);
     if (!meta) return;
@@ -2115,22 +2190,28 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
     try {
       record = await this.safeGet(logId);
     } catch (error) {
+      // A late storage failure belongs to the old installation; buffering it
+      // here could recreate a record already delivered by the new one.
+      if (!this.isEpoch(epoch) || this.hasTerminalIntent(logId)) return;
+      if (attempts >= this.options.maxReplayAttempts) {
+        // The in-memory budget is authoritative even when the body cannot be
+        // read. Retrying this write intent would admit another exhausted replay.
+        await this.giveUpReplay(log, epoch);
+        return;
+      }
       this.deferPersistAfterStorageError(log, meta.priority, {
         replayAttempts: attempts,
       }, error);
       return;
     }
-    if (!this.isEpoch(epoch)) return;
+    if (!this.isEpoch(epoch) || this.hasTerminalIntent(logId)) return;
     if (!record) {
       this.removeFromIndex(logId);
       return;
     }
 
     if (attempts >= this.options.maxReplayAttempts) {
-      await this.safeDelete(logId);
-      if (!this.isEpoch(epoch)) return;
-      this.stats.giveUps++;
-      this.reportDrop(record.log, 'offline-give-up', OFFLINE_REPLAY_SOURCE);
+      await this.giveUpReplay(record.log, epoch);
       return;
     }
 
@@ -2138,6 +2219,7 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
     try {
       await this.store!.put(record);
     } catch (err) {
+      if (!this.isEpoch(epoch) || this.hasTerminalIntent(logId)) return;
       // 补传预算与 Retry-After 同属持久状态。写回失败时先把更新意图放进统一
       // 退避链；在它提交前 replay 的可见性屏障会扣住本条，避免刷新后预算倒退。
       this.deferPersistAfterStorageError(record.log, record.priority, {
@@ -2146,10 +2228,24 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
       return;
     }
 
-    if (!this.isEpoch(epoch)) return;
+    if (!this.isEpoch(epoch) || this.hasTerminalIntent(logId)) return;
     // 继续推进剩余记录。这里不会热循环：每次失败都会消耗一次 replayAttempts，
     // 而网络真的断了的时候 UploadPlugin 会暂停，requeue 进去的条目根本不会失败。
     this.scheduleReplay();
+  }
+
+  private async giveUpReplay(log: LogEntry, epoch: number): Promise<void> {
+    if (!this.isEpoch(epoch) || this.hasTerminalIntent(log.logId)) return;
+    await this.safeDelete(log.logId);
+    // safeDelete owns a pending-delete intent when physical deletion fails.
+    // Only an independent success/drop event supersedes this give-up result.
+    if (
+      !this.isEpoch(epoch)
+      || this.deliveredTombstones.has(log.logId)
+      || this.preHydrationDeletes.has(log.logId)
+    ) return;
+    this.stats.giveUps++;
+    this.reportDrop(log, 'offline-give-up', OFFLINE_REPLAY_SOURCE);
   }
 
   // ==================== 工具 ====================
@@ -2243,7 +2339,12 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
       this.debug('delete failed:', err);
       try {
         const record = await store.get(logId);
-        if (record) {
+        // Another installation may have finished deletion while this read
+        // awaited. Do not recreate its removed record from a stale snapshot.
+        if (
+          record
+          && hasPendingRecordDelete(backendResourceKeys(this.options, store.backend), logId)
+        ) {
           await store.put({ ...record, terminal: true });
         }
       } catch (markErr) {

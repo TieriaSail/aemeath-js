@@ -2,8 +2,8 @@
  * 模块1：错误捕获 - WebView 增强捕获示例
  *
  * 在 iOS WKWebView / Android WebView 等跨域受限环境中，
- * window.onerror 只能获取到 "Script error."。
- * BrowserApiErrorsPlugin 通过包裹回调函数解决此问题。
+ * window.onerror 可能只能获取到 "Script error."。
+ * BrowserApiErrorsPlugin 保留其覆盖回调的原始异常，无法恢复浏览器未暴露的信息。
  */
 
 import { initAemeath, getAemeath } from 'aemeath-js';
@@ -23,7 +23,7 @@ initAemeath({
 
 const logger = getAemeath();
 
-// ==================== 以下场景的错误现在都能获取完整堆栈 ====================
+// ==================== 已启用 hook 覆盖的回调场景 ====================
 
 // 场景 1：事件监听器中的错误
 document.getElementById('btn')?.addEventListener('click', () => {
@@ -34,7 +34,7 @@ document.getElementById('btn')?.addEventListener('click', () => {
 
 // 场景 2：定时器中的错误
 setTimeout(() => {
-  JSON.parse('invalid json'); // TypeError 会被完整捕获
+  JSON.parse('invalid json'); // SyntaxError 的原始信息由 hook 捕获
 }, 1000);
 
 // 场景 3：XHR 回调中的错误

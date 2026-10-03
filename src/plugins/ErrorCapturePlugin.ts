@@ -2,10 +2,12 @@
  * 错误捕获插件 - 自动捕获全局错误
  */
 
-import type { AemeathPlugin, AemeathInterface } from '../types';
+import type { AemeathPlugin, AemeathInterface, LogOptions } from '../types';
 import { PluginPriority } from '../types';
-import { ErrorDeduplicator } from '../utils/errorDeduplicator';
-import { shouldIgnoreOnError } from '../utils/wrap';
+import { browserErrorCapture } from '../utils/browserErrorCapture';
+import { normalizeCapturedError } from '../utils/errorEvidence';
+import { runCapture } from '../utils/captureGuard';
+import type { ErrorInfo } from '../types';
 import { isConsoleCaptureSuppressed } from '../utils/consoleCaptureGuard';
 import {
   RouteMatcher,
@@ -14,6 +16,11 @@ import {
 
 // 重新导出 RouteMatchConfig 以保持向后兼容
 export type { RouteMatchConfig } from '../utils/routeMatcher';
+
+const consoleHandlers = new WeakMap<typeof console.error, {
+  previous: typeof console.error;
+  active: boolean;
+}>();
 
 export interface ErrorCapturePluginOptions {
   captureUnhandledRejection?: boolean;
@@ -47,18 +54,14 @@ export class ErrorCapturePlugin implements AemeathPlugin {
     debug: boolean;
     errorFilter?: (error: Error) => boolean;
   };
-  private readonly deduplicator: ErrorDeduplicator;
   private routeMatcher!: RouteMatcher;
   private readonly pluginRouteMatch: RouteMatchConfig | undefined;
   private readonly debugEnabled: boolean;
   private logger: AemeathInterface | null = null;
-  private originalErrorHandler: OnErrorEventHandler | null = null;
-  private originalRejectionHandler:
-    | ((event: PromiseRejectionEvent) => void)
-    | null = null;
-  private originalConsoleError: typeof console.error | null = null;
-  private consoleErrorHandler: typeof console.error | null = null;
-  private resourceErrorHandler: ((event: Event) => void) | null = null;
+  private unregisterConsoleError: (() => void) | null = null;
+  private unregisterGlobalError: (() => void) | null = null;
+  private unregisterRejection: (() => void) | null = null;
+  private unregisterResourceError: (() => void) | null = null;
 
   constructor(options: ErrorCapturePluginOptions = {}) {
     this.debugEnabled = options.debug ?? false;
@@ -69,12 +72,6 @@ export class ErrorCapturePlugin implements AemeathPlugin {
       debug: options.debug ?? false,
       errorFilter: options.errorFilter,
     };
-
-    this.deduplicator = new ErrorDeduplicator({
-      enabled: true,
-      timeWindow: 5000,
-      maxCacheSize: 100,
-    });
 
     this.pluginRouteMatch = options.routeMatch;
   }
@@ -96,299 +93,212 @@ export class ErrorCapturePlugin implements AemeathPlugin {
   install(logger: AemeathInterface): void {
     this.logger = logger;
 
+    // Compose global matcher with plugin-level routeMatch
     this.routeMatcher = RouteMatcher.compose(
       logger.routeMatcher,
       this.pluginRouteMatch,
       { debug: this.debugEnabled, debugPrefix: '[ErrorCapture]' },
     );
 
-    this.captureGlobalError();
+    try {
+      this.captureGlobalError();
+    } catch (e) {
+      this.warn('Failed to set up global error capture:', e);
+    }
 
     if (this.config.captureUnhandledRejection) {
-      this.captureUnhandledRejection();
+      try {
+        this.captureUnhandledRejection();
+      } catch (e) {
+        this.warn('Failed to set up unhandled rejection capture:', e);
+      }
     }
 
     if (this.config.captureResourceError) {
-      this.captureResourceError();
+      try {
+        this.captureResourceError();
+      } catch (e) {
+        this.warn('Failed to set up resource error capture:', e);
+      }
     }
 
     if (this.config.captureConsoleError) {
-      this.captureConsoleError();
+      try {
+        this.captureConsoleError();
+      } catch (e) {
+        this.warn('Failed to set up console error capture:', e);
+      }
     }
 
     this.log('Installed');
   }
 
   uninstall(): void {
-    window.onerror = this.originalErrorHandler;
-
-    if (this.originalRejectionHandler) {
-      window.removeEventListener(
-        'unhandledrejection',
-        this.originalRejectionHandler,
-      );
+    if (this.unregisterGlobalError) {
+      this.unregisterGlobalError();
+      this.unregisterGlobalError = null;
     }
 
-    if (this.resourceErrorHandler) {
-      window.removeEventListener('error', this.resourceErrorHandler, true);
-      this.resourceErrorHandler = null;
+    if (this.unregisterRejection) {
+      this.unregisterRejection();
+      this.unregisterRejection = null;
     }
 
-    if (this.originalConsoleError && console.error === this.consoleErrorHandler) {
-      console.error = this.originalConsoleError;
-      this.originalConsoleError = null;
-      this.consoleErrorHandler = null;
+    if (this.unregisterResourceError) {
+      this.unregisterResourceError();
+      this.unregisterResourceError = null;
     }
 
-    this.deduplicator.stop();
+    if (this.unregisterConsoleError) {
+      this.unregisterConsoleError();
+      this.unregisterConsoleError = null;
+    }
+
     this.log('Uninstalled');
     this.logger = null;
   }
 
   private captureGlobalError(): void {
-    this.originalErrorHandler = window.onerror;
-
-    window.onerror = (message, source, lineno, colno, error) => {
-      if (this.originalErrorHandler) {
-        this.originalErrorHandler.call(
-          window,
-          message,
-          source,
-          lineno,
-          colno,
-          error,
-        );
-      }
-
-      if (shouldIgnoreOnError()) {
-        this.log('Skipped duplicate (already captured by wrapped callback)');
-        return true;
-      }
-
-      const err = error || new Error(String(message));
-
-      if (this.shouldCaptureError(err)) {
-        // 附加错误位置信息（用于 SourceMap 还原和自动分类）
-        (err as any).source = source;
-        (err as any).lineno = lineno;
-        (err as any).colno = colno;
-        (err as any).type = 'global';
-
-        const errorInfo = {
-          message: err.message,
-          stack: err.stack,
-          type: 'global',
-          filename: source,
-          lineno,
-          colno,
-        };
-
-        if (this.deduplicator.check(errorInfo)) {
-          this.logger?.error('Global error', { error: err });
-        }
-      }
-
-      return true;
-    };
+    this.unregisterGlobalError = browserErrorCapture.onGlobalError((info) => {
+      const original = info.error;
+      this.capture('Global error', () => {
+        const error = normalizeCapturedError(original, {
+          channel: 'global',
+          message: typeof info.message === 'string' ? info.message : 'Unknown error event',
+          source: info.source, line: info.lineno, column: info.colno,
+        });
+        // Compatibility: category stays in type until the consumer migration.
+        error.type = 'global';
+        error.source = info.source;
+        error.lineno = info.lineno;
+        error.colno = info.colno;
+        return error;
+      }, original);
+    });
   }
 
   private captureUnhandledRejection(): void {
-    const handler = (event: PromiseRejectionEvent): void => {
-      let error: Error;
-
-      if (event.reason instanceof Error) {
-        // ✅ reason 是 Error，直接使用
-        error = event.reason;
-      } else {
-        // ✅ reason 不是 Error，转换为 Error
-        // 优化 message：如果是对象，使用 JSON.stringify 保留信息
-        if (typeof event.reason === 'object' && event.reason !== null) {
-          try {
-            error = new Error(JSON.stringify(event.reason));
-          } catch {
-            error = new Error(String(event.reason));
-          }
-        } else {
-          error = new Error(String(event.reason));
-        }
-      }
-
-      if (this.shouldCaptureError(error)) {
-        (error as any).type = 'unhandledrejection';
-
-        const errorInfo = {
-          message: error.message,
-          stack: error.stack,
-          type: 'unhandledrejection',
-        };
-
-        if (this.deduplicator.check(errorInfo)) {
-          this.logger?.error('Unhandled promise rejection', { error });
-        }
-      }
-    };
-
-    this.originalRejectionHandler = handler;
-    window.addEventListener('unhandledrejection', handler);
+    this.unregisterRejection = browserErrorCapture.onUnhandledRejection((info) => {
+      const original = info.reason;
+      this.capture('Unhandled promise rejection', () => {
+        const error = normalizeCapturedError(original, { channel: 'unhandledrejection' });
+        error.type = 'unhandledrejection';
+        return error;
+      }, original);
+    });
   }
 
   private captureResourceError(): void {
-    this.resourceErrorHandler = (event: Event) => {
-      if (event.target !== window && event.target instanceof HTMLElement) {
-        const target = event.target;
-        const tagName = target.tagName?.toLowerCase();
-        const src =
-          'src' in target
-            ? (target.src as string)
-            : 'href' in target
-              ? (target.href as string)
-              : undefined;
-
-        if (
-          src &&
-          (src.includes('aemeath-js') ||
-            src.includes('aemeath-js.global.js'))
-        ) {
-          this.warn('忽略日志系统资源加载错误:', src);
-          return;
-        }
-
-        const error = new Error(`Failed to load ${tagName}: ${src}`);
-        (error as any).type = 'resource';
-        (error as any).tagName = tagName;
-        (error as any).src = src;
-        (error as any).outerHTML = target.outerHTML?.substring(0, 200);
-
-        if (this.shouldCaptureError(error)) {
-          const errorInfo = {
-            message: error.message,
-            stack: error.stack,
-            type: 'resource',
-            tagName,
-            src,
-          };
-          if (this.deduplicator.check(errorInfo)) {
-            this.logger?.error('Resource load error', { error });
-          }
-        }
-      }
-    };
-    window.addEventListener('error', this.resourceErrorHandler, true);
+    const { onResourceError } = browserErrorCapture;
+    if (!onResourceError) return;
+    this.unregisterResourceError = onResourceError.call(browserErrorCapture, (event) => {
+      if (typeof HTMLElement === 'undefined' || !(event.target instanceof HTMLElement)) return;
+      const target = event.target;
+      this.capture('Resource load error', () => {
+        const tagName = target.tagName.toLowerCase();
+        const src = 'src' in target ? target.src : 'href' in target ? target.href : undefined;
+        const error = normalizeCapturedError(undefined, {
+          channel: 'resource', message: `Failed to load ${tagName}: ${src}`,
+        });
+        error.type = 'resource';
+        error.tagName = tagName;
+        error.src = src;
+        error.outerHTML = target.outerHTML?.substring(0, 200);
+        return error;
+      });
+    });
   }
 
   private captureConsoleError(): void {
-    this.originalConsoleError = console.error;
-
+    const original = console.error;
+    const state = { previous: original, active: true };
     const handler = (...args: unknown[]): void => {
-      this.originalConsoleError?.apply(console, args);
-
-      if (!this.logger || isConsoleCaptureSuppressed()) {
-        return;
-      }
-
-      const error = args.find((arg) => arg instanceof Error) as
-        | Error
-        | undefined;
-
-      if (error && this.shouldCaptureError(error)) {
-        const errorInfo = {
-          message: error.message,
-          stack: error.stack,
-          type: 'console',
-        };
-
-        if (this.deduplicator.check(errorInfo)) {
-          this.logger?.error('Console error', {
-            error,
-            tags: { source: 'console' },
-            context: { consoleArgs: args },
-          });
+      original.apply(console, args);
+      if (!state.active || !this.logger || isConsoleCaptureSuppressed()) return;
+      runCapture('console', () => {
+        const reason = args.find((arg) => {
+          if (!arg || typeof arg !== 'object') return false;
+          try { return arg instanceof Error ||
+            (typeof (arg as Error).message === 'string' && typeof (arg as Error).name === 'string'); }
+          catch { return false; }
+        });
+        if (reason) {
+          this.capture('Console error',
+            () => normalizeCapturedError(reason, { channel: 'console' }), reason,
+            error => ({ tags: { source: 'console' },
+              context: { consoleArgs: args.map(arg => arg === reason ? error : arg) } }));
         }
-      }
+      });
     };
-    this.consoleErrorHandler = handler;
+    consoleHandlers.set(handler, state);
     console.error = handler;
+    this.unregisterConsoleError = () => {
+      state.active = false;
+      let current = console.error;
+      let node = consoleHandlers.get(current);
+      while (node && !node.active) {
+        current = node.previous;
+        node = consoleHandlers.get(current);
+      }
+      if (current !== console.error) console.error = current;
+    };
   }
 
-  /**
-   * 检查错误是否来自日志系统自身
-   * 医者不能自医：日志系统的错误不应该被自己捕获
-   *
-   * @param error - 错误对象
-   * @returns true 表示是日志系统内部错误，应该被排除
-   */
-  private isLoggerInternalError(error: Error | any): boolean {
-    // 1. 检查特殊标记（由 Logger 内部主动标记的错误）
-    if (error && error._isAemeathInternalError === true) {
-      return true;
-    }
-
-    // 2. 检查错误信息前缀（Logger 内部日志都以特定前缀开头）
-    if (error && error.message) {
-      const message = error.message.toString();
-      const loggerMessages = [
-        '[Logger]',
-        '[UploadPlugin]',
-        '[SafeGuard]',
-        '[ErrorCapture]',
-        '[EarlyError]',
-        '[EarlyErrorCapture]',
-        '[Performance]',
-        '[NetworkPlugin]',
-        '[BrowserApiErrors]',
-        '[AemeathJs]',
-        // 新插件用的是 `[Aemeath]` / `[Aemeath:xxx]` 前缀，漏掉它们意味着
-        // ErrorCapture 会把 SDK 自己的 warn/throw 再当成宿主错误上报
-        '[Aemeath]',
-        '[Aemeath:',
-      ];
-
-      if (loggerMessages.some((pattern) => message.includes(pattern))) {
-        return true;
-      }
-    }
-
-    // 3. 检查错误堆栈中是否包含 aemeath-js 相关路径
-    // Resource errors are represented by an Error created inside this plugin,
-    // so their synthetic stack necessarily points at aemeath-js. The resource
-    // URL and element metadata, rather than that stack, describe the host fault.
-    if ((error as Error & { type?: string })?.type !== 'resource' && error?.stack) {
-      const stack = error.stack.toString();
-      const loggerPatterns = [
-        'aemeath-js',
-        'aemeath-js.global.js',
-      ];
-
-      if (loggerPatterns.some((pattern) => stack.includes(pattern))) {
-        return true;
-      }
-    }
-
-    return false;
-  }
-
-  private shouldCaptureError(error: Error): boolean {
-    // 🛡️ 1. 主动排除日志系统自身的错误（医者不能自医）
-    if (this.isLoggerInternalError(error)) {
-      this.warn('忽略日志系统内部错误，避免自我报告:', error.message);
-      return false;
-    }
-
-    // 🎯 2. 检查路由匹配（使用共享的路由匹配器）
-    if (!this.routeMatcher.shouldCapture()) {
-      return false;
-    }
-
-    // 🔍 3. 自定义过滤器
-    if (!this.config.errorFilter) {
-      return true;
-    }
-
+  /** Preserve predicate configurations using identity, subclasses or private fields. */
+  private originalFilterError(input: unknown): Error | undefined {
+    if (!input || typeof input !== 'object') return undefined;
     try {
-      return this.config.errorFilter(error);
-    } catch (err) {
-      this.warn('Error filter threw:', err);
-      return true;
+      if (input instanceof Error) return input;
+      let prototype = Object.getPrototypeOf(input);
+      const nativeError = Function.prototype.toString.call(Error);
+      for (let depth = 0; prototype && depth < 32; depth++) {
+        const constructor = Object.getOwnPropertyDescriptor(prototype, 'constructor');
+        if (typeof constructor?.value === 'function' &&
+          Function.prototype.toString.call(constructor.value) === nativeError) return input as Error;
+        prototype = Object.getPrototypeOf(prototype);
+      }
+    } catch { /* Host objects and revoked proxies use the safe Error view. */ }
+    return undefined;
+  }
+
+  private capture(message: string, buildError: () => ErrorInfo, original?: unknown,
+    buildOptions?: (error: ErrorInfo) => Pick<LogOptions, 'tags' | 'context'>): void {
+    if (!this.logger) return;
+    if (!this.routeMatcher.shouldCapture()) return;
+    const originalError = this.config.errorFilter ? this.originalFilterError(original) : undefined;
+    if (originalError) {
+      // Filter the original identity before taking its only snapshot. A second
+      // snapshot can consume a lazy getter twice and lose its original stack.
+      try { if ((originalError as Error & { _isAemeathInternalError?: boolean })._isAemeathInternalError === true) return; }
+      catch { /* The normalizer records unreadable properties safely. */ }
+      try { if (!this.config.errorFilter!(originalError)) return; }
+      catch { /* Preserve the legacy fail-open behavior of a broken filter. */ }
     }
+    let error = buildError();
+    if (error._isAemeathInternalError === true) return;
+    if (this.config.errorFilter && !originalError) {
+      const view = Object.assign(new Error(error.value), error);
+      view.name = error.evidence?.originalName || 'Error';
+      try { if (!this.config.errorFilter(view)) return; }
+      catch { /* Preserve the legacy fail-open behavior of a broken filter. */ }
+      // Snapshot all accepted fields, including deletions, without letting the
+      // pre-filter value or a filter-only synthetic stack override redaction.
+      const fields: Record<string, PropertyDescriptor> = Object.create(null);
+      for (const key of Object.getOwnPropertyNames(view)) {
+        // On older V8 versions even reading the stack descriptor realizes the
+        // lazy stack and calls message getters. Skip filter-only stacks first.
+        if (key === 'stack' && error.stack === undefined) continue;
+        const field = Object.getOwnPropertyDescriptor(view, key);
+        if (!field) continue;
+        if (field.get) field.get = field.get.bind(view);
+        fields[key] = field;
+      }
+      fields.value = fields.message || { value: '', enumerable: true };
+      delete fields.message;
+      if (error.stack === undefined) delete fields.stack;
+      error = normalizeCapturedError(Object.create(null, fields));
+    }
+    // Preserve occurrences; errorObjectId links channels without dropping them.
+    this.logger?.error(message, { ...buildOptions?.(error), error });
   }
 }

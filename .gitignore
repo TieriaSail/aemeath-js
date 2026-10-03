@@ -26,3 +26,9 @@ coverage/
 *.tgz
 .npmrc
 
+
+# Browser regression artifacts
+/test-results/
+/playwright-report/
+/blob-report/
+/.vite-e2e-fixtures/

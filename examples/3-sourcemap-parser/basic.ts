@@ -1,7 +1,9 @@
 /**
  * 模块3：Source Map 解析 - 基础示例
  *
- * 使用 SourceMap 解析混淆后的错误堆栈
+ * 使用 SourceMap 解析已确认来源的原始字符串堆栈。
+ * SDK ErrorInfo / LogEntry 请优先使用 with-evidence.ts。
+ * For SDK records use with-evidence.ts; this example demonstrates raw stack strings.
  */
 
 import { createParser } from 'aemeath-js/parser';

@@ -398,3 +398,54 @@ result.frames.forEach((frame) => {
 - [错误捕获](./1-error-capture.md)
 - [早期错误捕获](./2-early-error-capture.md)
 - [上传插件](./4-upload-plugin.md)
+
+
+## 按证据来源解析
+
+消费新版 SDK 的 ErrorInfo 时优先使用 `await parser.parseError(entry.error)`。已知采集栈
+或缺少原始 stack 时返回 `status: "unavailable"`，不发起映射请求；其余状态为
+`source-map-missing`、`parse-failed`、`mapped`。旧 `parse(string)` API 保留，但调用者需自行
+确保字符串是要解析的原始栈。原始栈支持 Chromium、Firefox/Safari 常见格式。
+sourceMapBaseUrl 仍需由应用精确指定环境和 release；文件名应包含相应构建标识。
+
+`parseError()` 在各映射状态下都使用 `ErrorInfo.value` 作为返回的 message，避免不带消息头的
+Safari/Firefox 堆栈把首帧地址当成错误消息；旧 `parse(string)` 的行为保持兼容。
+
+下面的函数可用于错误详情页；`status` 会明确区分无原始栈、缺少 SourceMap、解析失败和映射成功。
+请将 `sourceMapBaseUrl` 换成与实际环境和 release 对应的地址。
+
+```typescript
+import { createParser } from 'aemeath-js/parser';
+import type { LogEntry } from 'aemeath-js';
+
+const parser = createParser({
+  sourceMapBaseUrl: 'https://cdn.example.com/sourcemaps/my-release',
+});
+
+async function inspectError(entry: LogEntry) {
+  if (!entry.error) return;
+  const result = await parser.parseError(entry.error);
+  return {
+    message: result.message,
+    status: result.status,
+    frames: result.frames,
+    evidence: entry.error.evidence,
+  };
+}
+```
+
+`parseError(error: ErrorInfo)` 返回 `Promise<ParseResult & { status: ... }>`：
+
+| status | 含义与处理 |
+| --- | --- |
+| `unavailable` | 缺少原始栈，或证据明确标记为采集栈；不请求 SourceMap，展示消息和可用的位置元数据。 |
+| `mapped` | 至少一帧成功映射，`success` 为 `true`；仍逐帧检查 `resolved`，不能假设全部成功。 |
+| `source-map-missing` | 已读到地址，但没有可用映射；检查资源匹配、环境/release 路径和访问权限。 |
+| `parse-failed` | 未识别到可解析帧，或映射数据/位置解析失败；保留原消息与可用的原始帧供排查。 |
+
+除 `mapped` 外，`success` 均为 `false`。历史 `ErrorInfo` 没有 evidence 时仍可尝试解析提供的
+stack；调用方需确认它确实是原始栈。已有 `parse(string)` 不变，适用于已确认来源的原始字符串栈。
+可复制并复用解析器的示例：[with-evidence.ts](https://github.com/TieriaSail/aemeath-js/blob/main/examples/3-sourcemap-parser/with-evidence.ts)。
+
+
+浏览器错误栈中的行号、列号从 1 开始；解析器在查询 SourceMap 时转换列号。结果 `minified.column` 保留原始栈列号，`original.column` 沿用 SourceMap 的从 0 开始的列号。

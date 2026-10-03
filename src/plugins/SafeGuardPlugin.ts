@@ -23,6 +23,7 @@ import type {
   LogOptions,
 } from '../types';
 import { PluginPriority } from '../types';
+import { errorIdentity } from '../utils/errorIdentity';
 
 // ==================== 类型定义 ====================
 
@@ -100,10 +101,12 @@ export class SafeGuardPlugin implements AemeathPlugin {
 
   private readonly config: SafeGuardConfig;
   private logger: AemeathInterface | null = null;
+  private lifecycleEpoch = 0;
 
   // Circuit breaker
   private state: CircuitState = 'closed';
   private cooldownTimer: ReturnType<typeof setTimeout> | null = null;
+  private cooldownDeadline: number | null = null;
 
   // 滑动窗口
   private logTimestamps: number[] = [];
@@ -131,21 +134,26 @@ export class SafeGuardPlugin implements AemeathPlugin {
   // 回收站（cautious / strict）
   private parkingLot: ParkedLog[] = [];
   private idleScheduled = false;
+  private cancelIdleReplay: (() => void) | null = null;
+  private replayingParkingLot = false;
 
   // 事件处理函数引用
   private boundHandleError: (() => void) | null = null;
   private boundBeforeUnload: (() => void) | null = null;
 
   constructor(options: SafeGuardPluginOptions = {}) {
+    // Preserve v1 zero/Infinity and short-duration settings; reject malformed values.
+    const valid = (v: number | undefined, fallback: number): number =>
+      typeof v === 'number' && !Number.isNaN(v) && v >= 0 ? v : fallback;
     this.config = {
       mode: options.mode ?? 'standard',
-      rateLimit: options.rateLimit ?? 100,
-      maxErrors: options.maxErrors ?? 100,
-      cooldownPeriod: options.cooldownPeriod ?? 30000,
-      mergeWindow: options.mergeWindow ?? 2000,
+      rateLimit: valid(options.rateLimit, 100),
+      maxErrors: valid(options.maxErrors, 100),
+      cooldownPeriod: valid(options.cooldownPeriod, 30000),
+      mergeWindow: valid(options.mergeWindow, 2000),
       enableRecursionGuard: options.enableRecursionGuard ?? true,
-      parkingLotSize: options.parkingLotSize ?? 200,
-      parkingLotTTL: options.parkingLotTTL ?? 5 * 60 * 1000,
+      parkingLotSize: valid(options.parkingLotSize, 200),
+      parkingLotTTL: valid(options.parkingLotTTL, 5 * 60 * 1000),
       storageKey: options.storageKey ?? '__aemeath_safeguard_parking__',
     };
   }
@@ -154,11 +162,13 @@ export class SafeGuardPlugin implements AemeathPlugin {
 
   install(logger: AemeathInterface): void {
     this.logger = logger;
+    const epoch = ++this.lifecycleEpoch;
 
     this.boundHandleError = this.handleError.bind(this);
     logger.on('error', this.boundHandleError);
 
     this.errorResetTimer = setInterval(() => {
+      if (epoch !== this.lifecycleEpoch || !this.logger) return;
       this.errorCount = 0;
     }, 60000);
 
@@ -167,15 +177,25 @@ export class SafeGuardPlugin implements AemeathPlugin {
       if (typeof window !== 'undefined') {
         this.boundBeforeUnload = this.persistToStorage.bind(this);
         window.addEventListener('beforeunload', this.boundBeforeUnload);
+        window.addEventListener('pagehide', this.boundBeforeUnload);
       }
     }
 
     (logger as any).getHealth = this.getHealth.bind(this);
     (logger as any).pause = this.manualPause.bind(this);
     (logger as any).resume = this.manualResume.bind(this);
+
+    if (this.state === 'open') this.scheduleCooldown();
+    this.scheduleIdleReplay();
   }
 
   uninstall(logger: AemeathInterface): void {
+    ++this.lifecycleEpoch;
+    const cancelIdle = this.cancelIdleReplay;
+    this.cancelIdleReplay = null;
+    this.idleScheduled = false;
+    try { cancelIdle?.(); } catch { /* stale callbacks also check their epoch */ }
+
     if (this.boundHandleError) {
       logger.off('error', this.boundHandleError);
       this.boundHandleError = null;
@@ -186,7 +206,7 @@ export class SafeGuardPlugin implements AemeathPlugin {
       this.errorResetTimer = null;
     }
 
-    if (this.cooldownTimer) {
+    if (this.cooldownTimer !== null) {
       clearTimeout(this.cooldownTimer);
       this.cooldownTimer = null;
     }
@@ -202,6 +222,7 @@ export class SafeGuardPlugin implements AemeathPlugin {
     }
     if (typeof window !== 'undefined' && this.boundBeforeUnload) {
       window.removeEventListener('beforeunload', this.boundBeforeUnload);
+      window.removeEventListener('pagehide', this.boundBeforeUnload);
       this.boundBeforeUnload = null;
     }
 
@@ -308,15 +329,16 @@ export class SafeGuardPlugin implements AemeathPlugin {
 
     this.state = newState;
 
-    if (this.cooldownTimer) {
+    if (this.cooldownTimer !== null) {
       clearTimeout(this.cooldownTimer);
       this.cooldownTimer = null;
     }
 
     if (newState === 'open') {
-      this.cooldownTimer = setTimeout(() => {
-        this.transitionTo('half-open');
-      }, this.config.cooldownPeriod);
+      this.cooldownDeadline = Date.now() + this.config.cooldownPeriod;
+      this.scheduleCooldown();
+    } else {
+      this.cooldownDeadline = null;
     }
 
     if (newState === 'half-open') {
@@ -330,6 +352,17 @@ export class SafeGuardPlugin implements AemeathPlugin {
     }
 
     this.logger?.emit('safeguard:stateChange', { from: oldState, to: newState });
+  }
+
+  private scheduleCooldown(): void {
+    if (!this.logger || this.state !== 'open') return;
+    const epoch = this.lifecycleEpoch;
+    const delay = Math.max(0, (this.cooldownDeadline ?? Date.now()) - Date.now());
+    this.cooldownTimer = setTimeout(() => {
+      if (epoch !== this.lifecycleEpoch || !this.logger) return;
+      this.cooldownTimer = null;
+      this.transitionTo('half-open');
+    }, delay);
   }
 
   // ==================== 滑动窗口 ====================
@@ -364,45 +397,17 @@ export class SafeGuardPlugin implements AemeathPlugin {
 
   private computeHash(level: LogLevel, message: string, options: LogOptions): string {
     const parts = [level, message];
-
-    if (options.error) {
-      const err = options.error;
-      if (err instanceof Error) {
-        parts.push(err.name, err.message);
-        if (err.stack) {
-          const firstFrame = this.extractFirstFrame(err.stack);
-          if (firstFrame) parts.push(firstFrame);
-        }
-      } else {
-        parts.push((err as any).type ?? '', (err as any).value ?? '');
-      }
-    }
-
-    return this.djb2(parts.join('|'));
-  }
-
-  private extractFirstFrame(stack: string): string | null {
-    const lines = stack.split('\n');
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (trimmed.startsWith('at ')) {
-        return trimmed;
-      }
-    }
-    return null;
-  }
-
-  private djb2(str: string): string {
-    let hash = 5381;
-    for (let i = 0; i < str.length; i++) {
-      hash = (hash << 5) + hash + str.charCodeAt(i);
-    }
-    return (hash >>> 0).toString(16);
+    const error = options.error;
+    if (error) parts.push(...errorIdentity(error));
+    // Full structured keys avoid both 32-bit collisions and ambiguous delimiters.
+    return JSON.stringify(parts);
   }
 
   private scheduleMergeFlush(): void {
     if (this.mergeFlushTimer) return;
+    const epoch = this.lifecycleEpoch;
     this.mergeFlushTimer = setTimeout(() => {
+      if (epoch !== this.lifecycleEpoch || !this.logger) return;
       this.mergeFlushTimer = null;
       this.flushMergeMap();
     }, this.config.mergeWindow);
@@ -486,55 +491,68 @@ export class SafeGuardPlugin implements AemeathPlugin {
   // ==================== 回收站闲时回放 ====================
 
   private scheduleIdleReplay(): void {
-    if (this.idleScheduled || this.parkingLot.length === 0) return;
+    if (!this.logger || this.idleScheduled || this.parkingLot.length === 0) return;
     this.idleScheduled = true;
-
+    const epoch = this.lifecycleEpoch;
     const callback = () => {
+      if (epoch !== this.lifecycleEpoch || !this.logger) return;
       this.idleScheduled = false;
+      this.cancelIdleReplay = null;
       this.replayParkingLot();
     };
-
-    if (typeof requestIdleCallback !== 'undefined') {
-      requestIdleCallback(callback, { timeout: 10000 });
-    } else {
-      setTimeout(callback, 5000);
+    const fallback = () => {
+      const handle = setTimeout(callback, 5000);
+      this.cancelIdleReplay = () => clearTimeout(handle);
+    };
+    try {
+      if (typeof requestIdleCallback === 'function') {
+        const handle = requestIdleCallback(callback, { timeout: 10000 });
+        this.cancelIdleReplay = () => {
+          if (typeof cancelIdleCallback === 'function') cancelIdleCallback(handle);
+        };
+      } else {
+        fallback();
+      }
+    } catch {
+      fallback();
     }
   }
 
   private replayParkingLot(): void {
-    if (!this.logger || this.parkingLot.length === 0) return;
-
-    // 如果系统还在 open 状态，不回放，等下次空闲
-    if (this.state === 'open') {
+    if (!this.logger || this.replayingParkingLot || this.parkingLot.length === 0) return;
+    const owner = this.logger;
+    const epoch = this.lifecycleEpoch;
+    const ownsReplay = () => this.logger === owner && this.lifecycleEpoch === epoch;
+    const canReplay = () => ownsReplay() && this.state !== 'open';
+    if (!canReplay()) {
       this.scheduleIdleReplay();
       return;
     }
 
     const now = Date.now();
     const ttl = this.config.parkingLotTTL;
+    this.parkingLot = this.parkingLot.filter((item): item is ParkedLog => item !== null && typeof item === 'object' &&
+          ['debug', 'info', 'track', 'warn', 'error'].includes(item.level) && typeof item.message === 'string' &&
+          typeof item.timestamp === 'number' && Number.isFinite(item.timestamp) &&
+          item.options !== null && typeof item.options === 'object' &&
+          now - item.timestamp < ttl);
 
-    // 清理过期条目
-    this.parkingLot = this.parkingLot.filter((item) => now - item.timestamp < ttl);
-
-    // 每次最多回放 10 条，避免阻塞
-    const batch = this.parkingLot.splice(0, 10);
-
-    for (const item of batch) {
-      const tags = {
-        ...item.options.tags,
-        safeguardReplayed: true as const,
-      };
-      this.replayLog(item.level, item.message, { ...item.options, tags });
-    }
-
-    // 如果还有剩余，继续调度
-    if (this.parkingLot.length > 0) {
-      this.scheduleIdleReplay();
-    }
-
-    // strict 模式更新持久化
-    if (this.config.mode === 'strict') {
-      this.persistToStorage();
+    this.replayingParkingLot = true;
+    try {
+      // Remove only the item being delivered. A log listener can uninstall the
+      // plugin or reopen the circuit synchronously; remaining items stay owned
+      // by the parking lot (including during strict-mode uninstall persistence).
+      for (let count = 0; count < 10 && canReplay() && this.parkingLot.length > 0; count++) {
+        const item = this.parkingLot.shift()!;
+        const tags = { ...item.options.tags, safeguardReplayed: true as const };
+        this.replayLog(item.level, item.message, { ...item.options, tags });
+      }
+    } finally {
+      this.replayingParkingLot = false;
+      if (ownsReplay()) {
+        this.scheduleIdleReplay();
+        if (this.config.mode === 'strict') this.persistToStorage();
+      }
     }
   }
 
@@ -566,12 +584,17 @@ export class SafeGuardPlugin implements AemeathPlugin {
       const raw = localStorage.getItem(this.config.storageKey);
       if (!raw) return;
 
-      const data = JSON.parse(raw) as ParkedLog[];
+      const data: unknown = JSON.parse(raw);
+      if (!Array.isArray(data)) { this.removeStorage(); return; }
       const now = Date.now();
       const ttl = this.config.parkingLotTTL;
 
       this.parkingLot = data
-        .filter((item) => now - item.timestamp < ttl)
+        .filter((item): item is ParkedLog => item !== null && typeof item === 'object' &&
+          ['debug', 'info', 'track', 'warn', 'error'].includes(item.level) && typeof item.message === 'string' &&
+          typeof item.timestamp === 'number' && Number.isFinite(item.timestamp) &&
+          item.options !== null && typeof item.options === 'object' &&
+          now - item.timestamp < ttl)
         .slice(0, this.config.parkingLotSize);
 
       this.removeStorage();

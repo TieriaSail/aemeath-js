@@ -50,6 +50,8 @@ export interface StackFrame {
  * 错误信息（参考 Sentry 的 exception）
  */
 export interface ErrorInfo {
+  /** Captured provenance; absent on legacy records. */
+  evidence?: import('./utils/errorEvidence').ErrorEvidence;
   /** 错误类型（如 TypeError, BusinessError） */
   type: string;
   /** 错误消息 */

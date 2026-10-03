@@ -313,3 +313,11 @@ logger.info('Hello World');
 
 - [快速开始](../QUICK_START.md)
 - [完整 API 文档](../README.md)
+
+## 异常证据示例 / Error evidence examples
+
+- [手动捕获与诊断 / Manual capture and diagnostics](./1-error-capture/with-evidence.ts)
+- [按证据解析 / Evidence-aware parsing](./3-sourcemap-parser/with-evidence.ts)
+
+两个示例均提供中英文说明，导入时不初始化 Logger 或发送请求。
+Both examples include Chinese and English guidance and have no initialization or network side effects on import.
