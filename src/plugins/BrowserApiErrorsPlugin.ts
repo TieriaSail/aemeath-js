@@ -15,7 +15,7 @@ import { normalizeCapturedError } from '../utils/errorEvidence';
 
 import type { AemeathPlugin, AemeathInterface } from '../types';
 import { PluginPriority } from '../types';
-import { wrap, type WrappedFunction } from '../utils/wrap';
+import { runCapture } from '../utils/captureGuard';
 
 // ==================== Configuration ====================
 
@@ -88,6 +88,19 @@ const XHR_CALLBACK_PROPS: (keyof XMLHttpRequest)[] = [
   'onabort',
 ];
 
+interface EventObserver { report?: (error: unknown) => void; }
+interface EventListenerState {
+  wrapped: EventListener;
+  observers: Set<EventObserver>;
+}
+// A native registration must keep its identity across plugin instances. Scope
+// states by target so unrelated targets sharing a callback do not share observers.
+const eventListeners = new WeakMap<object, WeakMap<object, EventListenerState>>();
+const eventOriginals = new WeakMap<object, EventListenerOrEventListenerObject>();
+// Carry only the exact fallback through older SDK patches. Otherwise each
+// layer repeats the wrapped/native pair after every soft reinstall.
+let nativeRemoval: { target: object; listener: object; type: string; capture: boolean } | undefined;
+
 // ==================== Plugin ====================
 
 export class BrowserApiErrorsPlugin implements AemeathPlugin {
@@ -108,6 +121,10 @@ export class BrowserApiErrorsPlugin implements AemeathPlugin {
    * that may have been installed after ours.
    */
   private disabled = false;
+
+  private readonly eventObserver: EventObserver = {};
+  private readonly callbacks = new WeakMap<Function, Function>();
+  private readonly callbackWrappers = new WeakSet<Function>();
 
   // Restore functions for forceRestore (hard uninstall)
   private restoreFns: Array<() => void> = [];
@@ -138,22 +155,25 @@ export class BrowserApiErrorsPlugin implements AemeathPlugin {
 
   install(logger: AemeathInterface): void {
     this.logger = logger;
+    this.disabled = false;
+    this.eventObserver.report = (error: unknown): void => {
+      if (!this.logger || this.disabled) return;
+      const err = normalizeCapturedError(error, { channel: 'wrapped' });
+      this.logger.error('Caught error in wrapped callback', { error: err });
+    };
+    // Soft uninstall leaves our patches installed; reactivate them in place.
+    if (this.restoreFns.length > 0) return;
 
     if (typeof window === 'undefined') {
       this.log('Skipped — not a browser environment');
       return;
     }
 
-    const self = this;
-    const errorHandler = (error: unknown): void => {
-      if (!self.logger || self.disabled) return;
-      const err = normalizeCapturedError(error, { channel: 'wrapped' });
-      self.logger.error('Caught error in wrapped callback', { error: err });
-    };
+    const errorHandler = this.eventObserver.report;
 
     if (this.config.eventTarget) {
       try {
-        this.patchEventTargets(errorHandler);
+        this.patchEventTargets();
       } catch (e) {
         this.warn('Failed to patch event targets:', e);
       }
@@ -188,6 +208,7 @@ export class BrowserApiErrorsPlugin implements AemeathPlugin {
 
   uninstall(): void {
     this.disabled = true;
+    this.eventObserver.report = undefined;
     this.logger = null;
     this.log('Disabled (soft uninstall — patches remain as pass-throughs to preserve other libraries\' patch chains)');
   }
@@ -200,7 +221,7 @@ export class BrowserApiErrorsPlugin implements AemeathPlugin {
    * keeps patches in place as transparent pass-throughs.
    */
   forceRestore(): void {
-    for (const restore of this.restoreFns) {
+    for (const restore of [...this.restoreFns].reverse()) {
       try {
         restore();
       } catch {
@@ -209,84 +230,144 @@ export class BrowserApiErrorsPlugin implements AemeathPlugin {
     }
     this.restoreFns = [];
     this.disabled = true;
+    this.eventObserver.report = undefined;
     this.logger = null;
     this.log('Force-restored all APIs');
   }
 
   // ==================== Patching ====================
 
-  private patchEventTargets(errorHandler: (error: unknown) => void): void {
+  private patchEventTargets(): void {
     const globalObj = typeof window !== 'undefined' ? window : (typeof globalThis !== 'undefined' ? globalThis : undefined);
     if (!globalObj) return;
 
     const self = this;
 
     for (const targetName of this.config.eventTargetObjects) {
-      const target = (globalObj as Record<string, unknown>)[targetName] as
-        | { prototype?: { addEventListener?: Function; removeEventListener?: Function } }
-        | undefined;
+      try {
+        const target = (globalObj as Record<string, unknown>)[targetName] as
+          | { prototype?: { addEventListener?: Function; removeEventListener?: Function } }
+          | undefined;
 
-      if (!target?.prototype?.addEventListener || !target?.prototype?.removeEventListener) {
-        continue;
-      }
-
-      const proto = target.prototype;
-      const originalAdd = proto.addEventListener as Function;
-      const originalRemove = proto.removeEventListener as Function;
-
-      proto.addEventListener = function (
-        this: EventTarget,
-        type: string,
-        listener: EventListenerOrEventListenerObject | null,
-        options?: boolean | AddEventListenerOptions,
-      ): void {
-        if (listener == null || self.disabled) {
-          return originalAdd.call(this, type, listener, options);
+        if (!target?.prototype?.addEventListener || !target?.prototype?.removeEventListener) {
+          continue;
         }
 
-        let wrappedListener: EventListenerOrEventListenerObject;
+        const proto = target.prototype;
+        const addDescriptor = Object.getOwnPropertyDescriptor(proto, 'addEventListener');
+        const removeDescriptor = Object.getOwnPropertyDescriptor(proto, 'removeEventListener');
+        const originalAdd = proto.addEventListener as Function;
+        const originalRemove = proto.removeEventListener as Function;
 
-        if (typeof listener === 'function') {
-          wrappedListener = wrap(listener, errorHandler);
-        } else if (typeof listener === 'object' && typeof listener.handleEvent === 'function') {
-          const originalHandleEvent = listener.handleEvent;
-          const wrappedHandleEvent = wrap(originalHandleEvent, errorHandler);
-          wrappedListener = {
-            ...listener,
-            handleEvent: wrappedHandleEvent as EventListener,
+        const restore = (): void => {
+          if (addDescriptor) Object.defineProperty(proto, 'addEventListener', addDescriptor);
+          else delete proto.addEventListener;
+          if (removeDescriptor) Object.defineProperty(proto, 'removeEventListener', removeDescriptor);
+          else delete proto.removeEventListener;
+        };
+        try {
+          proto.addEventListener = function (
+            this: EventTarget,
+            type: string,
+            listener: EventListenerOrEventListenerObject | null,
+            options?: boolean | AddEventListenerOptions,
+          ): void {
+            if (listener == null || (typeof listener !== 'function' && typeof listener !== 'object')) {
+              return originalAdd.call(this, type, listener, options);
+            }
+            const originalListener = eventOriginals.get(listener) || listener;
+            let listeners = eventListeners.get(this);
+            let state = listeners?.get(originalListener);
+            if (!state) {
+              if (self.disabled) return originalAdd.call(this, type, listener, options);
+              const observers = new Set<EventObserver>();
+              const wrapped: EventListener = function(this: EventTarget, event: Event): void {
+                try {
+                  if (typeof originalListener === 'function') Reflect.apply(originalListener, this, [event]);
+                  else originalListener.handleEvent(event);
+                } catch (error) {
+                  for (const observer of [...observers]) {
+                    const report = observer.report;
+                    if (report) runCapture('wrapped', () => report(error));
+                    else observers.delete(observer);
+                  }
+                  throw error;
+                }
+              };
+              state = { wrapped, observers };
+              if (!listeners) { listeners = new WeakMap(); eventListeners.set(this, listeners); }
+              listeners.set(originalListener, state);
+              eventOriginals.set(wrapped, originalListener);
+            }
+            for (const observer of state.observers) {
+              if (!observer.report) state.observers.delete(observer);
+            }
+            if (!self.disabled) state.observers.add(self.eventObserver);
+            const wrappedListener = state.wrapped;
+
+            return originalAdd.call(this, type, wrappedListener, options);
           };
-        } else {
-          wrappedListener = listener;
+
+          proto.removeEventListener = function (
+            this: EventTarget,
+            type: string,
+            listener: EventListenerOrEventListenerObject | null,
+            options?: boolean | EventListenerOptions,
+          ): void {
+            if (listener == null) {
+              return originalRemove.call(this, type, listener, options);
+            }
+
+            if (nativeRemoval && nativeRemoval.target === this && nativeRemoval.listener === listener &&
+                nativeRemoval.type === type && nativeRemoval.capture === options) {
+              return originalRemove.call(this, type, listener, options);
+            }
+            if (typeof listener === 'function' || typeof listener === 'object') {
+              const originalListener = eventOriginals.get(listener) || listener;
+              const wrapped = eventListeners.get(this)?.get(originalListener)?.wrapped;
+              if (wrapped && wrapped !== listener) {
+                // The fallback removes registrations made before instrumentation.
+                // Coerce user input once before forwarding both native removals.
+                const eventType = `${type}`;
+                const capture = options !== null && (typeof options === 'object' || typeof options === 'function')
+                  ? Boolean(options.capture) : Boolean(options);
+                originalRemove.call(this, eventType, wrapped, capture);
+                const previousRemoval = nativeRemoval;
+                nativeRemoval = { target: this, listener, type: eventType, capture };
+                try { return originalRemove.call(this, eventType, listener, capture); }
+                finally { nativeRemoval = previousRemoval; }
+              }
+            }
+
+            return originalRemove.call(this, type, listener, options);
+          };
+
+          this.restoreFns.push(restore);
+        } catch (error) {
+          restore();
+          throw error;
         }
-
-        return originalAdd.call(this, type, wrappedListener, options);
-      };
-
-      proto.removeEventListener = function (
-        this: EventTarget,
-        type: string,
-        listener: EventListenerOrEventListenerObject | null,
-        options?: boolean | EventListenerOptions,
-      ): void {
-        if (listener == null) {
-          return originalRemove.call(this, type, listener, options);
-        }
-
-        if (typeof listener === 'function') {
-          const wrapped = (listener as WrappedFunction).__aemeath_wrapped__;
-          if (wrapped) {
-            originalRemove.call(this, type, wrapped as EventListener, options);
-          }
-        }
-
-        return originalRemove.call(this, type, listener, options);
-      };
-
-      this.restoreFns.push(() => {
-        proto.addEventListener = originalAdd as typeof proto.addEventListener;
-        proto.removeEventListener = originalRemove as typeof proto.removeEventListener;
-      });
+      } catch (error) {
+        this.warn('Failed to patch event target:', targetName, error);
+      }
     }
+  }
+
+  /** Instrument only the callback; preserve native argument/receiver semantics. */
+  private wrapCallback<T extends Function>(callback: T, errorHandler: (error: unknown) => void): T {
+    if (this.callbackWrappers.has(callback)) return callback;
+    const existing = this.callbacks.get(callback);
+    if (existing) return existing as T;
+    const wrapped = function(this: unknown, ...args: unknown[]): unknown {
+      try { return Reflect.apply(callback, this, args); }
+      catch (error) {
+        runCapture('wrapped', () => errorHandler(error));
+        throw error;
+      }
+    };
+    this.callbacks.set(callback, wrapped);
+    this.callbackWrappers.add(wrapped);
+    return wrapped as unknown as T;
   }
 
   private patchTimers(errorHandler: (error: unknown) => void): void {
@@ -308,7 +389,7 @@ export class BrowserApiErrorsPlugin implements AemeathPlugin {
         if (typeof handler === 'function' && !self.disabled) {
           return (original as Function).call(
             this,
-            wrap(handler, errorHandler),
+            self.wrapCallback(handler, errorHandler),
             timeout,
             ...args,
           );
@@ -333,10 +414,10 @@ export class BrowserApiErrorsPlugin implements AemeathPlugin {
     const original = globalObj.requestAnimationFrame;
 
     globalObj.requestAnimationFrame = function (callback: FrameRequestCallback): number {
-      if (self.disabled) {
+      if (self.disabled || typeof callback !== 'function') {
         return original.call(globalObj, callback);
       }
-      return original.call(globalObj, wrap(callback, errorHandler) as FrameRequestCallback);
+      return original.call(globalObj, self.wrapCallback(callback, errorHandler) as FrameRequestCallback);
     };
 
     this.restoreFns.push(() => {
@@ -356,13 +437,13 @@ export class BrowserApiErrorsPlugin implements AemeathPlugin {
     ): void {
       if (!self.disabled) {
         for (const prop of XHR_CALLBACK_PROPS) {
-          if (typeof (this as unknown as Record<string, unknown>)[prop] === 'function') {
-            try {
-              const original = (this as unknown as Record<string, unknown>)[prop] as Function;
-              (this as unknown as Record<string, unknown>)[prop] = wrap(original, errorHandler);
-            } catch {
-              // Some XHR properties may be read-only in certain environments
+          try {
+            const original = (this as unknown as Record<string, unknown>)[prop];
+            if (typeof original === 'function') {
+              (this as unknown as Record<string, unknown>)[prop] = self.wrapCallback(original, errorHandler);
             }
+          } catch {
+            // Unreadable/read-only host properties must not prevent native send.
           }
         }
       }

@@ -1029,6 +1029,9 @@ export function resetAemeath(): void {
   // SSR / Node 环境 typeof window === 'undefined' 时跳过，避免 ReferenceError。
   if (typeof window !== 'undefined') {
     try {
+      const stopEarlyCapture = (window as { __stopEarlyErrorCapture__?: () => void }).__stopEarlyErrorCapture__;
+      try { if (typeof stopEarlyCapture === 'function') stopEarlyCapture(); } catch { /* Best-effort host cleanup. */ }
+      delete (window as { __stopEarlyErrorCapture__?: unknown }).__stopEarlyErrorCapture__;
       delete (window as { __EARLY_ERRORS__?: unknown[] }).__EARLY_ERRORS__;
       delete (window as { __flushEarlyErrors__?: unknown }).__flushEarlyErrors__;
       delete (window as { __LOGGER_INITIALIZED__?: boolean }).__LOGGER_INITIALIZED__;

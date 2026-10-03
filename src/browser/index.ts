@@ -1,3 +1,4 @@
+import { runCapture } from '../utils/captureGuard';
 /**
  * 浏览器直接引入版本
  *
@@ -253,9 +254,10 @@ function flushEarlyErrors(logger: AemeathLogger): void {
   // 详见 helper 文档头部「历史背景 / 统一方案」与 v2.4.0-beta.3 changelog。
   platform.earlyCapture.flush((errors) => {
     if (errors.length === 0) return;
-    errors.forEach((earlyError) => {
-      forwardEarlyError(logger, earlyError);
-    });
+    for (let index = 0; index < errors.length; index++) {
+      if (globalLogger !== logger) break;
+      runCapture('early', () => forwardEarlyError(logger, errors[index]!));
+    }
   });
 }
 

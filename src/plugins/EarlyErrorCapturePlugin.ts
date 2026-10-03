@@ -1,3 +1,4 @@
+import { runCapture } from '../utils/captureGuard';
 /**
  * 早期错误捕获插件
  *
@@ -79,6 +80,7 @@ export class EarlyErrorCapturePlugin implements AemeathPlugin {
   private routeMatcher!: RouteMatcher;
   private readonly pluginRouteMatch: RouteMatchConfig | undefined;
   private logger: AemeathInterface | null = null;
+  private lifecycleEpoch = 0;
   private platform!: PlatformAdapter;
 
   constructor(options: EarlyErrorCaptureOptions = {}) {
@@ -103,6 +105,7 @@ export class EarlyErrorCapturePlugin implements AemeathPlugin {
     }
 
     this.logger = logger;
+    this.lifecycleEpoch++;
     this.platform = logger.platform;
 
     // Compose global matcher with plugin-level routeMatch
@@ -116,10 +119,14 @@ export class EarlyErrorCapturePlugin implements AemeathPlugin {
   }
 
   public uninstall(): void {
+    this.lifecycleEpoch++;
     this.logger = null;
   }
 
   private flushEarlyErrors(): void {
+    const logger = this.logger;
+    const epoch = this.lifecycleEpoch;
+    if (!logger) return;
     // 不变量：只要早期脚本已被注入（isInstalled() === true），就**必须**调用一次
     // flush()。flush() 内部会：
     //   1. 把 window.__LOGGER_INITIALIZED__ 翻为 true（让早期脚本所有 listener 让位）
@@ -134,16 +141,19 @@ export class EarlyErrorCapturePlugin implements AemeathPlugin {
     const shouldReport = this.routeMatcher.shouldCapture(this.platform.getCurrentPath());
 
     this.platform.earlyCapture.flush((errors) => {
-      if (!this.logger || !shouldReport || errors.length === 0) {
+      if (this.logger !== logger || this.lifecycleEpoch !== epoch || !shouldReport || errors.length === 0) {
         return;
       }
 
       // R17（v2.4.0-beta.3）：转发逻辑统一抽到 src/utils/forwardEarlyError.ts，
       // 让本插件与 src/browser/index.ts 的独立 IIFE bundle 共用同一份 helper，
       // 输出完全相同的 LogEntry。详见 helper 文档头部「历史背景 / 统一方案」。
-      errors.forEach((earlyError) => {
-        forwardEarlyError(this.logger!, earlyError);
-      });
+      for (let index = 0; index < errors.length; index++) {
+        if (this.logger !== logger || this.lifecycleEpoch !== epoch) break;
+        // Read the item inside the boundary too: a poisoned array slot must not
+        // abort the remaining records after the early script has cleared its buffer.
+        runCapture('early', () => forwardEarlyError(logger, errors[index]!));
+      }
     });
   }
 

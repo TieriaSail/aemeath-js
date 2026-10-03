@@ -13,6 +13,10 @@
   if (window.__EARLY_ERROR_CAPTURE_LOADED__) {
     return;
   }
+  // A previous owner may remain after a host clears only the public flags.
+  if (typeof window.__stopEarlyErrorCapture__ === 'function') {
+    try { window.__stopEarlyErrorCapture__(); } catch (ignored) {}
+  }
   window.__EARLY_ERROR_CAPTURE_LOADED__ = true;
 
   window.__EARLY_ERRORS__ = window.__EARLY_ERRORS__ || [];
@@ -20,17 +24,37 @@
     window.__LOGGER_INITIALIZED__ = false;
   }
   var __FALLBACK_TIMER__ = null;
+  var __CHUNK_RELOAD_TIMER__ = null;
 
   var MAX_ERRORS = 50;
   var captureActive = false;
   var pendingFlushes = [];
+  var captureStopped = false;
+
+  var stopCapture = function(keepReload) {
+    captureStopped = true;
+    pendingFlushes = [];
+    if (__FALLBACK_TIMER__ !== null) {
+      clearTimeout(__FALLBACK_TIMER__);
+      __FALLBACK_TIMER__ = null;
+    }
+    if (!keepReload && __CHUNK_RELOAD_TIMER__ !== null) {
+      clearTimeout(__CHUNK_RELOAD_TIMER__);
+      __CHUNK_RELOAD_TIMER__ = null;
+    }
+    try { window.removeEventListener('error', onEarlyError, true); } catch (ignored) {}
+    try { window.removeEventListener('unhandledrejection', onEarlyRejection); } catch (ignored) {}
+  };
+  window.__stopEarlyErrorCapture__ = stopCapture;
 
   function finishCapture() {
     captureActive = false;
+    if (captureStopped) return;
     var callbacks = pendingFlushes;
     pendingFlushes = [];
     for (var i = 0; i < callbacks.length; i++) {
-      try { window.__flushEarlyErrors__(callbacks[i]); }
+      if (window.__stopEarlyErrorCapture__ !== stopCapture) break;
+      try { flushEarlyErrors(callbacks[i]); }
       catch (ignored) { captureFailed(); }
     }
   }
@@ -412,7 +436,7 @@ return normalizeErrorEvidence;
   }
 
   function addError(error) {
-    if (window.__LOGGER_INITIALIZED__) return;
+    if (captureStopped || window.__LOGGER_INITIALIZED__) return;
     if (window.__EARLY_ERRORS__.length >= MAX_ERRORS) return;
 
     var normalized = normalizeEvidence(error.reason, {
@@ -421,7 +445,7 @@ return normalizeErrorEvidence;
       source: error.filename || error.source, line: error.lineno, column: error.colno
     });
     // Getters may change lifecycle state or the public buffer while reading.
-    if (window.__LOGGER_INITIALIZED__) return;
+    if (captureStopped || window.__LOGGER_INITIALIZED__) return;
     if (window.__EARLY_ERRORS__.length >= MAX_ERRORS) return;
     window.__EARLY_ERRORS__.push({
       type: error.type,
@@ -440,11 +464,11 @@ return normalizeErrorEvidence;
     });
   }
 
-  window.addEventListener('error', function(event) {
-    if (captureActive || window.__LOGGER_INITIALIZED__) return;
+  function onEarlyError(event) {
+    if (captureStopped || captureActive || window.__LOGGER_INITIALIZED__) return;
     captureActive = true;
     try {
-    if (window.__LOGGER_INITIALIZED__) return;
+    if (captureStopped || window.__LOGGER_INITIALIZED__) return;
     var target = event.target || event.srcElement;
 
     if (target && target !== window && target.tagName) {
@@ -470,42 +494,51 @@ return normalizeErrorEvidence;
     }
     } catch (captureFailure) { captureFailed(); }
     finally { finishCapture(); }
-  }, true);
+  }
+  window.addEventListener('error', onEarlyError, true);
 
-  window.addEventListener('unhandledrejection', function(event) {
-    if (captureActive || window.__LOGGER_INITIALIZED__) return;
+  function onEarlyRejection(event) {
+    if (captureStopped || captureActive || window.__LOGGER_INITIALIZED__) return;
     captureActive = true;
     try {
-    if (window.__LOGGER_INITIALIZED__) return;
+    if (captureStopped || window.__LOGGER_INITIALIZED__) return;
     addError({ type: 'unhandledrejection', reason: event.reason });
     } catch (captureFailure) { captureFailed(); }
     finally { finishCapture(); }
-  });
+  }
+  window.addEventListener('unhandledrejection', onEarlyRejection);
 
 
-  window.__flushEarlyErrors__ = function(callback) {
+  var flushEarlyErrors = function(callback) {
+    if (window.__stopEarlyErrorCapture__ !== stopCapture) return;
     if (typeof callback !== 'function') return;
     // A getter can initialize Logger synchronously. Finish the observation
     // before transferring ownership so it is included exactly once.
     if (captureActive) { pendingFlushes.push(callback); return; }
     window.__LOGGER_INITIALIZED__ = true;
-    if (__FALLBACK_TIMER__ !== null) {
-      clearTimeout(__FALLBACK_TIMER__);
-      __FALLBACK_TIMER__ = null;
-    }
+    stopCapture();
     var errors = window.__EARLY_ERRORS__.slice();
     window.__EARLY_ERRORS__ = [];
     try {
       callback(errors);
     } catch (e) {
-      console.error('[EarlyErrorCapture] Error in flush callback:', e);
+      try { console.error('[EarlyErrorCapture] Error in flush callback:', e); } catch (ignored) {}
     }
   };
+  window.__flushEarlyErrors__ = flushEarlyErrors;
 
   // __EARLY_ERROR_CAPTURE_LOADED__ 已在脚本顶部 set，无需在末尾重复。
   // 如果走到这里，说明 listeners 都已注册成功，整个脚本初始化通过。
 
   } catch (__earlyErr__) {
+    try {
+      if (window.__stopEarlyErrorCapture__ === stopCapture) {
+        stopCapture();
+        delete window.__stopEarlyErrorCapture__;
+        delete window.__EARLY_ERROR_CAPTURE_LOADED__;
+        if (window.__flushEarlyErrors__ === flushEarlyErrors) delete window.__flushEarlyErrors__;
+      }
+    } catch (ignored) {}
     try { console.error('[EarlyErrorCapture] Script init error:', __earlyErr__); } catch (e) {}
   }
 })();

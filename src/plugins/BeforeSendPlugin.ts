@@ -1,3 +1,4 @@
+import { ignoreAsyncResult } from '../utils/ignoreAsyncResult';
 /**
  * BeforeSend 插件 — 全链路日志最终拦截
  *
@@ -123,8 +124,7 @@ export class BeforeSendPlugin implements AemeathPlugin {
     if (result === undefined) return entry;
 
     // async (entry) => ... 会返回 Promise，主管道不 await，必须明确拒绝并提示
-    const maybeThenable = result as { then?: unknown };
-    if (typeof maybeThenable.then === 'function') {
+    if (ignoreAsyncResult(result)) {
       if (typeof console !== 'undefined' && console.warn) {
         try {
           console.warn(

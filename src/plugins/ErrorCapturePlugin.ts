@@ -17,6 +17,11 @@ import {
 // 重新导出 RouteMatchConfig 以保持向后兼容
 export type { RouteMatchConfig } from '../utils/routeMatcher';
 
+const consoleHandlers = new WeakMap<typeof console.error, {
+  previous: typeof console.error;
+  active: boolean;
+}>();
+
 export interface ErrorCapturePluginOptions {
   captureUnhandledRejection?: boolean;
   captureResourceError?: boolean;
@@ -53,8 +58,7 @@ export class ErrorCapturePlugin implements AemeathPlugin {
   private readonly pluginRouteMatch: RouteMatchConfig | undefined;
   private readonly debugEnabled: boolean;
   private logger: AemeathInterface | null = null;
-  private originalConsoleError: typeof console.error | null = null;
-  private consoleErrorHandler: typeof console.error | null = null;
+  private unregisterConsoleError: (() => void) | null = null;
   private platform!: PlatformAdapter;
   private unregisterGlobalError: (() => void) | null = null;
   private unregisterRejection: (() => void) | null = null;
@@ -147,10 +151,9 @@ export class ErrorCapturePlugin implements AemeathPlugin {
       this.unregisterResourceError = null;
     }
 
-    if (this.originalConsoleError && console.error === this.consoleErrorHandler) {
-      console.error = this.originalConsoleError;
-      this.originalConsoleError = null;
-      this.consoleErrorHandler = null;
+    if (this.unregisterConsoleError) {
+      this.unregisterConsoleError();
+      this.unregisterConsoleError = null;
     }
 
     this.log('Uninstalled');
@@ -210,10 +213,10 @@ export class ErrorCapturePlugin implements AemeathPlugin {
 
   private captureConsoleError(): void {
     const original = console.error;
-    this.originalConsoleError = original;
+    const state = { previous: original, active: true };
     const handler = (...args: unknown[]): void => {
       original.apply(console, args);
-      if (!this.logger || isConsoleCaptureSuppressed()) return;
+      if (!state.active || !this.logger || isConsoleCaptureSuppressed()) return;
       runCapture('console', () => {
         const reason = args.find((arg) => {
           if (!arg || typeof arg !== 'object') return false;
@@ -229,8 +232,18 @@ export class ErrorCapturePlugin implements AemeathPlugin {
         }
       });
     };
-    this.consoleErrorHandler = handler;
+    consoleHandlers.set(handler, state);
     console.error = handler;
+    this.unregisterConsoleError = () => {
+      state.active = false;
+      let current = console.error;
+      let node = consoleHandlers.get(current);
+      while (node && !node.active) {
+        current = node.previous;
+        node = consoleHandlers.get(current);
+      }
+      if (current !== console.error) console.error = current;
+    };
   }
 
   /** Preserve predicate configurations using identity, subclasses or private fields. */
