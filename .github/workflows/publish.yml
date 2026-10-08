@@ -5,7 +5,13 @@ on:
     tags: ['v*']
 
 jobs:
+  validation:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/release-validation.yml
+
   publish:
+    needs: validation
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -50,17 +56,17 @@ jobs:
           echo "prerelease=$PRERELEASE" >> "$GITHUB_OUTPUT"
           echo "Validated $RELEASE_TAG: npm dist-tag=$NPM_TAG, prerelease=$PRERELEASE"
 
-      - name: Install dependencies
-        run: npm ci
+      - name: Download the exact candidate that passed all release gates
+        uses: actions/download-artifact@v4
+        with:
+          name: aemeath-release-candidate
+          path: .release-candidate
 
-      - name: Run tests
-        run: npm test
-
-      - name: Build
-        run: npm run build
+      - name: Verify candidate bytes, version, lockfile and tag commit
+        run: node scripts/release-candidate.mjs verify
 
       - name: Publish to npm
-        run: npm publish --provenance --access public --tag ${{ steps.release_meta.outputs.npm_tag }}
+        run: npm publish ./.release-candidate/package.tgz --provenance --access public --tag ${{ steps.release_meta.outputs.npm_tag }}
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2

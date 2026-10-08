@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "noEmit": true,
+    "declaration": false,
+    "declarationMap": false,
+    "types": ["node"]
+  },
+  "include": ["release-tests/**/*.ts", "playwright.release.config.ts"],
+  "exclude": ["node_modules", "dist", "dist-miniprogram"]
+}

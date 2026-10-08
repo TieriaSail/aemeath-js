@@ -32,3 +32,6 @@ coverage/
 /test-results/
 /playwright-report/
 /blob-report/
+
+# The tested npm archive is an ephemeral release artifact, never source.
+/.release-candidate/
