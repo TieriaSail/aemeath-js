@@ -32,3 +32,6 @@ coverage/
 /playwright-report/
 /blob-report/
 /.vite-e2e-fixtures/
+
+# The tested npm archive is an ephemeral release artifact, never source.
+/.release-candidate/

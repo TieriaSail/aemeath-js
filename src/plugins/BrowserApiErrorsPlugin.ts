@@ -267,17 +267,23 @@ export class BrowserApiErrorsPlugin implements AemeathPlugin {
         };
         try {
           proto.addEventListener = function (
-            this: EventTarget,
+            this: EventTarget | null | undefined,
             type: string,
             listener: EventListenerOrEventListenerObject | null,
             options?: boolean | AddEventListenerOptions,
           ): void {
-            if (listener == null || (typeof listener !== 'function' && typeof listener !== 'object')) {
-              return originalAdd.call(this, type, listener, options);
+            // Web IDL resolves null/undefined receivers to this realm's global
+            // object. Share its cache with window.addEventListener, but forward
+            // the original receiver so native/third-party validation still runs.
+            const eventTarget = this ?? globalObj;
+            if ((typeof eventTarget !== 'object' && typeof eventTarget !== 'function') ||
+                listener == null || (typeof listener !== 'function' && typeof listener !== 'object')) {
+              return Reflect.apply(originalAdd, this, arguments);
             }
             const originalListener = eventOriginals.get(listener) || listener;
-            let listeners = eventListeners.get(this);
+            let listeners = eventListeners.get(eventTarget);
             let state = listeners?.get(originalListener);
+            const created = !state;
             if (!state) {
               if (self.disabled) return originalAdd.call(this, type, listener, options);
               const observers = new Set<EventObserver>();
@@ -295,7 +301,7 @@ export class BrowserApiErrorsPlugin implements AemeathPlugin {
                 }
               };
               state = { wrapped, observers };
-              if (!listeners) { listeners = new WeakMap(); eventListeners.set(this, listeners); }
+              if (!listeners) { listeners = new WeakMap(); eventListeners.set(eventTarget, listeners); }
               listeners.set(originalListener, state);
               eventOriginals.set(wrapped, originalListener);
             }
@@ -305,26 +311,37 @@ export class BrowserApiErrorsPlugin implements AemeathPlugin {
             if (!self.disabled) state.observers.add(self.eventObserver);
             const wrappedListener = state.wrapped;
 
-            return originalAdd.call(this, type, wrappedListener, options);
+            try {
+              return originalAdd.call(this, type, wrappedListener, options);
+            } catch (error) {
+              // A failed native registration must not make remove coerce options
+              // before native receiver validation (or leave a phantom wrapper).
+              if (created && listeners?.get(originalListener) === state) {
+                listeners.delete(originalListener);
+                eventOriginals.delete(wrappedListener);
+              }
+              throw error;
+            }
           };
 
           proto.removeEventListener = function (
-            this: EventTarget,
+            this: EventTarget | null | undefined,
             type: string,
             listener: EventListenerOrEventListenerObject | null,
             options?: boolean | EventListenerOptions,
           ): void {
-            if (listener == null) {
-              return originalRemove.call(this, type, listener, options);
+            const eventTarget = this ?? globalObj;
+            if ((typeof eventTarget !== 'object' && typeof eventTarget !== 'function') || listener == null) {
+              return Reflect.apply(originalRemove, this, arguments);
             }
 
-            if (nativeRemoval && nativeRemoval.target === this && nativeRemoval.listener === listener &&
+            if (nativeRemoval && nativeRemoval.target === eventTarget && nativeRemoval.listener === listener &&
                 nativeRemoval.type === type && nativeRemoval.capture === options) {
               return originalRemove.call(this, type, listener, options);
             }
             if (typeof listener === 'function' || typeof listener === 'object') {
               const originalListener = eventOriginals.get(listener) || listener;
-              const wrapped = eventListeners.get(this)?.get(originalListener)?.wrapped;
+              const wrapped = eventListeners.get(eventTarget)?.get(originalListener)?.wrapped;
               if (wrapped && wrapped !== listener) {
                 // The fallback removes registrations made before instrumentation.
                 // Coerce user input once before forwarding both native removals.
@@ -333,7 +350,7 @@ export class BrowserApiErrorsPlugin implements AemeathPlugin {
                   ? Boolean(options.capture) : Boolean(options);
                 originalRemove.call(this, eventType, wrapped, capture);
                 const previousRemoval = nativeRemoval;
-                nativeRemoval = { target: this, listener, type: eventType, capture };
+                nativeRemoval = { target: eventTarget, listener, type: eventType, capture };
                 try { return originalRemove.call(this, eventType, listener, capture); }
                 finally { nativeRemoval = previousRemoval; }
               }

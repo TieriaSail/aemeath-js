@@ -1,6 +1,6 @@
 {
   "name": "aemeath-js",
-  "version": "1.10.3",
+  "version": "1.10.4",
   "description": "A modular, type-safe logging system with plugin architecture",
   "keywords": [
     "logger",
@@ -124,14 +124,17 @@
   "scripts": {
     "build": "npm run generate:error-capture && tsup",
     "dev": "tsup --watch",
-    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.tests.json && tsc --noEmit -p tsconfig.examples.json",
-    "verify": "node scripts/generate-error-capture.mjs --check && npm test && npm run typecheck && npm run build",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.tests.json && tsc --noEmit -p tsconfig.examples.json && tsc --noEmit -p tsconfig.release-tests.json",
+    "verify": "node scripts/generate-error-capture.mjs --check && npm test && npm run typecheck && npm run build && npm run test:artifacts && npm run test:release:package",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "prepublishOnly": "npm run verify",
     "generate:error-capture": "node scripts/generate-error-capture.mjs",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "test:artifacts": "node scripts/verify-event-receiver.mjs",
+    "test:release:package": "node scripts/release-candidate.mjs create && node scripts/verify-event-receiver.mjs \"\" .release-candidate/package && node scripts/verify-host-startup.mjs && node scripts/verify-release-barriers.mjs",
+    "test:release:browser": "playwright test --config=playwright.release.config.ts"
   },
   "dependencies": {
     "source-map-js": "^1.2.0"
@@ -187,7 +190,8 @@
     "vitest": "4.0.18",
     "vue": "3.5.29",
     "webpack": "5.105.3",
-    "@playwright/test": "^1.62.1"
+    "@playwright/test": "^1.62.1",
+    "dexie": "4.4.3"
   },
   "engines": {
     "node": ">=16.0.0"

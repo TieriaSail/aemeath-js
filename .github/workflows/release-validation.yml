@@ -1,0 +1,101 @@
+name: SDK release validation
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [20, 22]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ matrix.node-version }}
+      - run: npm ci
+      - name: Verify source, types, build and packaged host contracts
+        run: npm run verify
+      # Node22 creates the single immutable candidate shared by every browser,
+      # minimum-runtime check and the publish job; no rebuilding after approval.
+      - name: Save validated candidate
+        if: matrix.node-version == 22
+        uses: actions/upload-artifact@v4
+        with:
+          name: aemeath-release-candidate
+          path: |
+            .release-candidate/package.tgz
+            .release-candidate/manifest.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
+
+  browser-host-contract:
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [chromium, firefox, webkit]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - run: npm ci
+      - uses: actions/download-artifact@v4
+        with:
+          name: aemeath-release-candidate
+          path: .release-candidate
+      - name: Verify exact candidate before browser execution
+        run: node scripts/release-candidate.mjs verify
+      - name: Install isolated headless browser
+        env:
+          BROWSER: ${{ matrix.browser }}
+        run: npx playwright install --with-deps "$BROWSER"
+      - name: Default SDK, dependency import, native IndexedDB and React startup
+        env:
+          BROWSER: ${{ matrix.browser }}
+        run: npm run test:release:browser -- --project "$BROWSER"
+      - name: Require every planned browser contract to pass without skips
+        env:
+          BROWSER: ${{ matrix.browser }}
+        run: node scripts/verify-browser-results.mjs "$BROWSER"
+      - name: Keep failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-browser-failure-${{ matrix.browser }}
+          path: test-results/
+          if-no-files-found: warn
+          retention-days: 14
+
+  node-16-compatibility:
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 20
+      - run: npm ci
+      - uses: actions/download-artifact@v4
+        with:
+          name: aemeath-release-candidate
+          path: .release-candidate
+      - run: node scripts/release-candidate.mjs verify
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 16
+      - name: Import the actual packed entry points at minimum Node version
+        run: |
+          node --input-type=module -e "await import('./.release-candidate/package/dist/index.js')"
+          node -e "require('./.release-candidate/package/dist/index.cjs')"
