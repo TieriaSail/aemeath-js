@@ -1,3 +1,4 @@
+import { isPreparingObservation } from '../core/observation';
 /**
  * SafeGuard 插件 - 智能日志保护
  *
@@ -295,6 +296,8 @@ export class SafeGuardPlugin implements AemeathPlugin {
       );
     }
 
+    // A durable producer owns replay; never park/merge an unprepared observation.
+    if (isPreparingObservation()) { this.droppedCount++; return false; }
     const hash = this.computeHash(level, message, options);
 
     // 重复日志 → 合并计数
@@ -479,7 +482,7 @@ export class SafeGuardPlugin implements AemeathPlugin {
   private handleBlocked(level: LogLevel, message: string, options: LogOptions): void {
     this.droppedCount++;
 
-    if (this.config.mode === 'standard') {
+    if (isPreparingObservation() || this.config.mode === 'standard') {
       return;
     }
 

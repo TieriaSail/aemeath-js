@@ -1769,6 +1769,8 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
   }
 
   private handleDrop(payload: Record<string, unknown>): void {
+    // The external durable producer retains the only authoritative copy.
+    if (payload['source'] === 'durable-observation') return;
     const log = payload['log'] as LogEntry | undefined;
     const reason = payload['reason'] as UploadDropReason | undefined;
     if (!log || !reason) return;
@@ -1825,6 +1827,8 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
   }
 
   private handleParked(payload: Record<string, unknown>): void {
+    // The external durable producer retains the only authoritative copy.
+    if (payload['source'] === 'durable-observation') return;
     const log = payload['log'] as LogEntry | undefined;
     if (!log) return;
     const state: PersistStateUpdate = {
@@ -1863,6 +1867,8 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
 
   /** 热重试也要落下服务端 Retry-After；cache 被关闭/不可用时仍能跨页面守约。 */
   private handleRetryScheduled(payload: Record<string, unknown>): void {
+    // The external durable producer retains the only authoritative copy.
+    if (payload['source'] === 'durable-observation') return;
     const log = payload['log'] as LogEntry | undefined;
     if (!log) return;
     if (
@@ -1910,6 +1916,8 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
   }
 
   private handleEnqueued(payload: Record<string, unknown>): void {
+    // The external durable producer retains the only authoritative copy.
+    if (payload['source'] === 'durable-observation') return;
     // 只镜像"暂停期间新产生"的日志：这是断网续传的主路径，
     // 正常在线时日志几秒内就发走了，落盘纯属浪费配额
     if (payload['paused'] !== true) return;
@@ -1922,6 +1930,8 @@ export class OfflinePersistencePlugin implements AemeathPlugin {
   }
 
   private handleSuccess(payload: Record<string, unknown>): void {
+    // The external durable producer retains the only authoritative copy.
+    if (payload['source'] === 'durable-observation') return;
     const log = payload['log'] as LogEntry | undefined;
     if (!log) return;
     const logId = log.logId;

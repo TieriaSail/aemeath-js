@@ -21,6 +21,7 @@
 | **Module 8** | 🧩 Plugin Ordering (priority field) | [View Docs](./en/8-plugin-ordering.md) |
 | **Module 9** | 🛡️ `beforeSend` — End-of-Pipeline Interceptor | [View Docs](./en/9-before-send.md) |
 | **Module 10** | 🧼 Payload Sanitize — Data URL / oversized payload handling | [View Docs](./en/10-payload-sanitize.md) |
+| **Module 12** | Crash recovery — explicit browser worker integration | [View Docs](./en/12-crash-detection.md) |
 | **Module 11** | 📴 Offline Persistence — persist offline, replay online | [View Docs](./en/11-offline-persistence.md) |
 
 ### 🔗 Links
@@ -48,6 +49,7 @@
 | **模块 8** | 🧩 插件执行顺序（priority 字段） | [查看文档](./zh/8-plugin-ordering.md) |
 | **模块 9** | 🛡️ `beforeSend` — 全链路最终拦截 | [查看文档](./zh/9-before-send.md) |
 | **模块 10** | 🧼 载荷清洗 — Data URL / 超大日志处理 | [查看文档](./zh/10-payload-sanitize.md) |
+| **模块 12** | 崩溃恢复 — 显式浏览器 Worker 接入 | [查看文档](./zh/12-crash-detection.md) |
 | **模块 11** | 📴 断网续传 — 离线落盘，联网补传 | [查看文档](./zh/11-offline-persistence.md) |
 
 ### 🔗 链接

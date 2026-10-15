@@ -1,3 +1,4 @@
+import { rejectObservation } from '../core/observation';
 import { ignoreAsyncResult } from '../utils/ignoreAsyncResult';
 /**
  * BeforeSend 插件 — 全链路日志最终拦截
@@ -110,6 +111,7 @@ export class BeforeSendPlugin implements AemeathPlugin {
     try {
       result = hook(entry);
     } catch (err) {
+      rejectObservation();
       if (this.debug && typeof console !== 'undefined' && console.warn) {
         try {
           console.warn('[Aemeath] beforeSend hook threw:', err);
@@ -125,6 +127,7 @@ export class BeforeSendPlugin implements AemeathPlugin {
 
     // async (entry) => ... 会返回 Promise，主管道不 await，必须明确拒绝并提示
     if (ignoreAsyncResult(result)) {
+      rejectObservation();
       if (typeof console !== 'undefined' && console.warn) {
         try {
           console.warn(
@@ -143,6 +146,7 @@ export class BeforeSendPlugin implements AemeathPlugin {
       || typeof (result as LogEntry).logId !== 'string'
       || typeof (result as LogEntry).level !== 'string'
     ) {
+      rejectObservation();
       // 与 async/thenable 一样：形态错误在任意环境都 warn，避免生产误以为脱敏已生效
       if (typeof console !== 'undefined' && console.warn) {
         try {

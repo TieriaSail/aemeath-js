@@ -561,3 +561,7 @@ For Taro or uni-app, pass the framework API as the second argument (e.g. `create
 - [Upload Plugin](./docs/en/4-upload-plugin.md)
 - [Performance Monitoring](./docs/en/6-performance-monitoring.md) (🌐🧪 browser only, experimental)
 - [Examples](./examples/)
+
+## Optional crash recovery
+
+Enable the [CrashDetectionPlugin](./docs/en/12-crash-detection.md) explicitly with an application-owned worker. See the [typed, explicit-start example](./examples/11-crash-detection/basic.ts). Missing required browser APIs disable monitoring with console.warn; this feature is not enabled by default.

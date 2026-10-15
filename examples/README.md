@@ -380,3 +380,7 @@ logger.info('Hello World');
 
 - [快速开始](../QUICK_START.md)
 - [完整 API 文档](../README.md)
+
+## Crash recovery / 崩溃恢复
+
+[Explicit worker example / 显式 Worker 示例](./11-crash-detection/README.md) · [English](../docs/en/12-crash-detection.md) · [中文](../docs/zh/12-crash-detection.md)

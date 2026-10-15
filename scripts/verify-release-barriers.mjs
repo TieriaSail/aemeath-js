@@ -1,3 +1,4 @@
+import { browserContracts } from './browser-contracts.mjs';
 // The release gate itself must demonstrably reject missing, stale and corrupted
 // evidence. Mutate private copies only, never the candidate that will be tested.
 import assert from 'node:assert/strict';
@@ -42,12 +43,10 @@ for (const fault of ['archive', 'commit', 'version', 'lockfile', 'dirty-worktree
 
 // Synthetic reports verify only the result validator, never browser behavior.
 const report = {
-  errors: [], stats: { expected: 6, unexpected: 0, flaky: 0, skipped: 0 },
+  errors: [], stats: { expected: browserContracts.length, unexpected: 0, flaky: 0, skipped: 0 },
   config: { projects: [{ name: 'chromium', retries: 0, repeatEach: 1 }] },
-  suites: [{ specs: ['native', 'plugin-default', 'singleton-default',
-    'singleton-dependency-first', 'iife-default', 'reporter-failure'].map(mode => ({
-    title: `packed candidate preserves business startup: ${mode}`,
-    file: 'release-tests/host-startup.spec.ts', ok: true,
+  suites: [{ specs: browserContracts.map(contract => ({
+    title: contract.title, file: `release-tests/${contract.file}`, ok: true,
     tests: [{ projectName: 'chromium', expectedStatus: 'passed', status: 'expected',
       results: [{ status: 'passed', retry: 0, errors: [] }] }],
   })) }],
@@ -56,6 +55,7 @@ verifyBrowserResults(report, 'chromium');
 const faults = {
   skipped: copy => { copy.suites[0].specs[0].tests[0].results[0].status = 'skipped'; },
   'expected-failure': copy => { copy.suites[0].specs[0].tests[0].expectedStatus = 'failed'; },
+  'missing-crash-contract': copy => { copy.suites[0].specs = copy.suites[0].specs.filter(spec => spec.file !== 'release-tests/crash-detection.spec.ts'); },
   missing: copy => { copy.suites[0].specs.pop(); },
   duplicate: copy => { copy.suites[0].specs[1].title = copy.suites[0].specs[0].title; },
   'wrong-browser': copy => { copy.suites[0].specs[0].tests[0].projectName = 'webkit'; },

@@ -560,3 +560,7 @@ logger.info('小程序已初始化');
 - [上报插件](./docs/zh/4-upload-plugin.md)
 - [性能监控](./docs/zh/6-performance-monitoring.md)（🌐🧪 仅浏览器可用，实验性）
 - [示例代码](./examples/)
+
+## 可选崩溃恢复
+
+[CrashDetectionPlugin](./docs/zh/12-crash-detection.md) 需要显式安装并提供应用自己的 Worker，参见[显式启动的类型示例](./examples/11-crash-detection/basic.ts)。缺少必需浏览器 API 时停用并输出 console.warn；默认不启用。

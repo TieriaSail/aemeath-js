@@ -9,13 +9,17 @@
     "baseUrl": ".",
     "paths": {
       "aemeath-js": ["./src/index.ts"],
-      "aemeath-js/parser": ["./src/parser/index.ts"]
+      "aemeath-js/parser": ["./src/parser/index.ts"],
+      "aemeath-js/core/Logger": ["./src/core/Logger.ts"],
+      "aemeath-js/plugins/*": ["./src/plugins/*"],
+      "aemeath-js/crash-worker": ["./src/crash-worker.ts"]
     }
   },
   "include": [
     "src/**/*.ts",
     "src/**/*.tsx",
     "examples/9-before-send/*.ts",
+    "examples/11-crash-detection/*.ts",
     "examples/10-offline-resilience/*.ts",
     "examples/recommended-config.ts",
     "examples/1-error-capture/with-evidence.ts",

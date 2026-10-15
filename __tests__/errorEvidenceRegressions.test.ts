@@ -41,8 +41,11 @@ describe('error evidence review regressions', () => {
     });
     l.use(upload);
     for (let i = 0; i < 2; i++) {
+      // Keep the payload budget independent of checkout path / runner stack size.
+      const error = new Error('same error');
+      error.stack = 'Error: same error\n    at business (https://app.test/app.js:10:2)';
       l.error('same failure', {
-        error: new Error('same error'),
+        error,
         context: { response: 'x'.repeat(4000), request: 'y'.repeat(4000) },
       });
     }

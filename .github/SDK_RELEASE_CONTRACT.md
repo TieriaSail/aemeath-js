@@ -47,8 +47,12 @@ until it looks green. A reproducible failure requires a fix and a new candidate.
 - No local Playwright/browser launches on the user's computer. Disposable Linux
   GitHub-hosted runners execute headless browser acceptance; release config blocks
   local execution. Browser failures retain trace, screenshot and JUnit/JSON evidence.
-  `verify-browser-results.mjs` requires all six planned contracts for each engine:
+  `verify-browser-results.mjs` requires every fixed planned contract for each engine:
   no omitted/duplicate cases, skips, expected failures, retries or runner errors.
+  Crash acceptance additionally builds Vite, Webpack 5 and Rsbuild consumers from
+  the same installed archive, then exercises native dedicated workers, worker
+  IndexedDB transactions, stale recovery/suppression, prepared replay, CSP/storage
+  shutdown and two-tab event claims. `scripts/browser-contracts.mjs` is the fixed plan.
   Synthetic negative reports check this validator; they are not browser acceptance.
 - CI and tag publishing call the same reusable validation workflow. All required
   jobs must succeed; publishing explicitly depends on that workflow.

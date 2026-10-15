@@ -56,11 +56,13 @@ jobs:
           path: .release-candidate
       - name: Verify exact candidate before browser execution
         run: node scripts/release-candidate.mjs verify
+      - name: Build installed candidate production consumers
+        run: node scripts/build-crash-consumers.mjs
       - name: Install isolated headless browser
         env:
           BROWSER: ${{ matrix.browser }}
         run: npx playwright install --with-deps "$BROWSER"
-      - name: Default SDK, dependency import, native IndexedDB and React startup
+      - name: Default SDK host startup and crash Worker/IndexedDB contracts
         env:
           BROWSER: ${{ matrix.browser }}
         run: npm run test:release:browser -- --project "$BROWSER"
@@ -75,6 +77,20 @@ jobs:
           name: release-browser-failure-${{ matrix.browser }}
           path: test-results/
           if-no-files-found: warn
+          retention-days: 14
+
+      - name: Keep browser acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-browser-evidence-${{ matrix.browser }}
+          path: |
+            test-results/release-results.json
+            test-results/release-results.xml
+            .release-candidate/manifest.json
+            .release-candidate/crash-consumers/build-manifest.json
+          include-hidden-files: true
+          if-no-files-found: error
           retention-days: 14
 
   node-16-compatibility:
@@ -99,3 +115,4 @@ jobs:
         run: |
           node --input-type=module -e "await import('./.release-candidate/package/dist/index.js')"
           node -e "require('./.release-candidate/package/dist/index.cjs')"
+          node scripts/verify-crash-artifacts.mjs
