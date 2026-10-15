@@ -79,6 +79,20 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+      - name: Keep browser acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-browser-evidence-${{ matrix.browser }}
+          path: |
+            test-results/release-results.json
+            test-results/release-results.xml
+            .release-candidate/manifest.json
+            .release-candidate/crash-consumers/build-manifest.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
+
   node-16-compatibility:
     needs: verify
     runs-on: ubuntu-latest

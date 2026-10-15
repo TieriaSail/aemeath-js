@@ -10,8 +10,10 @@ interface Harness {
   attempts: Array<{ logId: string; at: number }>;
   snapshots: Array<{ prepared?: unknown[] }>;
   completionEvents: string[];
+  commitStops: Array<{ operation: string; completionEvents: string[]; state: string }>;
   readonly hookCalls: number;
   readonly checkpointCalls: number;
+  readonly maxCheckpointDepth: number;
   getStatus(): { state: string; reason?: string };
   stop(): boolean;
   clear(): Promise<{ cleared: boolean }>;
@@ -133,7 +135,9 @@ test('crash host isolation: reentry and destination switching', async ({ page })
   expect(await page.evaluate(() => window.crashHarness.business())).toBe(true);
   await page.goto(`${origin}/webpack/`); await page.waitForFunction(() => !!window.crashHarness);
   expect(await page.evaluate(() => window.crashHarness.start('host-isolation', { checkpointEvents: true }))).toMatchObject({ state: 'active' });
-  expect(await page.evaluate(() => window.crashHarness.checkpointCalls)).toBe(1);
+  expect(await page.evaluate(() => window.crashHarness.checkpointCalls)).toBeGreaterThan(0);
+  expect(await page.evaluate(() => window.crashHarness.maxCheckpointDepth)).toBe(1);
+  await expect.poll(() => page.evaluate(async () => (await window.crashHarness.rows('host-isolation')).find(row => row.kind === 'page')?.state)).toBe('frozen');
   expect(await page.evaluate(() => window.crashHarness.remountWithOldWorkerError())).toMatchObject({ state: 'active' });
   expect(await page.evaluate(() => window.crashHarness.switchDestination())).toMatchObject({ scope: 'next-destination', status: { state: 'disabled', reason: 'delivery-scope-changed' }, uploaded: 1 });
   expect(await page.evaluate(() => window.crashHarness.business())).toBe(true);
@@ -230,6 +234,7 @@ test('crash receipt: committed responses respect producer lifetime', async ({ pa
     }, { namespace, operation });
     await expect.poll(() => page.evaluate(() => window.crashHarness.getStatus().state)).toBe('stopped');
     await page.evaluate(() => window.crashHarness.settleUpload());
+    expect(await page.evaluate(() => window.crashHarness.commitStops)).toEqual([{ operation, completionEvents: [], state: 'active' }]);
     expect(await page.evaluate(() => window.crashHarness.completionEvents)).toEqual([]);
     expect(await page.evaluate(() => window.crashHarness.uploadStatus().paused)).toBe(false);
     const row = (await page.evaluate(ns => window.crashHarness.rows(ns), namespace)).find(row => row.kind === 'event');

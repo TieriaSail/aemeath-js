@@ -7,6 +7,8 @@ import { PayloadSanitizePlugin } from 'aemeath-js/plugins/PayloadSanitizePlugin'
 
 const logs = [], attempts = [], snapshots = [], completionEvents = [];
 let logger, plugin, upload, offline, lastWorker, hookCalls = 0, checkpointCalls = 0;
+let checkpointDepth = 0, maxCheckpointDepth = 0;
+const commitStops = [];
 let leaveFromRoute = false, finishHeldUpload;
 const dbName = namespace => `__aemeath_crash_v1__:${namespace}`;
 function database(namespace) {
@@ -70,30 +72,51 @@ async function start(namespace, options = {}) {
         : new Worker(new URL('./crash.worker.js', import.meta.url), { type: 'module' });
       if (options.stopAfterCommit) {
         const owned = lastWorker, post = owned.postMessage.bind(owned), operations = new Map();
+        const add = owned.addEventListener.bind(owned), remove = owned.removeEventListener.bind(owned), listeners = new Map();
         owned.postMessage = (message, ...args) => { operations.set(message.id, message.data?.operation); return post(message, ...args); };
-        // Attach after WorkerClient. Stop in the gap between the receipt's
-        // committed response and Upload's continuation, using a real Worker/IDB.
-        queueMicrotask(() => owned.addEventListener('message', event => {
-          const operation = operations.get(event.data.id); operations.delete(event.data.id);
-          if (event.data.ok && operation === options.stopAfterCommit) queueMicrotask(() => logger.uninstall('crash-detection'));
-        }));
+        // Native dispatch can drain microtasks between separate listeners. Keep
+        // WorkerClient's callback and our scheduling in one JS stack so its
+        // receipt continuation runs before stop, and Upload resumes after stop.
+        // Only this fixture-owned Worker is wrapped; messages and IDB are real.
+        owned.addEventListener = (type, listener, ...args) => {
+          if (type !== 'message') return add(type, listener, ...args);
+          const wrapped = function (event) {
+            const operation = operations.get(event.data.id); operations.delete(event.data.id);
+            listener.call(this, event);
+            if (event.data.ok && operation === options.stopAfterCommit) queueMicrotask(() => {
+              commitStops.push({ operation, completionEvents: [...completionEvents], state: plugin.getStatus().state });
+              logger.uninstall('crash-detection');
+            });
+          };
+          listeners.set(listener, wrapped);
+          return add(type, wrapped, ...args);
+        };
+        owned.removeEventListener = (type, listener, ...args) => {
+          const wrapped = type === 'message' ? listeners.get(listener) : undefined;
+          if (wrapped) listeners.delete(listener);
+          return remove(type, wrapped || listener, ...args);
+        };
       }
       if (options.factoryStops) logger.uninstall('crash-detection');
       return lastWorker;
     },
     checkpoint: { collect: () => {
-      checkpointCalls++;
-      if (options.checkpointEvents && checkpointCalls === 1) document.dispatchEvent(new Event('freeze'));
-      return { routeKey: 'release-fixture' };
+      checkpointCalls++; checkpointDepth++;
+      maxCheckpointDepth = Math.max(maxCheckpointDepth, checkpointDepth);
+      try {
+        if (options.checkpointEvents && checkpointCalls === 1) document.dispatchEvent(new Event('freeze'));
+        return { routeKey: 'release-fixture' };
+      } finally { checkpointDepth--; }
     } },
   });
   logger.use(plugin);
   return plugin.ready();
 }
 const button = document.createElement('button'); button.textContent = 'business'; let clicked = false; button.onclick = () => { clicked = true; }; document.body.append(button);
-window.crashHarness = { start, seed, rows, logs, attempts, snapshots, completionEvents,
+window.crashHarness = { start, seed, rows, logs, attempts, snapshots, completionEvents, commitStops,
   get hookCalls() { return hookCalls; },
   get checkpointCalls() { return checkpointCalls; },
+  get maxCheckpointDepth() { return maxCheckpointDepth; },
   getStatus: () => plugin.getStatus(), stop: () => logger.uninstall('crash-detection'),
   clear: () => plugin.clearStoredData(),
   clearPair: async () => {
