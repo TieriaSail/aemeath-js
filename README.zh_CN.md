@@ -150,6 +150,7 @@ logger.updateContext('userId', '67890');
 | `SafeGuardPlugin` | 频率限制、递归保护、错误预算 | ~3KB |
 | `BeforeSendPlugin` | 🛡️ 全链路最终拦截，用于隐私脱敏 / 过滤（[文档](./docs/zh/9-before-send.md)） | <1KB |
 | `PayloadSanitizePlugin` | 🧼 **默认启用** — Data URL / Blob 占位、超大日志拆分（[文档](./docs/zh/10-payload-sanitize.md)） | ~2KB |
+| `CrashDetectionPlugin` | 显式 Worker 恢复前页疑似意外终止（[文档](./docs/zh/12-crash-detection.md)），仅可选子入口 | 独立 Worker |
 | `OfflinePersistencePlugin` | 📴 断网期间落盘（IndexedDB），联网后自动补传（[文档](./docs/zh/11-offline-persistence.md)） | ~4KB |
 
 > 想精确控制插件执行顺序？请看 [插件执行顺序](./docs/zh/8-plugin-ordering.md)（priority 字段）。

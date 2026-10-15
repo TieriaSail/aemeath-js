@@ -1,6 +1,6 @@
 {
   "name": "aemeath-js",
-  "version": "2.7.3-beta.0",
+  "version": "2.8.0-beta.0",
   "description": "A modular, type-safe logging system with plugin architecture",
   "keywords": [
     "logger",
@@ -158,6 +158,11 @@
       "import": "./dist/aemeath-js.global.js",
       "require": "./dist/aemeath-js.global.js",
       "default": "./dist/aemeath-js.global.js"
+    },
+    "./crash-worker": {
+      "types": "./dist/crash-worker.d.ts",
+      "import": "./dist/crash-worker.js",
+      "require": "./dist/crash-worker.cjs"
     }
   },
   "files": [
@@ -176,7 +181,7 @@
     "build": "npm run generate:error-capture && tsup",
     "dev": "tsup --watch",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.tests.json && tsc --noEmit -p tsconfig.examples.json && tsc --noEmit -p tsconfig.release-tests.json",
-    "verify": "node scripts/generate-error-capture.mjs --check && npm test && npm run typecheck && npm run build && npm run test:artifacts && npm run test:release:package",
+    "verify": "node scripts/generate-error-capture.mjs --check && npm run typecheck && npm run build && npm test && npm run test:artifacts && npm run test:release:package",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
@@ -185,7 +190,7 @@
     "prepublishOnly": "npm run verify",
     "generate:error-capture": "node scripts/generate-error-capture.mjs",
     "test:artifacts": "node scripts/verify-event-receiver.mjs",
-    "test:release:package": "node scripts/release-candidate.mjs create && node scripts/verify-event-receiver.mjs \"\" .release-candidate/package && node scripts/verify-host-startup.mjs && node scripts/verify-release-barriers.mjs",
+    "test:release:package": "node scripts/release-candidate.mjs create && node scripts/verify-event-receiver.mjs \"\" .release-candidate/package && node scripts/verify-host-startup.mjs && node scripts/verify-crash-artifacts.mjs && node scripts/build-crash-consumers.mjs && node scripts/verify-release-barriers.mjs",
     "test:release:browser": "playwright test --config=playwright.release.config.ts"
   },
   "dependencies": {

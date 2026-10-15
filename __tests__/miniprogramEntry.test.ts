@@ -7,7 +7,7 @@
  *    错误路径（未传 platform、未初始化调用 getAemeath）。
  * 2. 构建产物冲烟：读取 `dist-miniprogram/index.js`（要求 `npm run build`
  *    已执行过），检查预期导出、禁用导出、以及必要的 package.json 元信息。
- *    构建产物不存在时会跳过冲烟用例，避免在仅跑单测时误报。
+ *    构建产物缺失时明确失败；完整 verify 会在测试前构建，不允许静默跳过。
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { existsSync, readFileSync, statSync } from 'node:fs';
@@ -388,9 +388,7 @@ describe('src/miniprogram.ts 精简入口（源码）', () => {
 const BUNDLE_PATH = resolve(__dirname, '../dist-miniprogram/index.js');
 const BUNDLE_PKG_PATH = resolve(__dirname, '../dist-miniprogram/package.json');
 
-const BUNDLE_EXISTS = existsSync(BUNDLE_PATH);
-
-(BUNDLE_EXISTS ? describe : describe.skip)(
+describe(
   'dist-miniprogram/index.js 构建产物冲烟',
   () => {
     const expectedExports = [

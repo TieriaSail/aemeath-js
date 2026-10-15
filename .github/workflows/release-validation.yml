@@ -56,11 +56,13 @@ jobs:
           path: .release-candidate
       - name: Verify exact candidate before browser execution
         run: node scripts/release-candidate.mjs verify
+      - name: Build installed candidate production consumers
+        run: node scripts/build-crash-consumers.mjs
       - name: Install isolated headless browser
         env:
           BROWSER: ${{ matrix.browser }}
         run: npx playwright install --with-deps "$BROWSER"
-      - name: Default SDK, dependency import, native IndexedDB and React startup
+      - name: Default SDK host startup and crash Worker/IndexedDB contracts
         env:
           BROWSER: ${{ matrix.browser }}
         run: npm run test:release:browser -- --project "$BROWSER"
@@ -99,3 +101,4 @@ jobs:
         run: |
           node --input-type=module -e "await import('./.release-candidate/package/dist/index.js')"
           node -e "require('./.release-candidate/package/dist/index.cjs')"
+          node scripts/verify-crash-artifacts.mjs

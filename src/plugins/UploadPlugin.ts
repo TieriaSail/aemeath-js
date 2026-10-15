@@ -1,3 +1,4 @@
+import { adoptPlugin, releasePlugin } from '../core/pluginOwnership';
 /**
  * Upload Plugin - 简化的日志上传插件
  *
@@ -248,6 +249,10 @@ export interface UploadQueueStatus {
 export interface DurableDeliveryReceipt {
   readonly logId: string;
   isSettled(): boolean;
+  /** @internal Producer lifetime, independent of a successfully settled receipt. */
+  isOwnerActive?(): boolean;
+  /** @internal Discard only an optional RAM mirror; leave its durable fence/copy intact. */
+  releaseMemory?(): void;
   beginAttempt(now?: number): Promise<number | null>;
   renew(now?: number): Promise<boolean>;
   succeed(): Promise<boolean>;
@@ -272,6 +277,8 @@ export interface DurableDeliveryUpdate {
  * leader 中成功，因此这里只校验剩余成员自身坐标，不再要求数量等于 splitTotal。
  */
 export interface CoordinatedRecoveryItem {
+  /** External durable producer; defaults to the existing offline replay path. */
+  source?: 'offline-replay' | 'durable-observation';
   log: LogEntry;
   priority?: number;
   receipt: DurableDeliveryReceipt;
@@ -1004,16 +1011,24 @@ export class UploadPlugin implements AemeathPlugin {
     }
 
     const requestedScope = options.deliveryScope?.trim();
+    let invalidations: Array<() => void> = [];
     if (requestedScope && requestedScope !== this.config.deliveryScope) {
-      let pending =
-        this.queue.length +
-        this.parked.size +
-        this.inFlight.size +
-        this.pendingAdmissionSize();
+      // Stopped optional producers cannot leave stale RAM mirrors blocking a
+      // business destination change. A failed receipt query stays conservative.
+      try { this.purgeSettledCoordinatedItems(); } catch { /* keep pending mirrors */ }
+      const resident = [
+        ...this.queue, ...this.parked.values(), ...this.inFlight.values(),
+        ...Array.from(this.pendingSplitAdmissions.values()).flatMap(admission => Array.from(admission.items.values())),
+      ];
+      const optionalIds = new Set(resident.filter(item => this.isOptionalObservation(item)).map(item => item.log.logId));
+      let pending = resident.filter(item => !this.isOptionalObservation(item)).length;
       let persistenceInitializing = false;
       try {
         const delivery = this.logger?.getDeliveryStatus?.();
-        pending = Math.max(pending, delivery?.totalPending ?? 0);
+        // Crash mirrors retain their old-scope durable owner and can be stopped.
+        // Never discount ordinary offline/buffered data, including anonymous
+        // legacy status providers or a colliding identifier.
+        pending = Math.max(pending, (delivery?.totalPending ?? 0) - optionalIds.size, delivery?.persisted ?? 0, delivery?.buffered ?? 0);
         persistenceInitializing =
           delivery?.persistence.enabled === true &&
           delivery.persistence.backend === 'initializing';
@@ -1037,12 +1052,22 @@ export class UploadPlugin implements AemeathPlugin {
         );
       }
       this.config.deliveryScope = requestedScope;
+      invalidations = Array.from(this.scopeReservations.values());
+      this.scopeReservations.clear();
     }
 
     this.config.onUpload = callback;
     const wasPaused = this.callbackPaused;
     this.callbackPaused = false;
-    if (wasPaused) {
+    // Commit the complete binding before optional cleanup/warnings can reenter.
+    // A newer nested binding or pause must not be overwritten on our return.
+    for (const invalidate of invalidations) {
+      try { invalidate(); } catch (error) { this.warn('Failed to stop optional producer after scope change:', error); }
+    }
+    if (invalidations.length > 0) {
+      try { this.purgeSettledCoordinatedItems(); } catch { /* keep uncertain mirrors */ }
+    }
+    if (wasPaused && !this.callbackPaused) {
       // 这里只解除“业务未绑定 callback”这一层暂停。若网络状态机仍处于 paused /
       // half-open，发送 resumed 会谎报端到端恢复，并诱导离线层提前补投。
       if (!this.paused && !this.halfOpen) {
@@ -1050,6 +1075,15 @@ export class UploadPlugin implements AemeathPlugin {
       }
       void this.processQueue();
     }
+  }
+
+  private readonly scopeReservations = new Map<object, () => void>();
+  /** @internal Stop optional producers when an otherwise valid destination changes. */
+  public reserveDeliveryScope(scope: string, invalidate: () => void): (() => void) | null {
+    if (this.destroyed || scope !== this.config.deliveryScope) return null;
+    const token = {};
+    this.scopeReservations.set(token, invalidate);
+    return () => { this.scopeReservations.delete(token); };
   }
 
   public getDeliveryScope(): string {
@@ -1158,6 +1192,7 @@ export class UploadPlugin implements AemeathPlugin {
   }
 
   install(logger: AemeathInterface): void {
+    if (!adoptPlugin(this, logger)) return;
     // 复装同一个实例时必须解除墓碑标记，否则插件看起来装上了（hasPlugin 为真、
     // 定时器在转、监听器已挂），实际 processQueue / requeue / scheduleProbe
     // 全都在入口早退 —— 一个不报错的哑巴。HMR 和框架的 teardown/remount
@@ -1327,6 +1362,11 @@ export class UploadPlugin implements AemeathPlugin {
       this.emitTarget = null;
     }
 
+    // The documented direct lifecycle and teardown notification handoff are
+    // safe only after every old resource above has been detached. Logger uses
+    // generation tokens so its old finally cannot release the new ownership.
+    if (host) releasePlugin(this, host);
+
     // Drop listeners may install this instance again. Finish the old resource
     // cleanup first so the remaining teardown cannot detach the new installation.
     this.clearPendingSplitAdmissions(true, host);
@@ -1406,7 +1446,7 @@ export class UploadPlugin implements AemeathPlugin {
       this.emit('upload:paused', {
         reason,
         queued: this.queue.length,
-        logs: this.queue.map((item) => ({
+        logs: this.queue.filter((item) => !item.deliveryReceipt).map((item) => ({
           log: item.log,
           priority: item.priority,
         })),
@@ -1664,6 +1704,7 @@ export class UploadPlugin implements AemeathPlugin {
     deliveries: readonly CoordinatedRecoveryItem[],
   ): Promise<void> {
     if (deliveries.length === 0) return;
+    const epoch = this.lifecycleEpoch;
     if (this.destroyed) {
       await Promise.all(
         deliveries.map(({ receipt }) =>
@@ -1691,7 +1732,7 @@ export class UploadPlugin implements AemeathPlugin {
         priority,
         retryCount: 0,
         timestamp: Date.now(),
-        source: 'offline-replay',
+        source: delivery.source ?? 'offline-replay',
         deliveryReceipt: delivery.receipt,
       };
       this.normalizeQueuedItem(item);
@@ -1705,6 +1746,8 @@ export class UploadPlugin implements AemeathPlugin {
 
     let accepted = 0;
     for (const [key, group] of groups) {
+      if (group.every(item => this.isOptionalObservation(item)) &&
+          (this.destroyed || this.lifecycleEpoch !== epoch || group.some(item => item.deliveryReceipt!.isSettled()))) continue;
       const now = Date.now();
       const release = async (reason: string): Promise<void> => {
         await Promise.all(
@@ -2050,15 +2093,6 @@ export class UploadPlugin implements AemeathPlugin {
     }
   }
 
-  /** 所有未收齐分片组实际持有的条数；与 queue/parked 共享硬容量。 */
-  private pendingAdmissionSize(): number {
-    let total = 0;
-    for (const admission of this.pendingSplitAdmissions.values()) {
-      total += admission.items.size;
-    }
-    return total;
-  }
-
   /**
    * 为一个尚未进入共享状态的原子单元规划容量。
    *
@@ -2102,6 +2136,9 @@ export class UploadPlugin implements AemeathPlugin {
       ).filter((value): value is string => value !== undefined),
     );
     const units = new Map<string, QueuedLog[]>();
+    const optionalMirror = (members: readonly QueuedLog[]): boolean => members.every(
+      item => item.source === 'durable-observation' && typeof item.deliveryReceipt?.releaseMemory === 'function',
+    );
     for (const item of resident) {
       const splitId = getSdkSplitId(item.log);
       const key =
@@ -2113,12 +2150,11 @@ export class UploadPlugin implements AemeathPlugin {
     const residentCandidates: CapacityUnit[] = Array.from(units.entries())
       .filter(
         ([key, members]) =>
-          // 已领取项的唯一持久副本仍由 receipt 代表。同步容量规划无法原子完成
-          // “移出内存 + 释放 lease”，因此它们不是可淘汰候选；空间不足时拒绝
-          // 新 incoming，或淘汰普通内存项。
-          members.every((item) => !item.deliveryReceipt) &&
-          (!key.startsWith('split:') ||
-            !inFlightSplitIds.has(key.slice(6))),
+          // Ordinary coordinated receipts remain protected. Optional crash RAM
+          // mirrors may yield without deleting/ACKing their durable event.
+          optionalMirror(members) ||
+          (members.every((item) => !item.deliveryReceipt) &&
+            (!key.startsWith('split:') || !inFlightSplitIds.has(key.slice(6)))),
       )
       .map(([key, members]) => ({
         key,
@@ -2162,6 +2198,8 @@ export class UploadPlugin implements AemeathPlugin {
       },
     ].sort(
       (a, b) =>
+        Number(b.kind === 'resident' && optionalMirror(b.members)) -
+          Number(a.kind === 'resident' && optionalMirror(a.members)) ||
         a.first.priority - b.first.priority ||
         a.first.timestamp - b.first.timestamp,
     );
@@ -2199,7 +2237,7 @@ export class UploadPlugin implements AemeathPlugin {
         }
         continue;
       }
-      if (candidate.splitId !== undefined) {
+      if (candidate.splitId !== undefined && !optionalMirror(candidate.members)) {
         this.rememberRejectedSplit(candidate.splitId, 'queue-overflow');
       }
       victims.push(...candidate.members);
@@ -2207,6 +2245,10 @@ export class UploadPlugin implements AemeathPlugin {
     commit();
     this.scheduleParkWake();
     for (const victim of victims) {
+      if (optionalMirror([victim])) {
+        try { victim.deliveryReceipt!.releaseMemory!(); } catch (error) { this.warn('Failed to release optional RAM mirror:', error); }
+        continue;
+      }
       this.reportDrop(victim, {
         reason: 'queue-overflow',
         retryCount: victim.retryCount,
@@ -2367,6 +2409,14 @@ export class UploadPlugin implements AemeathPlugin {
     }
   }
 
+  private isOptionalObservation(item: QueuedLog): boolean {
+    return item.source === 'durable-observation' && typeof item.deliveryReceipt?.releaseMemory === 'function';
+  }
+
+  private isInactiveObservation(item: QueuedLog): boolean {
+    return this.isOptionalObservation(item) && item.deliveryReceipt!.isOwnerActive?.() === false;
+  }
+
   /** 是否正在飞行（已出队、等 onUpload）。Offline uninstall 墓碑只认这个，不含排队。 */
   public isInFlight(logId: string): boolean {
     return this.inFlight.has(logId);
@@ -2454,6 +2504,7 @@ export class UploadPlugin implements AemeathPlugin {
     item: QueuedLog,
     parked: AemeathEventMap['upload:parked'],
   ): Promise<void> {
+    if (this.isInactiveObservation(item)) return;
     this.deferQueuedSplitSiblings(
       item,
       parked.parkedUntil,
@@ -2490,6 +2541,7 @@ export class UploadPlugin implements AemeathPlugin {
           }),
       );
     }
+    if (this.isInactiveObservation(item)) return;
     this.emit('upload:parked', parked);
     this.scheduleCacheSave();
   }
@@ -2652,6 +2704,7 @@ export class UploadPlugin implements AemeathPlugin {
     info: Omit<UploadDropInfo, 'source'> & { source?: string },
     host: AemeathInterface | null = this.logger ?? this.emitTarget,
   ): void {
+    if (this.isInactiveObservation(item)) return;
     const payload: UploadDropInfo = {
       ...info,
       source: info.source ?? item.source,
@@ -3206,6 +3259,12 @@ export class UploadPlugin implements AemeathPlugin {
     let result: UploadResult | undefined;
     let thrown: unknown;
     const epoch = this.lifecycleEpoch;
+    const scope = this.config.deliveryScope;
+    const optional = this.isOptionalObservation(item);
+    const observationOwnerChanged = (): boolean => optional &&
+      (this.destroyed || this.lifecycleEpoch !== epoch || this.config.deliveryScope !== scope || this.isInactiveObservation(item));
+    const observationCancelled = (): boolean => optional &&
+      (observationOwnerChanged() || item.deliveryReceipt!.isSettled());
 
     let deliveryAttempt: number | undefined;
     if (item.deliveryReceipt) {
@@ -3227,6 +3286,7 @@ export class UploadPlugin implements AemeathPlugin {
       }
     }
     item.deliveryAttempt = deliveryAttempt;
+    if (observationCancelled()) return 'done';
 
     this.inFlight.set(item.log.logId, item);
     this.attemptStats.total++;
@@ -3235,6 +3295,10 @@ export class UploadPlugin implements AemeathPlugin {
       source: item.source,
       retryCount: item.retryCount,
     });
+    if (observationCancelled()) {
+      if (this.inFlight.get(item.log.logId) === item) this.inFlight.delete(item.log.logId);
+      return 'done';
+    }
     // 忽略窗口必须在「调用 onUpload」之前抬起，并在本方法退出时成对揭开：
     // - 同步 throw：Promise.resolve(fn()) 会先执行 fn，异常若在 begin 之后、
     //   内层 finally 之外，会永久泄漏全局忽略计数并让本条既不重试也不 onDrop；
@@ -3264,6 +3328,7 @@ export class UploadPlugin implements AemeathPlugin {
           // Preparing the request copy can invoke host getters too. Keep failures
           // in the same ownership/retry path as a throwing upload callback.
           const logWithRequestId = this.decorateForUpload(item.log, deliveryAttempt);
+          if (observationCancelled()) return 'done';
           uploadPromise = Promise.resolve(
             this.config.onUpload(logWithRequestId),
           );
@@ -3334,6 +3399,9 @@ export class UploadPlugin implements AemeathPlugin {
     // emit 必须发生在清掉 emitTarget 之前：uninstall 后 logger 已空，
     // 飞行中的终态只靠 emitTarget 送达 OfflinePersistence。
     try {
+      // A stopped producer's late response cannot ACK its durable owner or
+      // alter the new destination's failure/paused state.
+      if (observationCancelled()) return 'done';
       // 同实例 remount：只扇出终态事件，不改新生命周期的队列/暂停/重试账本
       if (this.lifecycleEpoch !== epoch) {
         return await this.settleStaleAttempt(item, result, thrown);
@@ -3341,14 +3409,19 @@ export class UploadPlugin implements AemeathPlugin {
 
       if (result?.success) {
         this.recordAttemptOutcome('success');
+        let committed = true;
         if (item.deliveryReceipt) {
           try {
-            await item.deliveryReceipt.succeed();
+            committed = await item.deliveryReceipt.succeed();
           } catch (error) {
+            committed = false;
             // 真实成功仍然有效；常规 success 事件会进入持久删除重试链。
             this.warn('Failed to commit coordinated delivery success:', error);
           }
         }
+        // Successful ACKs settle the receipt too; producer lifetime is a separate
+        // fence. Check it after the await, before changing shared queue state.
+        if (optional && (!committed || observationOwnerChanged())) return 'done';
         this.onUploadSucceeded(item);
         return 'done';
       }
@@ -3359,6 +3432,7 @@ export class UploadPlugin implements AemeathPlugin {
       if (thrown === undefined) {
         this.warn('Upload failed:', failure.error);
       }
+      if (observationCancelled()) return 'done';
 
       // 明确不需要重试 / 已拿到永久失败证据 → 立即结束生命周期
       if (failure.terminal) {
@@ -3441,6 +3515,7 @@ export class UploadPlugin implements AemeathPlugin {
           item.nextAttemptAt = undefined;
           this.addToQueue(item);
         }
+        if (observationOwnerChanged()) return 'done';
         this.pause(
           this.isDefinitelyOffline() ? 'offline' : 'suspected-offline',
         );
@@ -3472,6 +3547,7 @@ export class UploadPlugin implements AemeathPlugin {
             if (item.deliveryReceipt) await this.parkCoordinated(item, failure);
             else this.park(item, failure);
           }
+          if (observationOwnerChanged()) return 'done';
           // 即使该条恰好在此进入 parked，这次非网络响应也已经证明链路恢复。
           this.completeReachableProbe();
           return 'done';
@@ -3528,6 +3604,7 @@ export class UploadPlugin implements AemeathPlugin {
     failure: NormalizedUploadFailure,
     transportFailure: boolean,
   ): void {
+    if (this.isInactiveObservation(item)) return;
     this.addToQueue(item);
     this.deferQueuedSplitSiblings(
       item,
@@ -4323,7 +4400,7 @@ export class UploadPlugin implements AemeathPlugin {
    * Offline 监听器挂上之前 Upload 可能已发过 `upload:paused`；此时只能拉队列兜底。
    */
   peekQueuedForPersist(): Array<{ log: LogEntry; priority: number }> {
-    return [...this.queue, ...this.parked.values()].map((item) => ({
+    return [...this.queue, ...this.parked.values()].filter((item) => !item.deliveryReceipt).map((item) => ({
       log: item.log,
       priority: item.priority,
     }));

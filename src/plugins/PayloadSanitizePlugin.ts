@@ -16,6 +16,7 @@
 
 import type { AemeathPlugin, AemeathInterface, AfterLogResult, LogEntry } from '../types';
 import { PluginPriority } from '../types';
+import { rejectObservation } from '../core/observation';
 import type { UploadPlugin, UploadDropInfo } from './UploadPlugin';
 import {
   sanitizeLogEntry,
@@ -95,6 +96,8 @@ export class PayloadSanitizePlugin implements AemeathPlugin {
       result = sanitizeLogEntry(entry, { maxBytes: this.maxBytes });
     } catch (err) {
       // 清洗本身出问题时放行原始日志：宁可大一点，也不要因为清洗器的 bug 丢日志
+      // 持久化观测必须拒绝未清洗的快照；普通日志仍保持原有放行行为。
+      rejectObservation();
       this.debug('sanitize failed, passing through:', err);
       return undefined;
     }

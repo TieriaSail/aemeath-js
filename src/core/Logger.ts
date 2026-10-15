@@ -1,3 +1,6 @@
+import { observationMetadata, observationPreparation, capturePreparation, rejectObservation } from './observation';
+import type { ObservationInput, ObservationResult } from './observation';
+import { claimPlugin, transitionPlugin, releasePlugin, ownershipToken } from './pluginOwnership';
 import { ignoreAsyncResult } from '../utils/ignoreAsyncResult';
 import { normalizeCapturedError } from '../utils/errorEvidence';
 /**
@@ -111,6 +114,7 @@ interface AemeathOptions {
 
 export class AemeathLogger implements AemeathInterface {
   private readonly plugins: Map<string, PluginMetadata> = new Map();
+  private readonly installingPluginNames = new Set<string>();
   private readonly eventListeners: EventListeners = new Map();
   private readonly logListeners: Set<LogListener> = new Set();
   private readonly pluginInstances: AemeathPlugin[] = [];
@@ -178,7 +182,8 @@ export class AemeathLogger implements AemeathInterface {
     level: LogLevel,
     message: string,
     options: LogOptions = {},
-  ): void {
+    observation?: ObservationInput,
+  ): LogEntry[] | void {
     if (this.destroyed) return;
 
     // Phase 1: beforeLog 管道 — 遍历插件，允许拦截或修改参数
@@ -194,6 +199,7 @@ export class AemeathLogger implements AemeathInterface {
           currentMessage,
           currentOptions,
         );
+        if (observation && ignoreAsyncResult(result)) { rejectObservation(); return; }
         if (result === false) {
           return;
         }
@@ -206,14 +212,15 @@ export class AemeathLogger implements AemeathInterface {
           currentOptions = result.options;
         }
       } catch (err) {
+        if (observation) { rejectObservation(); return; }
         this.debugWarn(`Plugin "${plugin.name}" beforeLog error:`, err);
       }
     }
 
     // Phase 2: 构建 LogEntry
-    const timestamp = Date.now();
+    const timestamp = observation?.timestamp ?? Date.now();
 
-    let context = this.buildContext({ level: currentLevel, message: currentMessage, timestamp });
+    let context = observation ? {} : this.buildContext({ level: currentLevel, message: currentMessage, timestamp });
     if (currentOptions.context) {
       context = { ...context, ...currentOptions.context };
     }
@@ -225,6 +232,14 @@ export class AemeathLogger implements AemeathInterface {
       currentOptions,
       context,
     );
+
+    if (observation) {
+      entry.logId = observation.logId;
+      delete entry.release;
+      delete entry.environment;
+      if (observation.release !== undefined) entry.release = observation.release;
+      if (observation.environment !== undefined) entry.environment = observation.environment;
+    }
 
     // Phase 3: afterLog 管道 — 遍历插件，允许修改、拦截或扇出 entry
     //
@@ -245,6 +260,7 @@ export class AemeathLogger implements AemeathInterface {
         let explicitlyFiltered = false;
         try {
           const result: AfterLogResult = plugin.afterLog(current);
+          if (observation && ignoreAsyncResult(result)) { rejectObservation(); return; }
           if (result === false || (Array.isArray(result) && result.length === 0)) {
             explicitlyFiltered = true;
             // false 和空数组都表示拦截；若为分片，整组一起拦截。
@@ -262,10 +278,12 @@ export class AemeathLogger implements AemeathInterface {
           if (Array.isArray(result)) {
             let kept = 0;
             for (const item of result) {
+              if (observation && ignoreAsyncResult(item)) { rejectObservation(); continue; }
               if (this.isValidEntry(item)) {
                 next.push(item);
                 kept++;
               } else {
+                if (observation) rejectObservation();
                 this.warnInvalidAfterLog(plugin.name);
               }
             }
@@ -279,6 +297,7 @@ export class AemeathLogger implements AemeathInterface {
             if (this.isValidEntry(result)) {
               next.push(result);
             } else {
+              if (observation) rejectObservation();
               this.warnInvalidAfterLog(plugin.name);
               next.push(current);
             }
@@ -287,6 +306,7 @@ export class AemeathLogger implements AemeathInterface {
 
           next.push(current);
         } catch (err) {
+          if (observation) { rejectObservation(); return; }
           this.debugWarn(`Plugin "${plugin.name}" afterLog error:`, err);
           // Filtering has already been requested. If its group cannot be identified,
           // stop this log rather than restoring it or emitting an uncertain partial group.
@@ -319,11 +339,14 @@ export class AemeathLogger implements AemeathInterface {
       // 上传请求，足以把宿主页面和后端一起拖垮。超限就截断并告警。
       // 截断必须保完整 splitId 组，否则后端会收到拼不回来的残片。
       if (entries.length > MAX_FANOUT_ENTRIES) {
+        if (observation) { rejectObservation(); return; }
         const kept = truncateFanoutPreservingSplits(entries, MAX_FANOUT_ENTRIES);
         this.warnFanoutCapped(plugin.name, entries.length, kept.length);
         entries = kept;
       }
     }
+
+    if (observation) return this.destroyed ? undefined : entries;
 
     const listenerSnapshot = Array.from(this.logListeners);
 
@@ -342,6 +365,17 @@ export class AemeathLogger implements AemeathInterface {
         }
       }
     }
+  }
+
+  /** @internal Original-page identity without evaluating application context. */
+  public [observationMetadata](owner: AemeathPlugin): { release?: string; environment?: string } | null {
+    return this.destroyed || !this.pluginInstances.includes(owner) || !ownershipToken(owner, this) ? null : { release: this.release, environment: this.environment };
+  }
+
+  /** @internal Prepare only; the caller must durably commit before publication. */
+  public [observationPreparation](owner: AemeathPlugin, input: ObservationInput): ObservationResult {
+    if (this.destroyed || !this.pluginInstances.includes(owner) || !ownershipToken(owner, this)) return { state: 'unavailable' };
+    return capturePreparation(() => this.log(input.level, input.message, input.options, input));
   }
 
   private isValidEntry(value: unknown): value is LogEntry {
@@ -639,11 +673,18 @@ export class AemeathLogger implements AemeathInterface {
   public use(plugin: AemeathPlugin, options?: unknown): this {
     // Destroy is terminal: teardown callbacks cannot create untracked resources.
     if (this.destroyed) return this;
-    if (this.plugins.has(plugin.name)) {
+    const name = plugin.name;
+    if (this.plugins.has(name) || this.installingPluginNames.has(name)) {
       this.debugWarn(`Plugin "${plugin.name}" is already installed`);
       return this;
     }
 
+    this.installingPluginNames.add(name);
+    try { return this.installPlugin(plugin, options, name); }
+    finally { this.installingPluginNames.delete(name); }
+  }
+
+  private installPlugin(plugin: AemeathPlugin, options: unknown, reservedName: string): this {
     if (plugin.dependencies) {
       for (const dep of plugin.dependencies) {
         if (!this.plugins.has(dep)) {
@@ -652,6 +693,8 @@ export class AemeathLogger implements AemeathInterface {
       }
     }
 
+    const ownership = claimPlugin(plugin, this);
+    if (!ownership) return this;
     let registered = false;
     try {
       plugin.install(this, options);
@@ -679,6 +722,9 @@ export class AemeathLogger implements AemeathInterface {
       this.pluginInstances.splice(insertAt, 0, plugin);
       this.plugins.set(metadata.name, metadata);
       registered = true;
+      transitionPlugin(plugin, this, 'active', ownership);
+      // Installation callbacks may now uninstall and replace this registration.
+      this.installingPluginNames.delete(reservedName);
       this.debugLog(`Plugin "${plugin.name}" installed (priority=${priority})`);
       // 与 plugin:uninstall 对称：OfflinePersistence 靠它在 Upload 被单独 remount
       // 后重新唤醒盘上补传（upload:resumed 不会在 install 时发出）。
@@ -692,11 +738,14 @@ export class AemeathLogger implements AemeathInterface {
     } finally {
       // destroy() cannot see an installation that has not been registered yet.
       // Clean its resources even when install throws after destroying the host.
-      if (this.destroyed && !registered) {
+      if (!registered) {
+        transitionPlugin(plugin, this, 'uninstalling', ownership);
         try {
           plugin.uninstall?.(this);
         } catch (err) {
           this.debugWarn(`Failed to clean interrupted plugin "${plugin.name}":`, err);
+        } finally {
+          releasePlugin(plugin, this, ownership);
         }
       }
     }
@@ -857,11 +906,15 @@ export class AemeathLogger implements AemeathInterface {
     // not remove a neighbour, and a replacement owns its own registration.
     if (idx !== -1) this.pluginInstances.splice(idx, 1);
     this.plugins.delete(name);
-    if (plugin) {
+    const ownership = plugin ? ownershipToken(plugin, this) : null;
+    if (plugin && ownership) {
+      transitionPlugin(plugin, this, 'uninstalling', ownership);
       try {
         plugin.uninstall?.(this);
       } catch (err) {
         this.debugWarn(`Plugin "${name}" uninstall error:`, err);
+      } finally {
+        releasePlugin(plugin, this, ownership);
       }
     }
 

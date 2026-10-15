@@ -155,6 +155,7 @@ All plugins are optional. Only import what you need — unused plugins are tree-
 | `SafeGuardPlugin` | Rate limiting, recursion guard, error budget | ~3KB |
 | `BeforeSendPlugin` | 🛡️ End-of-pipeline interceptor for redaction / filtering ([docs](./docs/en/9-before-send.md)) | <1KB |
 | `PayloadSanitizePlugin` | 🧼 **On by default** — Data URL / Blob placeholders, oversized payload split ([docs](./docs/en/10-payload-sanitize.md)) | ~2KB |
+| `CrashDetectionPlugin` | Explicit browser worker recovery of suspected previous-page termination ([docs](./docs/en/12-crash-detection.md)); optional subpath only | Separate worker |
 | `OfflinePersistencePlugin` | 📴 Persist logs offline (IndexedDB), replay when back online ([docs](./docs/en/11-offline-persistence.md)) | ~4KB |
 
 > Need to control plugin execution order? See [Plugin Ordering](./docs/en/8-plugin-ordering.md) (priority field).

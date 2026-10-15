@@ -249,3 +249,7 @@ logger.use(networkPlugin);
 ```
 
 > The cast bypasses the type checker; prefer the subclass approach for long-term code.
+
+## Plugin object ownership
+
+Create a separate plugin object for each Logger. Sharing one stateful object between active loggers is rejected with a guarded warning before its install hook runs. Independent objects remain supported; repeated use of the same name on one Logger remains idempotent. Installation names are reserved during reentry, and failed synchronous setup receives bounded cleanup before ownership is released. Prefer `logger.uninstall(name)` for lifecycle changes. UploadPlugin retains its existing resource-complete direct teardown/handoff behavior; this is not permission to transfer arbitrary plugins during cleanup. Same-version ESM/CJS copies share an ownership protocol within one realm; older bundles do not participate and must not share objects.
